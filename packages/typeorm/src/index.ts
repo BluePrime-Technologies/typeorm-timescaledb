@@ -6,6 +6,8 @@
  */
 export { Hypertable, TimeColumn, HypertablePrimaryKey } from './decorators/index.js';
 export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.js';
+export { createTimescale } from './runtime/createTimescale.js';
+export type { TimescaleContext, TimescaleRepository } from './runtime/createTimescale.js';
 
 // Re-export the core metadata model + validation so consumers need one import.
 export {
