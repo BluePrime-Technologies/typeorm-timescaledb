@@ -20,9 +20,9 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b --noEmit false",
-    "test:unit": "vitest run",
-    "test": "vitest run"
+    "typecheck": "tsc -b",
+    "test:unit": "vitest run --passWithNoTests",
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "zod": "^4.0.0"

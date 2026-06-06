@@ -9,6 +9,14 @@ coverage/
 .env.*
 !.env.example
 
-# Local Claude Code working files — never publish in this public repo
+# Local agent/tooling working files — never publish in this public repo
 .claude/
 CLAUDE.md
+.omc/
+.critique/
+.codex/
+.qodo/
+.secrets/
+.playwright-mcp/
+.idea/
+.vscode/
