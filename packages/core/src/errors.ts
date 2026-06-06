@@ -11,6 +11,10 @@ export const TimescaleErrorCode = {
   SCHEMA_DRIFT: 'TSDB_SCHEMA_DRIFT',
   /** A hypertable primary key does not include the partition (time) column. */
   INVALID_HYPERTABLE_PK: 'TSDB_INVALID_HYPERTABLE_PK',
+  /** A `@Hypertable` entity declares no time/partition column. */
+  NO_TIME_COLUMN: 'TSDB_NO_TIME_COLUMN',
+  /** `@Hypertable` options failed schema validation. */
+  INVALID_HYPERTABLE_CONFIG: 'TSDB_INVALID_HYPERTABLE_CONFIG',
 } as const;
 
 export type TimescaleErrorCode = (typeof TimescaleErrorCode)[keyof typeof TimescaleErrorCode];
