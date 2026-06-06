@@ -3,6 +3,9 @@ import type {
   TimescaleEntityMetadata,
 } from '@blueprime-technologies/timescaledb-core';
 
+/** An entity class constructor — the public key type for reading metadata. */
+type Ctor = abstract new (...args: never[]) => unknown;
+
 /**
  * Module-private metadata store, keyed by the entity **constructor**.
  *
@@ -13,6 +16,8 @@ import type {
  * with the class.
  */
 interface MutableEntityMeta {
+  /** True only once `@Hypertable` has run on this constructor (a stray `@TimeColumn` is not enough). */
+  isHypertable: boolean;
   options: HypertableOptions;
   timeColumn?: string;
   primaryKeyColumns: string[];
@@ -23,14 +28,16 @@ const store = new WeakMap<object, MutableEntityMeta>();
 function ensure(ctor: object): MutableEntityMeta {
   let meta = store.get(ctor);
   if (!meta) {
-    meta = { options: {}, primaryKeyColumns: [] };
+    meta = { isHypertable: false, options: {}, primaryKeyColumns: [] };
     store.set(ctor, meta);
   }
   return meta;
 }
 
 export function setHypertableOptions(ctor: object, options: HypertableOptions): void {
-  ensure(ctor).options = options;
+  const meta = ensure(ctor);
+  meta.isHypertable = true;
+  meta.options = options;
 }
 
 export function setTimeColumn(ctor: object, column: string): void {
@@ -44,11 +51,41 @@ export function addPrimaryKeyColumn(ctor: object, column: string): void {
   }
 }
 
-/** Read captured metadata for an entity constructor (undefined if not a hypertable). */
-export function getTimescaleMetadata(ctor: object): TimescaleEntityMetadata | undefined {
-  return store.get(ctor);
+/**
+ * Resolve metadata for a constructor, merging `@TimeColumn`/`@HypertablePrimaryKey`
+ * inherited from base classes (TypeORM inherits columns from base entities). Returns
+ * a fresh immutable snapshot, or `undefined` unless some class in the chain is `@Hypertable`.
+ */
+function resolve(ctor: Ctor): TimescaleEntityMetadata | undefined {
+  const chain: MutableEntityMeta[] = [];
+  let c: unknown = ctor;
+  while (typeof c === 'function') {
+    const own = store.get(c);
+    if (own) chain.unshift(own); // base-first
+    c = Object.getPrototypeOf(c);
+  }
+  if (!chain.some((m) => m.isHypertable)) return undefined;
+
+  let options: HypertableOptions = {};
+  let timeColumn: string | undefined;
+  const primaryKeyColumns: string[] = [];
+  for (const m of chain) {
+    options = { ...options, ...m.options };
+    if (m.timeColumn !== undefined) timeColumn = m.timeColumn; // derived overrides base
+    for (const col of m.primaryKeyColumns) {
+      if (!primaryKeyColumns.includes(col)) primaryKeyColumns.push(col);
+    }
+  }
+  return timeColumn === undefined
+    ? { options, primaryKeyColumns }
+    : { options, timeColumn, primaryKeyColumns };
 }
 
-export function hasTimescaleMetadata(ctor: object): boolean {
-  return store.has(ctor);
+/** Read merged metadata for an entity constructor (undefined if it is not a hypertable). */
+export function getTimescaleMetadata(ctor: Ctor): TimescaleEntityMetadata | undefined {
+  return resolve(ctor);
+}
+
+export function hasTimescaleMetadata(ctor: Ctor): boolean {
+  return resolve(ctor) !== undefined;
 }
