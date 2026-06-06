@@ -1,11 +1,23 @@
 /**
  * typeorm-timescaledb — a multi-DataSource-safe TimescaleDB integration for TypeORM.
  *
- * Scaffold only. Feature implementation (decorators, TimescaleRepository,
- * migration codegen, NestJS module) lands in subsequent milestones — see
- * `.plans/2026-06-06-typeorm-timescaledb-oss-package.md`.
+ * Hypertable metadata is declared with decorators that write only to a
+ * module-private WeakMap — never a prototype, never TypeORM's global metadata.
  */
-export { TimescaleError, TimescaleErrorCode } from '@blueprime-technologies/timescaledb-core';
+export { Hypertable, TimeColumn, HypertablePrimaryKey } from './decorators/index.js';
+export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.js';
 
-/** Package version marker; replaced by real exports as features land. */
-export const PACKAGE_NAME = 'typeorm-timescaledb';
+// Re-export the core metadata model + validation so consumers need one import.
+export {
+  validateHypertableMetadata,
+  parseHypertableOptions,
+  TimescaleError,
+  TimescaleErrorCode,
+} from '@blueprime-technologies/timescaledb-core';
+export type {
+  HypertableOptions,
+  ColumnstoreOptions,
+  RetentionOptions,
+  SpacePartitionOptions,
+  TimescaleEntityMetadata,
+} from '@blueprime-technologies/timescaledb-core';
