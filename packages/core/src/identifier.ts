@@ -68,6 +68,12 @@ export function assertSafeIdentifier(identifier: string, role = 'identifier'): s
  * Returns a safely double-quoted identifier, equivalent to PostgreSQL's
  * `quote_ident()` / `format('%I', ...)`. Embedded double-quotes are doubled.
  * Rejects control characters and over-length identifiers.
+ *
+ * ⚠️ This only QUOTES — it does NOT enforce the conservative allow-list. Quoting
+ * neutralizes injection, but a string like `id, (SELECT …)` becomes a single
+ * (bizarre) quoted identifier rather than being rejected. For any **untrusted /
+ * user-supplied** identifier use {@link safeIdent}; reserve `quoteIdent` for
+ * identifiers you already trust but that need quoting (mixed case, reserved words).
  */
 export function quoteIdent(identifier: string, role = 'identifier'): string {
   assertString(identifier, role);
@@ -84,4 +90,19 @@ export function quoteQualified(qualified: string, role = 'identifier'): string {
     .split('.')
     .map((part) => quoteIdent(part, role))
     .join('.');
+}
+
+/**
+ * The safe-by-default primitive for an **untrusted / user-supplied** dynamic
+ * identifier (table, column, or scope name): validate against the conservative
+ * allow-list ({@link assertSafeIdentifier}) AND quote the result.
+ *
+ * Dynamic identifiers cannot be bound SQL parameters, so every user-supplied
+ * identifier that reaches SQL must pass through here — never `quoteIdent` alone
+ * (which quotes but does not allow-list) and never string concatenation.
+ *
+ * @throws {TimescaleError} `TSDB_UNSAFE_IDENTIFIER` if the identifier is not allow-listed.
+ */
+export function safeIdent(identifier: string, role = 'identifier'): string {
+  return quoteIdent(assertSafeIdentifier(identifier, role), role);
 }
