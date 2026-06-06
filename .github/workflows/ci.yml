@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-unit:
+    name: lint + typecheck + unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test:unit
+
+  integration:
+    name: integration (node ${{ matrix.node }}, typeorm ${{ matrix.typeorm }}, tsdb ${{ matrix.timescaledb }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+        typeorm: ['0.3.20', '1.0.0']
+        timescaledb: ['2.17.2-pg16', 'latest-pg17']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm add -D -w typeorm@${{ matrix.typeorm }}
+      - run: pnpm build
+      - run: pnpm test
+        env:
+          # Testcontainers boots TimescaleDB itself; image selected per matrix cell.
+          TIMESCALE_IMAGE: timescale/timescaledb:${{ matrix.timescaledb }}

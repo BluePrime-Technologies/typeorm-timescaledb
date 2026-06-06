@@ -1,0 +1,59 @@
+{
+  "name": "typeorm-timescaledb",
+  "version": "0.0.0",
+  "description": "A complete, multi-DataSource-safe TimescaleDB integration for TypeORM.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "test:unit": "vitest run",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@blueprime-technologies/timescaledb-core": "workspace:*"
+  },
+  "peerDependencies": {
+    "reflect-metadata": "^0.2.0",
+    "typeorm": "^0.3.20 || ^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "reflect-metadata": {
+      "optional": false
+    }
+  },
+  "engines": {
+    "node": ">=20.19 || >=22.12"
+  },
+  "keywords": [
+    "typeorm",
+    "timescaledb",
+    "timescale",
+    "hypertable",
+    "time-series",
+    "postgres",
+    "postgresql",
+    "orm",
+    "nestjs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BluePrime-Technologies/typeorm-timescaledb.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

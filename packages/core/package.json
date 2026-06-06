@@ -1,0 +1,33 @@
+{
+  "name": "@blueprime-technologies/timescaledb-core",
+  "version": "0.0.0",
+  "description": "ORM-agnostic core for TimescaleDB: SQL/DDL generation, metadata model, identifier safety.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "test:unit": "vitest run",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

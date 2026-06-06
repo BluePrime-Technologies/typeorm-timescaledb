@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a bug in typeorm-timescaledb
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Smallest code/steps that reproduce the issue. Link a repo if possible.
+    validations:
+      required: true
+  - type: input
+    id: pkg-version
+    attributes:
+      label: typeorm-timescaledb version
+    validations:
+      required: true
+  - type: input
+    id: typeorm-version
+    attributes:
+      label: TypeORM version
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+    validations:
+      required: true
+  - type: input
+    id: tsdb-version
+    attributes:
+      label: TimescaleDB version
+    validations:
+      required: true

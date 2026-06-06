@@ -1,0 +1,29 @@
+{
+  "name": "typeorm-timescaledb-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo for typeorm-timescaledb — a multi-DataSource-safe TimescaleDB integration for TypeORM.",
+  "type": "module",
+  "packageManager": "pnpm@10.12.1",
+  "engines": {
+    "node": ">=20.19 || >=22.12"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "test:unit": "turbo run test:unit",
+    "typecheck": "turbo run typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "eslint": "^9.28.0",
+    "prettier": "^3.5.3",
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.0",
+    "vitest": "^4.1.0"
+  }
+}
