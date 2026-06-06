@@ -14,7 +14,7 @@ The existing TypeORM ↔ TimescaleDB packages (`@timescaledb/typeorm` and its fo
 
 ## Status
 
-🚧 Early development. Built first for [BluePrime](https://blueprime.app)'s own use; published openly under MIT. APIs may change before `1.0`.
+🚧 Early development. Built first for [BluePrime](https://blueprime.app)'s own use; published openly under Apache-2.0. APIs may change before `1.0`.
 
 ## Design principles
 
@@ -33,4 +33,4 @@ The existing TypeORM ↔ TimescaleDB packages (`@timescaledb/typeorm` and its fo
 
 ## License
 
-MIT © BluePrime Technologies. Maintained by Miracle Adebunmi ([@madebunmi-prime](https://github.com/madebunmi-prime)). See [MAINTAINERS.md](./MAINTAINERS.md).
+Apache-2.0 © BluePrime Technologies. Maintained by Miracle Adebunmi ([@madebunmi-prime](https://github.com/madebunmi-prime)). See [MAINTAINERS.md](./MAINTAINERS.md).
