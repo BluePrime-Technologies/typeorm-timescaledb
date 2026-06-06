@@ -26,6 +26,18 @@ pnpm test
 4. **Conventional Commits.** Commit messages follow
    [Conventional Commits](https://www.conventionalcommits.org/) — they drive releases.
 
+## License & DCO sign-off
+
+This project is licensed under **Apache-2.0** (see `LICENSE` and `NOTICE`). By contributing, you
+agree your contributions are licensed under Apache-2.0 (its §3 grants a patent license).
+
+Sign off every commit with the [Developer Certificate of Origin](https://developercertificate.org/) —
+add a `Signed-off-by` trailer (`git commit -s`):
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
 ## Pull requests
 
 - Open an issue first; reference it in the PR.

@@ -2,7 +2,7 @@
   "name": "typeorm-timescaledb",
   "version": "0.0.0",
   "description": "A complete, multi-DataSource-safe TimescaleDB integration for TypeORM.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "exports": {
     ".": {
@@ -14,7 +14,9 @@
   },
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "NOTICE"
   ],
   "sideEffects": false,
   "scripts": {

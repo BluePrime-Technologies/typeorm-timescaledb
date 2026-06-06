@@ -2,7 +2,7 @@
   "name": "@blueprime-technologies/cross-store",
   "version": "0.0.0",
   "description": "Validated cross-store (@Resolve) references between TimescaleDB and another database.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "private": true,
   "exports": {
@@ -15,7 +15,9 @@
   },
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "NOTICE"
   ],
   "sideEffects": false,
   "scripts": {
