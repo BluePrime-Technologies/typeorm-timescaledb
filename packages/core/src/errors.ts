@@ -15,6 +15,8 @@ export const TimescaleErrorCode = {
   NO_TIME_COLUMN: 'TSDB_NO_TIME_COLUMN',
   /** `@Hypertable` options failed schema validation. */
   INVALID_HYPERTABLE_CONFIG: 'TSDB_INVALID_HYPERTABLE_CONFIG',
+  /** A repository/operation was requested for an entity that is not a `@Hypertable`. */
+  NOT_A_HYPERTABLE: 'TSDB_NOT_A_HYPERTABLE',
 } as const;
 
 export type TimescaleErrorCode = (typeof TimescaleErrorCode)[keyof typeof TimescaleErrorCode];
