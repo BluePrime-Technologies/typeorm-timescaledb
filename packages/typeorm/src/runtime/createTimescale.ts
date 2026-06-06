@@ -1,0 +1,61 @@
+import type { DataSource, EntityTarget, ObjectLiteral, Repository } from 'typeorm';
+import {
+  TimescaleError,
+  TimescaleErrorCode,
+  validateHypertableMetadata,
+} from '@blueprime-technologies/timescaledb-core';
+import type { TimescaleEntityMetadata } from '@blueprime-technologies/timescaledb-core';
+import { getTimescaleMetadata } from '../decorators/index.js';
+
+/** A TypeORM repository augmented (per instance) with its validated hypertable metadata. */
+export interface TimescaleRepository<T extends ObjectLiteral> extends Repository<T> {
+  /** Validated hypertable metadata for this entity. */
+  readonly timescaleMetadata: TimescaleEntityMetadata;
+}
+
+/** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
+export interface TimescaleContext {
+  readonly dataSource: DataSource;
+  /** Get a hypertable repository. Throws if the entity is not a `@Hypertable`. */
+  getRepository<T extends ObjectLiteral>(entity: EntityTarget<T>): TimescaleRepository<T>;
+}
+
+/**
+ * Create a TimescaleDB context scoped to a single `DataSource`.
+ *
+ * This is the structural fix for the predecessor's fatal bug: there is NO global
+ * state and NO prototype mutation. Repositories are augmented **per instance**
+ * (`Object.assign` on the returned repository), so importing or using this package
+ * can never alter `DataSource.prototype` / `Repository.prototype`, and two
+ * DataSources in one process stay fully isolated.
+ */
+export function createTimescale(dataSource: DataSource): TimescaleContext {
+  return {
+    dataSource,
+    getRepository<T extends ObjectLiteral>(entity: EntityTarget<T>): TimescaleRepository<T> {
+      if (typeof entity !== 'function') {
+        throw new TimescaleError(
+          TimescaleErrorCode.NOT_A_HYPERTABLE,
+          'getRepository requires the entity CLASS (so its @Hypertable metadata can be resolved), not a name or schema',
+          { entity: String(entity) },
+        );
+      }
+      const ctor = entity as (abstract new (...args: never[]) => unknown) & {
+        readonly name: string;
+      };
+      const meta = getTimescaleMetadata(ctor);
+      if (!meta) {
+        throw new TimescaleError(
+          TimescaleErrorCode.NOT_A_HYPERTABLE,
+          `${ctor.name} is not a @Hypertable entity — decorate it with @Hypertable() to use a Timescale repository`,
+          { entity: ctor.name },
+        );
+      }
+      validateHypertableMetadata(meta, ctor.name);
+
+      const repo = dataSource.getRepository<T>(entity);
+      // Per-instance augmentation only — NEVER Repository.prototype.
+      return Object.assign(repo, { timescaleMetadata: meta }) as TimescaleRepository<T>;
+    },
+  };
+}
