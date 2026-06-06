@@ -4,6 +4,9 @@
  * Hypertable metadata is declared with decorators that write only to a
  * module-private WeakMap — never a prototype, never TypeORM's global metadata.
  */
+// Unified schema DSL — TypeORM's modeling surface, re-exported so users import only from here.
+export * from './orm.js';
+
 export { Hypertable, TimeColumn, HypertablePrimaryKey } from './decorators/index.js';
 export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.js';
 export { createTimescale } from './runtime/createTimescale.js';
