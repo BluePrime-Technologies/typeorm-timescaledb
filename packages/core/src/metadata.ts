@@ -8,6 +8,18 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * SQL generation and the boot-time validator consume it.
  */
 
+/**
+ * A PostgreSQL interval of the form `<n> <unit>`, e.g. `'7 days'`. Validated as an
+ * interval (not just a string) because these values are emitted into DDL; callers
+ * must still bind/parameterize, never concatenate raw user input.
+ */
+const Interval = z
+  .string()
+  .regex(
+    /^\d+\s+(microsecond|millisecond|second|minute|hour|day|week|month|year)s?$/i,
+    'must be a PostgreSQL interval like "7 days" (<n> <unit>)',
+  );
+
 const OrderBySchema = z.strictObject({
   column: z.string(),
   direction: z.enum(['ASC', 'DESC']).default('ASC'),
@@ -18,12 +30,12 @@ export const ColumnstoreOptionsSchema = z.strictObject({
   segmentBy: z.array(z.string()).optional(),
   orderBy: z.array(OrderBySchema).optional(),
   /** Auto-convert chunks to columnstore after this interval, e.g. `'7 days'`. */
-  compressAfter: z.string().optional(),
+  compressAfter: Interval.optional(),
 });
 
 export const RetentionOptionsSchema = z.strictObject({
   /** Drop chunks older than this interval, e.g. `'90 days'`. */
-  dropAfter: z.string(),
+  dropAfter: Interval,
 });
 
 export const SpacePartitionOptionsSchema = z.strictObject({
@@ -35,7 +47,7 @@ export const HypertableOptionsSchema = z.strictObject({
   /** Time/partition column. Optional here when marked with `@TimeColumn` instead. */
   timeColumn: z.string().optional(),
   /** Chunk interval, e.g. `'7 days'`. */
-  chunkInterval: z.string().optional(),
+  chunkInterval: Interval.optional(),
   columnstore: ColumnstoreOptionsSchema.optional(),
   retention: RetentionOptionsSchema.optional(),
   spacePartition: SpacePartitionOptionsSchema.optional(),
@@ -96,11 +108,23 @@ export function validateHypertableMetadata(
   }
   for (const c of meta.primaryKeyColumns) assertSafeIdentifier(c, 'primaryKey');
 
-  if (meta.primaryKeyColumns.length > 0 && !meta.primaryKeyColumns.includes(timeColumn)) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_HYPERTABLE_PK,
-      `hypertable ${entityName}: primary key [${meta.primaryKeyColumns.join(', ')}] must include the time column "${timeColumn}" (TimescaleDB requires every unique/primary key to contain all partitioning columns)`,
-      { entityName, timeColumn, primaryKeyColumns: [...meta.primaryKeyColumns] },
-    );
+  if (meta.primaryKeyColumns.length > 0) {
+    // TimescaleDB requires every unique/primary key to contain ALL partitioning
+    // columns — the time column and, if present, the space-partition column.
+    const partitioningColumns = [timeColumn];
+    if (meta.options.spacePartition) partitioningColumns.push(meta.options.spacePartition.column);
+    const missing = partitioningColumns.filter((c) => !meta.primaryKeyColumns.includes(c));
+    if (missing.length > 0) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_HYPERTABLE_PK,
+        `hypertable ${entityName}: primary key [${meta.primaryKeyColumns.join(', ')}] must include all partitioning columns; missing: ${missing.join(', ')}`,
+        {
+          entityName,
+          partitioningColumns,
+          missing,
+          primaryKeyColumns: [...meta.primaryKeyColumns],
+        },
+      );
+    }
   }
 }
