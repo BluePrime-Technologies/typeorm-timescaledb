@@ -54,7 +54,7 @@ describe('createTimescale', () => {
       (ctx.getRepository as (e: unknown) => unknown)('trades');
       throw new Error('expected getRepository to throw');
     } catch (e) {
-      expect((e as { code?: string }).code).toBe(TimescaleErrorCode.NOT_A_HYPERTABLE);
+      expect((e as { code?: string }).code).toBe(TimescaleErrorCode.INVALID_ARGUMENT);
     }
   });
 
@@ -76,5 +76,8 @@ describe('createTimescale', () => {
     expect(Object.prototype.hasOwnProperty.call(Repository.prototype, 'timescaleMetadata')).toBe(
       false,
     ); // prototype untouched
+    // call-time isolation: exercising getRepository did not patch DataSource.prototype either
+    expect(DataSource.prototype.initialize).toBe(PROTO_BEFORE.initialize);
+    expect(DataSource.prototype.synchronize).toBe(PROTO_BEFORE.synchronize);
   });
 });

@@ -17,6 +17,8 @@ export const TimescaleErrorCode = {
   INVALID_HYPERTABLE_CONFIG: 'TSDB_INVALID_HYPERTABLE_CONFIG',
   /** A repository/operation was requested for an entity that is not a `@Hypertable`. */
   NOT_A_HYPERTABLE: 'TSDB_NOT_A_HYPERTABLE',
+  /** An argument was the wrong type (e.g. an entity name/schema where the class is required). */
+  INVALID_ARGUMENT: 'TSDB_INVALID_ARGUMENT',
 } as const;
 
 export type TimescaleErrorCode = (typeof TimescaleErrorCode)[keyof typeof TimescaleErrorCode];

@@ -35,7 +35,7 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
     getRepository<T extends ObjectLiteral>(entity: EntityTarget<T>): TimescaleRepository<T> {
       if (typeof entity !== 'function') {
         throw new TimescaleError(
-          TimescaleErrorCode.NOT_A_HYPERTABLE,
+          TimescaleErrorCode.INVALID_ARGUMENT,
           'getRepository requires the entity CLASS (so its @Hypertable metadata can be resolved), not a name or schema',
           { entity: String(entity) },
         );

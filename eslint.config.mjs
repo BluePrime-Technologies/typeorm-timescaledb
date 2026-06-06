@@ -8,10 +8,12 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     rules: {
-      // The single most important architectural guard for this package: nothing may
-      // MUTATE a shared TypeORM prototype (the predecessor's fatal bug). Reading a
-      // prototype (e.g. to assert it is unchanged in a test) is allowed; only writes
-      // are banned. Use per-instance composition instead.
+      // Fast-feedback guard against the predecessor's fatal bug: mutating a shared
+      // TypeORM prototype. It flags assignments + Object.assign/defineProperty onto
+      // <Class>.prototype (reads are allowed). NOTE: this is a best-effort lint hint,
+      // not the guarantee — AST-shape selectors can be bypassed (aliasing, computed
+      // access, Reflect). The AUTHORITATIVE gate is the runtime no-global-mutation /
+      // two-DataSource isolation test, which catches any prototype patch regardless of syntax.
       'no-restricted-syntax': [
         'error',
         {
