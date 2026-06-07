@@ -43,6 +43,14 @@ describe('createHypertableSQL', () => {
     expect(s.inspect).toContain(`hypertable_name = 'events'`);
   });
 
+  it('preserves the case of mixed-case identifiers (why quoting matters)', () => {
+    const s = createHypertableSQL({ table: 'Analytics.Events', timeColumn: 'EventTime' });
+    // without quoting, Postgres would fold these to lowercase and miss the table
+    expect(s.up).toContain(`create_hypertable('"Analytics"."Events"', by_range('EventTime')`);
+    expect(s.inspect).toContain(`hypertable_schema = 'Analytics'`);
+    expect(s.inspect).toContain(`hypertable_name = 'Events'`);
+  });
+
   it('adds a hash dimension for space partitioning', () => {
     const s = createHypertableSQL({
       table: 'metrics',

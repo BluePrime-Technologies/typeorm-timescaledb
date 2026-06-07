@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertInterval,
   INTERVAL_PATTERN,
+  parseHypertableOptions,
   TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
@@ -58,5 +59,29 @@ describe('assertInterval', () => {
   it('exports the shared pattern used by the metadata schema', () => {
     expect(INTERVAL_PATTERN.test('7 days')).toBe(true);
     expect(INTERVAL_PATTERN.test('garbage')).toBe(false);
+  });
+
+  it('agrees with the Zod metadata schema (single source of truth)', () => {
+    // The decorator path (parseHypertableOptions -> Zod) and the builder path
+    // (assertInterval) must accept/reject identically — they share INTERVAL_PATTERN.
+    for (const v of ['7 days', '1 hour', 'soon', '7', '1.5 days', '1 day; DROP']) {
+      const intervalOk = (() => {
+        try {
+          assertInterval(v);
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      const zodOk = (() => {
+        try {
+          parseHypertableOptions({ chunkInterval: v });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      expect(zodOk).toBe(intervalOk);
+    }
   });
 });

@@ -27,7 +27,14 @@ export interface MigrationStatement {
    * left in place (reverting them would drop/decompress data) with a `RAISE NOTICE`.
    */
   readonly down: string;
-  /** Read-only SQL that reports the current applied state (for tests / drift checks). */
+  /**
+   * Read-only SQL that reports the current applied state (for tests / drift checks).
+   *
+   * @experimental The exact catalog views/columns (notably the policy `proc_name`
+   * in `timescaledb_information.jobs`) are confirmed against a live TimescaleDB
+   * catalog in T4d's integration tests; treat the `inspect` shape as unstable
+   * until then.
+   */
   readonly inspect: string;
 }
 

@@ -14,6 +14,10 @@ export const INTERVAL_PATTERN =
 /**
  * Validate a PostgreSQL interval string (`<n> <unit>`), returning it unchanged.
  *
+ * This checks shape only — numeric magnitude is delegated to PostgreSQL, which is
+ * the final authority (an out-of-range value like `99999999999999999999 days`
+ * is well-formed here and rejected by PG at execution time).
+ *
  * @throws {TimescaleError} `TSDB_INVALID_ARGUMENT` if the value is not a conservative interval.
  */
 export function assertInterval(value: string, role = 'interval'): string {
