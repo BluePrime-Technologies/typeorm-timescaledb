@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import { quoteLiteral, TimescaleError, TimescaleErrorCode } from '../src/index.js';
 
-/** Reverse of quoteLiteral for round-trip testing: strip outer quotes, undouble. */
+/** Reverse of quoteLiteral for round-trip testing: handles both '…' and E'…' forms. */
 function unquote(q: string): string {
+  if (q.startsWith("E'")) {
+    return q.slice(2, -1).replace(/\\\\/g, '\\').replace(/''/g, "'");
+  }
   return q.slice(1, -1).replace(/''/g, "'");
 }
 
@@ -24,6 +27,12 @@ describe('quoteLiteral', () => {
   it('doubles embedded single quotes (neutralizes break-out)', () => {
     expect(quoteLiteral("a'b")).toBe("'a''b'");
     expect(quoteLiteral("'; DROP TABLE x; --")).toBe("'''; DROP TABLE x; --'");
+  });
+
+  it('uses the E-string form and doubles backslashes (safe under standard_conforming_strings=off)', () => {
+    // a backslash before a doubled quote could otherwise terminate the literal early
+    expect(quoteLiteral("a\\'b")).toBe("E'a\\\\''b'");
+    expect(quoteLiteral('c:\\path')).toBe("E'c:\\\\path'");
   });
 
   it('rejects control characters and null bytes', () => {
@@ -53,12 +62,13 @@ describe('quoteLiteral', () => {
         fc.string().filter((s) => !hasControl(s)),
         (s) => {
           const q = quoteLiteral(s);
-          // structural: starts/ends with a single quote
-          expect(q.startsWith("'")).toBe(true);
+          // structural: '…' normally, or E'…' when a backslash is present
+          const isEString = q.startsWith("E'");
+          expect(isEString || q.startsWith("'")).toBe(true);
           expect(q.endsWith("'")).toBe(true);
           // the interior has no lone single quote (every ' is part of a '' pair)
-          const interior = q.slice(1, -1);
-          expect(interior.replace(/''/g, '')).not.toContain("'");
+          const interior = q.slice(isEString ? 2 : 1, -1);
+          expect(interior.replace(/''/g, '').replace(/\\\\/g, '')).not.toContain("'");
           // round-trip is lossless
           expect(unquote(q)).toBe(s);
         },

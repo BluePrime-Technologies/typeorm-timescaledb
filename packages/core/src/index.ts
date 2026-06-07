@@ -1,6 +1,6 @@
 export { assertSafeIdentifier, quoteIdent, quoteQualified, safeIdent } from './identifier.js';
 export { quoteLiteral } from './literal.js';
-export { assertInterval, INTERVAL_PATTERN } from './interval.js';
+export { assertInterval, assertPositiveInterval, INTERVAL_PATTERN } from './interval.js';
 export { TimescaleError, TimescaleErrorCode } from './errors.js';
 export {
   createHypertableSQL,

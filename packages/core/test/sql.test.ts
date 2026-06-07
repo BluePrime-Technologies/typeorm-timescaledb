@@ -109,6 +109,30 @@ describe('createHypertableSQL', () => {
       }),
     ).toThrow(TimescaleError);
   });
+
+  it('rejects a zero chunk interval (TimescaleDB requires a positive range interval)', () => {
+    for (const bad of ['0 days', '0 hours', '00 seconds']) {
+      try {
+        createHypertableSQL({ table: 'metrics', timeColumn: 'time', chunkInterval: bad });
+        throw new Error(`expected throw for ${bad}`);
+      } catch (e) {
+        expect((e as InstanceType<typeof TimescaleError>).code).toBe(
+          TimescaleErrorCode.INVALID_ARGUMENT,
+        );
+      }
+    }
+  });
+
+  it('rejects spacePartition combined with migrateData (add_dimension needs an empty table)', () => {
+    expect(() =>
+      createHypertableSQL({
+        table: 'metrics',
+        timeColumn: 'time',
+        migrateData: true,
+        spacePartition: { column: 'device_id', partitions: 4 },
+      }),
+    ).toThrow(TimescaleError);
+  });
 });
 
 describe('addColumnstorePolicySQL', () => {
@@ -120,7 +144,7 @@ describe('addColumnstorePolicySQL', () => {
       after: '7 days',
     });
     expect(s.up).toContain(
-      `ALTER TABLE "public"."metrics" SET (timescaledb.enable_columnstore = true, timescaledb.segmentby = 'device_id', timescaledb.orderby = 'time DESC');`,
+      `ALTER TABLE "public"."metrics" SET (timescaledb.enable_columnstore = true, timescaledb.segmentby = '"device_id"', timescaledb.orderby = '"time" DESC');`,
     );
     expect(s.up).toContain(
       `CALL add_columnstore_policy('"public"."metrics"', after => INTERVAL '7 days', if_not_exists => TRUE);`,
@@ -134,8 +158,19 @@ describe('addColumnstorePolicySQL', () => {
       orderBy: [{ column: 'time' }, { column: 'seq', direction: 'DESC' }],
       after: '1 day',
     });
-    expect(s.up).toContain(`timescaledb.segmentby = 'a, b'`);
-    expect(s.up).toContain(`timescaledb.orderby = 'time ASC, seq DESC'`);
+    expect(s.up).toContain(`timescaledb.segmentby = '"a", "b"'`);
+    expect(s.up).toContain(`timescaledb.orderby = '"time" ASC, "seq" DESC'`);
+  });
+
+  it('quotes mixed-case columns inside the reloptions (preserves case)', () => {
+    const s = addColumnstorePolicySQL({
+      table: 'metrics',
+      segmentBy: ['AssetId'],
+      orderBy: [{ column: 'EventTime', direction: 'DESC' }],
+      after: '1 day',
+    });
+    expect(s.up).toContain(`timescaledb.segmentby = '"AssetId"'`);
+    expect(s.up).toContain(`timescaledb.orderby = '"EventTime" DESC'`);
   });
 
   it('enables the columnstore without a policy when after is omitted', () => {

@@ -21,8 +21,11 @@ function hasControlChar(value: string): boolean {
  * For values in an **identifier** position (`ALTER TABLE "table"`) use
  * {@link quoteIdent}/{@link quoteQualified} instead.
  *
- * Backslashes are NOT specially escaped: with the default `standard_conforming_strings = on`
- * (PostgreSQL ≥ 9.1) a backslash is an ordinary character in a regular string literal.
+ * Safe regardless of the server's `standard_conforming_strings` setting: if the
+ * value contains a backslash, the explicit escape-string form `E'…'` is emitted
+ * (with backslashes doubled), matching libpq's `PQescapeLiteral`. This prevents a
+ * `\` from combining with a doubled quote to terminate the literal early when
+ * `standard_conforming_strings = off`.
  *
  * @throws {TimescaleError} `TSDB_INVALID_ARGUMENT` if the value contains control characters.
  */
@@ -39,5 +42,9 @@ export function quoteLiteral(value: string, role = 'value'): string {
       { role },
     );
   }
-  return `'${value.replace(/'/g, "''")}'`;
+  const quotesEscaped = value.replace(/'/g, "''");
+  if (value.includes('\\')) {
+    return `E'${quotesEscaped.replace(/\\/g, '\\\\')}'`;
+  }
+  return `'${quotesEscaped}'`;
 }

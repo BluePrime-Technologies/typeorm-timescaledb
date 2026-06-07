@@ -1,6 +1,6 @@
 import { assertSafeIdentifier, quoteIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
-import { assertInterval } from '../interval.js';
+import { assertInterval, assertPositiveInterval } from '../interval.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /**
@@ -110,10 +110,20 @@ export function createHypertableSQL(input: CreateHypertableInput): MigrationStat
   const ifNotExists = input.ifNotExists ?? true;
   const migrateData = input.migrateData ?? false;
 
+  if (input.spacePartition && migrateData) {
+    // add_dimension requires an empty hypertable; with migrateData the table is
+    // populated by create_hypertable first, so the add_dimension below would fail.
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'spacePartition cannot be combined with migrateData: add_dimension requires an empty hypertable — add the space dimension before loading data (or in a separate migration on an empty table)',
+      { table: input.table },
+    );
+  }
+
   const range =
     input.chunkInterval === undefined
       ? `by_range(${quoteLiteral(timeColumn)})`
-      : `by_range(${quoteLiteral(timeColumn)}, INTERVAL ${quoteLiteral(assertInterval(input.chunkInterval, 'chunkInterval'))})`;
+      : `by_range(${quoteLiteral(timeColumn)}, INTERVAL ${quoteLiteral(assertPositiveInterval(input.chunkInterval, 'chunkInterval'))})`;
 
   let up =
     `SELECT create_hypertable(${t.regclass}, ${range}` +
@@ -171,14 +181,21 @@ export interface ColumnstorePolicyInput {
 export function addColumnstorePolicySQL(input: ColumnstorePolicyInput): MigrationStatement {
   const t = parseTable(input.table);
 
+  // TimescaleDB parses the segmentby/orderby reloption strings as identifier lists
+  // (case-folding unquoted names), so each column is double-quoted to preserve the
+  // exact, possibly mixed-case, name — matching the columns TypeORM created.
   const options: string[] = ['timescaledb.enable_columnstore = true'];
   if (input.segmentBy && input.segmentBy.length > 0) {
-    const cols = input.segmentBy.map((c) => assertSafeIdentifier(c, 'segmentBy')).join(', ');
+    const cols = input.segmentBy
+      .map((c) => quoteIdent(assertSafeIdentifier(c, 'segmentBy')))
+      .join(', ');
     options.push(`timescaledb.segmentby = ${quoteLiteral(cols)}`);
   }
   if (input.orderBy && input.orderBy.length > 0) {
     const cols = input.orderBy
-      .map((o) => `${assertSafeIdentifier(o.column, 'orderBy')} ${o.direction ?? 'ASC'}`)
+      .map(
+        (o) => `${quoteIdent(assertSafeIdentifier(o.column, 'orderBy'))} ${o.direction ?? 'ASC'}`,
+      )
       .join(', ');
     options.push(`timescaledb.orderby = ${quoteLiteral(cols)}`);
   }

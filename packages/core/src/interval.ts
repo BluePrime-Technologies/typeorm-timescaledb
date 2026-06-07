@@ -30,3 +30,24 @@ export function assertInterval(value: string, role = 'interval'): string {
   }
   return value;
 }
+
+/**
+ * Validate a PostgreSQL interval that must be strictly greater than zero — e.g. a
+ * chunk/range partition interval (TimescaleDB rejects a zero-width range interval).
+ * Zero is meaningful for some policies (`after`/`drop_after`), so this is separate
+ * from {@link assertInterval}.
+ *
+ * @throws {TimescaleError} `TSDB_INVALID_ARGUMENT` if the value is not a positive interval.
+ */
+export function assertPositiveInterval(value: string, role = 'interval'): string {
+  assertInterval(value, role);
+  // INTERVAL_PATTERN guarantees a leading integer, so parseInt reads the magnitude.
+  if (parseInt(value, 10) === 0) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `${role} must be greater than zero, got: ${value}`,
+      { role, value },
+    );
+  }
+  return value;
+}
