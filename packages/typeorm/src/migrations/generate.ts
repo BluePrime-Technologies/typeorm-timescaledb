@@ -46,8 +46,10 @@ const VALID_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * a reviewable artifact you commit; nothing is applied here and `synchronize` is
  * never used.
  *
- * The DataSource must have its metadata built (it is read via `entityMetadatas`),
- * but it does not need an open connection.
+ * The DataSource must be **initialized** (`await dataSource.initialize()`) before
+ * calling this — entity metadata is read via `entityMetadatas`, which is empty until
+ * then. Generating from an uninitialized DataSource throws rather than silently
+ * producing a no-op migration.
  *
  * Schema: an entity without an explicit schema (`@Entity({ schema })` or
  * `DataSource` `schema` option) is pinned to `public` so the migration is
@@ -79,6 +81,15 @@ export function generateTimescaleMigration(
       TimescaleErrorCode.INVALID_ARGUMENT,
       `timestamp must be a 13-digit millisecond integer (TypeORM parses the last 13 chars of the migration name as its ordering key), got: ${String(timestamp)}`,
       { timestamp },
+    );
+  }
+
+  // entityMetadatas is empty until initialize() builds it; fail loudly rather than
+  // silently emitting an empty migration when configured hypertables exist.
+  if (!dataSource.isInitialized) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'DataSource must be initialized (await dataSource.initialize()) before generating a migration — entityMetadatas is empty otherwise',
     );
   }
 

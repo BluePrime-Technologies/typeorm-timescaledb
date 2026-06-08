@@ -53,9 +53,10 @@ interface StubEntity {
   columns?: Array<{ propertyName: string; databaseName: string }>;
 }
 
-/** Build a stub DataSource exposing only entityMetadatas (no DB connection needed). */
+/** Build a stub of an initialized DataSource exposing entityMetadatas. */
 function stubDataSource(entities: StubEntity[]): DataSource {
   return {
+    isInitialized: true,
     entityMetadatas: entities.map((e) => ({ columns: [], ...e })),
   } as unknown as DataSource;
 }
@@ -145,6 +146,16 @@ describe('generateTimescaleMigration', () => {
     }
     // a real millisecond timestamp is accepted
     expect(generateTimescaleMigration(ds, { timestamp: TS }).timestamp).toBe(TS);
+  });
+
+  it('throws on an uninitialized DataSource instead of silently emitting an empty migration', () => {
+    const uninitialized = {
+      isInitialized: false,
+      entityMetadatas: [],
+    } as unknown as DataSource;
+    expect(() => generateTimescaleMigration(uninitialized, { timestamp: TS })).toThrow(
+      TimescaleError,
+    );
   });
 
   it('returns empty statement lists when there are no hypertables', () => {
