@@ -19,14 +19,19 @@ import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /** A reversible, inspectable unit of hypertable DDL. */
 export interface MigrationStatement {
-  /** SQL that applies the change. */
-  readonly up: string;
   /**
-   * SQL that reverses the change — **never destroys data**. Policies are removed
-   * (`if_exists => TRUE`); a hypertable conversion and an enabled columnstore are
-   * left in place (reverting them would drop/decompress data) with a `RAISE NOTICE`.
+   * Atomic SQL statements that apply the change, in order. Each entry is a single
+   * statement (run it with its own `queryRunner.query(...)` call — TimescaleDB/pg
+   * reject multiple commands in one prepared query).
    */
-  readonly down: string;
+  readonly up: readonly string[];
+  /**
+   * Atomic SQL statements that reverse the change — **never destroys data**.
+   * Policies are removed (`if_exists => TRUE`); a hypertable conversion and an
+   * enabled columnstore are left in place (reverting them would drop/decompress
+   * data) with a `RAISE NOTICE`.
+   */
+  readonly down: readonly string[];
   /**
    * Read-only SQL that reports the current applied state (for tests / drift checks).
    *
@@ -125,10 +130,11 @@ export function createHypertableSQL(input: CreateHypertableInput): MigrationStat
       ? `by_range(${quoteLiteral(timeColumn)})`
       : `by_range(${quoteLiteral(timeColumn)}, INTERVAL ${quoteLiteral(assertPositiveInterval(input.chunkInterval, 'chunkInterval'))})`;
 
-  let up =
+  const up: string[] = [
     `SELECT create_hypertable(${t.regclass}, ${range}` +
-    `, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'}` +
-    `, migrate_data => ${migrateData ? 'TRUE' : 'FALSE'});`;
+      `, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'}` +
+      `, migrate_data => ${migrateData ? 'TRUE' : 'FALSE'});`,
+  ];
 
   if (input.spacePartition) {
     const col = assertSafeIdentifier(input.spacePartition.column, 'spacePartition.column');
@@ -142,16 +148,17 @@ export function createHypertableSQL(input: CreateHypertableInput): MigrationStat
         { partitions: input.spacePartition.partitions },
       );
     }
-    up +=
-      `\nSELECT add_dimension(${t.regclass}, by_hash(${quoteLiteral(col)}, ${input.spacePartition.partitions})` +
-      `, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`;
+    up.push(
+      `SELECT add_dimension(${t.regclass}, by_hash(${quoteLiteral(col)}, ${input.spacePartition.partitions})` +
+        `, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`,
+    );
   }
 
   const inspect =
     `SELECT hypertable_schema, hypertable_name, num_dimensions FROM timescaledb_information.hypertables ` +
     `WHERE hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`;
 
-  return { up, down: nonDestructiveNotice('hypertable', t.ident), inspect };
+  return { up, down: [nonDestructiveNotice('hypertable', t.ident)], inspect };
 }
 
 export interface ColumnstorePolicyInput {
@@ -200,15 +207,17 @@ export function addColumnstorePolicySQL(input: ColumnstorePolicyInput): Migratio
     options.push(`timescaledb.orderby = ${quoteLiteral(cols)}`);
   }
 
-  let up = `ALTER TABLE ${t.ident} SET (${options.join(', ')});`;
-  let down: string;
+  const up: string[] = [`ALTER TABLE ${t.ident} SET (${options.join(', ')});`];
+  let down: string[];
 
   if (input.after === undefined) {
-    down = nonDestructiveNotice('columnstore', t.ident);
+    down = [nonDestructiveNotice('columnstore', t.ident)];
   } else {
     const ifNotExists = input.ifNotExists ?? true;
-    up += `\nCALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(assertInterval(input.after, 'after'))}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`;
-    down = `CALL remove_columnstore_policy(${t.regclass}, if_exists => TRUE);`;
+    up.push(
+      `CALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(assertInterval(input.after, 'after'))}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`,
+    );
+    down = [`CALL remove_columnstore_policy(${t.regclass}, if_exists => TRUE);`];
   }
 
   // proc_name verified against a live catalog in T4d.
@@ -238,8 +247,10 @@ export function addRetentionPolicySQL(input: RetentionPolicyInput): MigrationSta
   const t = parseTable(input.table);
   const ifNotExists = input.ifNotExists ?? true;
 
-  const up = `SELECT add_retention_policy(${t.regclass}, drop_after => INTERVAL ${quoteLiteral(assertInterval(input.dropAfter, 'dropAfter'))}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`;
-  const down = `SELECT remove_retention_policy(${t.regclass}, if_exists => TRUE);`;
+  const up = [
+    `SELECT add_retention_policy(${t.regclass}, drop_after => INTERVAL ${quoteLiteral(assertInterval(input.dropAfter, 'dropAfter'))}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`,
+  ];
+  const down = [`SELECT remove_retention_policy(${t.regclass}, if_exists => TRUE);`];
 
   // proc_name verified against a live catalog in T4d.
   const inspect =

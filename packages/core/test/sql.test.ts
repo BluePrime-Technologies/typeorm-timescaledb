@@ -8,10 +8,14 @@ import {
   type MigrationStatement,
 } from '../src/index.js';
 
+/** Join atomic statements for substring assertions. */
+const upSql = (s: MigrationStatement): string => s.up.join('\n');
+const downSql = (s: MigrationStatement): string => s.down.join('\n');
+
 /** A migration `down()` must never destroy data. */
 const DESTRUCTIVE = /\b(drop|truncate|delete)\b|drop_chunks/i;
 function expectNonDestructiveDown(stmt: MigrationStatement): void {
-  expect(stmt.down).not.toMatch(DESTRUCTIVE);
+  expect(downSql(stmt)).not.toMatch(DESTRUCTIVE);
 }
 
 describe('createHypertableSQL', () => {
@@ -21,15 +25,15 @@ describe('createHypertableSQL', () => {
       timeColumn: 'time',
       chunkInterval: '7 days',
     });
-    expect(s.up).toBe(
+    expect(s.up).toEqual([
       `SELECT create_hypertable('"public"."metrics"', by_range('time', INTERVAL '7 days'), if_not_exists => TRUE, migrate_data => FALSE);`,
-    );
+    ]);
   });
 
   it('omits the interval when chunkInterval is not given (TSDB default)', () => {
     const s = createHypertableSQL({ table: 'metrics', timeColumn: 'time' });
-    expect(s.up).toContain(`by_range('time')`);
-    expect(s.up).not.toContain('INTERVAL');
+    expect(upSql(s)).toContain(`by_range('time')`);
+    expect(upSql(s)).not.toContain('INTERVAL');
   });
 
   it('honors schema qualification and quotes identifiers', () => {
@@ -38,7 +42,7 @@ describe('createHypertableSQL', () => {
       timeColumn: 'ts',
       chunkInterval: '1 day',
     });
-    expect(s.up).toContain(`create_hypertable('"analytics"."events"'`);
+    expect(upSql(s)).toContain(`create_hypertable('"analytics"."events"'`);
     expect(s.inspect).toContain(`hypertable_schema = 'analytics'`);
     expect(s.inspect).toContain(`hypertable_name = 'events'`);
   });
@@ -46,20 +50,21 @@ describe('createHypertableSQL', () => {
   it('preserves the case of mixed-case identifiers (why quoting matters)', () => {
     const s = createHypertableSQL({ table: 'Analytics.Events', timeColumn: 'EventTime' });
     // without quoting, Postgres would fold these to lowercase and miss the table
-    expect(s.up).toContain(`create_hypertable('"Analytics"."Events"', by_range('EventTime')`);
+    expect(upSql(s)).toContain(`create_hypertable('"Analytics"."Events"', by_range('EventTime')`);
     expect(s.inspect).toContain(`hypertable_schema = 'Analytics'`);
     expect(s.inspect).toContain(`hypertable_name = 'Events'`);
   });
 
-  it('adds a hash dimension for space partitioning', () => {
+  it('adds a hash dimension for space partitioning as a separate atomic statement', () => {
     const s = createHypertableSQL({
       table: 'metrics',
       timeColumn: 'time',
       chunkInterval: '1 day',
       spacePartition: { column: 'device_id', partitions: 4 },
     });
-    expect(s.up).toContain(
-      `add_dimension('"public"."metrics"', by_hash('device_id', 4), if_not_exists => TRUE);`,
+    expect(s.up).toHaveLength(2);
+    expect(s.up[1]).toBe(
+      `SELECT add_dimension('"public"."metrics"', by_hash('device_id', 4), if_not_exists => TRUE);`,
     );
   });
 
@@ -70,13 +75,13 @@ describe('createHypertableSQL', () => {
       ifNotExists: false,
       migrateData: true,
     });
-    expect(s.up).toContain('if_not_exists => FALSE');
-    expect(s.up).toContain('migrate_data => TRUE');
+    expect(upSql(s)).toContain('if_not_exists => FALSE');
+    expect(upSql(s)).toContain('migrate_data => TRUE');
   });
 
   it('down is a non-destructive no-op (NOTICE only)', () => {
     const s = createHypertableSQL({ table: 'metrics', timeColumn: 'time' });
-    expect(s.down).toContain('RAISE NOTICE');
+    expect(downSql(s)).toContain('RAISE NOTICE');
     expectNonDestructiveDown(s);
   });
 
@@ -143,10 +148,11 @@ describe('addColumnstorePolicySQL', () => {
       orderBy: [{ column: 'time', direction: 'DESC' }],
       after: '7 days',
     });
-    expect(s.up).toContain(
+    expect(s.up).toHaveLength(2);
+    expect(s.up[0]).toBe(
       `ALTER TABLE "public"."metrics" SET (timescaledb.enable_columnstore = true, timescaledb.segmentby = '"device_id"', timescaledb.orderby = '"time" DESC');`,
     );
-    expect(s.up).toContain(
+    expect(s.up[1]).toBe(
       `CALL add_columnstore_policy('"public"."metrics"', after => INTERVAL '7 days', if_not_exists => TRUE);`,
     );
   });
@@ -158,8 +164,8 @@ describe('addColumnstorePolicySQL', () => {
       orderBy: [{ column: 'time' }, { column: 'seq', direction: 'DESC' }],
       after: '1 day',
     });
-    expect(s.up).toContain(`timescaledb.segmentby = '"a", "b"'`);
-    expect(s.up).toContain(`timescaledb.orderby = '"time" ASC, "seq" DESC'`);
+    expect(upSql(s)).toContain(`timescaledb.segmentby = '"a", "b"'`);
+    expect(upSql(s)).toContain(`timescaledb.orderby = '"time" ASC, "seq" DESC'`);
   });
 
   it('quotes mixed-case columns inside the reloptions (preserves case)', () => {
@@ -169,21 +175,24 @@ describe('addColumnstorePolicySQL', () => {
       orderBy: [{ column: 'EventTime', direction: 'DESC' }],
       after: '1 day',
     });
-    expect(s.up).toContain(`timescaledb.segmentby = '"AssetId"'`);
-    expect(s.up).toContain(`timescaledb.orderby = '"EventTime" DESC'`);
+    expect(upSql(s)).toContain(`timescaledb.segmentby = '"AssetId"'`);
+    expect(upSql(s)).toContain(`timescaledb.orderby = '"EventTime" DESC'`);
   });
 
   it('enables the columnstore without a policy when after is omitted', () => {
     const s = addColumnstorePolicySQL({ table: 'metrics', segmentBy: ['device_id'] });
-    expect(s.up).toContain('enable_columnstore = true');
-    expect(s.up).not.toContain('add_columnstore_policy');
-    expect(s.down).toContain('RAISE NOTICE'); // nothing to safely reverse
+    expect(s.up).toHaveLength(1);
+    expect(upSql(s)).toContain('enable_columnstore = true');
+    expect(upSql(s)).not.toContain('add_columnstore_policy');
+    expect(downSql(s)).toContain('RAISE NOTICE'); // nothing to safely reverse
   });
 
   it('down removes the policy (non-destructive) and never disables the columnstore', () => {
     const s = addColumnstorePolicySQL({ table: 'metrics', after: '7 days' });
-    expect(s.down).toBe(`CALL remove_columnstore_policy('"public"."metrics"', if_exists => TRUE);`);
-    expect(s.down).not.toContain('enable_columnstore');
+    expect(s.down).toEqual([
+      `CALL remove_columnstore_policy('"public"."metrics"', if_exists => TRUE);`,
+    ]);
+    expect(downSql(s)).not.toContain('enable_columnstore');
     expectNonDestructiveDown(s);
   });
 
@@ -200,14 +209,16 @@ describe('addColumnstorePolicySQL', () => {
 describe('addRetentionPolicySQL', () => {
   it('adds a retention policy, idempotent by default', () => {
     const s = addRetentionPolicySQL({ table: 'metrics', dropAfter: '90 days' });
-    expect(s.up).toBe(
+    expect(s.up).toEqual([
       `SELECT add_retention_policy('"public"."metrics"', drop_after => INTERVAL '90 days', if_not_exists => TRUE);`,
-    );
+    ]);
   });
 
   it('down removes the policy (never deletes data)', () => {
     const s = addRetentionPolicySQL({ table: 'metrics', dropAfter: '90 days' });
-    expect(s.down).toBe(`SELECT remove_retention_policy('"public"."metrics"', if_exists => TRUE);`);
+    expect(s.down).toEqual([
+      `SELECT remove_retention_policy('"public"."metrics"', if_exists => TRUE);`,
+    ]);
     expectNonDestructiveDown(s);
   });
 
@@ -224,7 +235,26 @@ describe('addRetentionPolicySQL', () => {
   });
 });
 
-describe('non-destructive down() gate (all builders)', () => {
+describe('atomic statements + non-destructive down() gate (all builders)', () => {
+  it('every up/down entry is a single statement (no embedded newlines)', () => {
+    const all: MigrationStatement[] = [
+      createHypertableSQL({
+        table: 'm',
+        timeColumn: 't',
+        chunkInterval: '1 day',
+        spacePartition: { column: 'd', partitions: 2 },
+      }),
+      addColumnstorePolicySQL({ table: 'm', segmentBy: ['d'], after: '1 day' }),
+      addRetentionPolicySQL({ table: 'm', dropAfter: '1 day' }),
+    ];
+    for (const s of all) {
+      for (const stmt of [...s.up, ...s.down]) {
+        expect(stmt).not.toContain('\n');
+        expect(stmt.trim().endsWith(';')).toBe(true);
+      }
+    }
+  });
+
   it('no builder emits a destructive statement in down()', () => {
     expectNonDestructiveDown(createHypertableSQL({ table: 'm', timeColumn: 't' }));
     expectNonDestructiveDown(addColumnstorePolicySQL({ table: 'm', after: '1 day' }));
