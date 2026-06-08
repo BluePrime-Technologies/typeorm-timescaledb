@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { assertSafeIdentifier } from './identifier.js';
+import { INTERVAL_PATTERN } from './interval.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
 
 /**
@@ -15,10 +16,7 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  */
 const Interval = z
   .string()
-  .regex(
-    /^\d+\s+(microsecond|millisecond|second|minute|hour|day|week|month|year)s?$/i,
-    'must be a PostgreSQL interval like "7 days" (<n> <unit>)',
-  );
+  .regex(INTERVAL_PATTERN, 'must be a PostgreSQL interval like "7 days" (<n> <unit>)');
 
 const OrderBySchema = z.strictObject({
   column: z.string(),
