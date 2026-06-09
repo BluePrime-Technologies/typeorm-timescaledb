@@ -48,6 +48,7 @@ describe('generateMigrationFile', () => {
       { outDir: 'migrations', timestamp: TS },
       writer,
     );
+    if (result === null) throw new Error('expected a migration to be generated');
 
     const expectedPath = join('migrations', `${TS}-Timescale.ts`);
     expect(result.path).toBe(expectedPath);
@@ -68,8 +69,18 @@ describe('generateMigrationFile', () => {
       { outDir: 'm', name: 'InitHypertables', timestamp: TS },
       writer,
     );
+    if (result === null) throw new Error('expected a migration to be generated');
     expect(result.path).toBe(join('m', `${TS}-InitHypertables.ts`));
     expect(result.className).toBe(`InitHypertables${TS}`);
+  });
+
+  it('returns null and writes nothing when the DataSource has no hypertables', () => {
+    const files = new Map<string, string>();
+    const writer: FileWriter = { mkdirp: () => {}, write: (p, c) => files.set(p, c) };
+    const ds = { isInitialized: true, entityMetadatas: [] } as unknown as DataSource;
+    const result = generateMigrationFile(ds, { outDir: 'migrations', timestamp: TS }, writer);
+    expect(result).toBeNull();
+    expect(files.size).toBe(0);
   });
 });
 

@@ -20,6 +20,10 @@ export {
 } from './migrations/index.js';
 export type { GeneratedMigration, GenerateMigrationOptions } from './migrations/index.js';
 
+// NOTE: `./cli/*` is intentionally NOT re-exported here — it is the `typeorm-timescaledb`
+// bin entrypoint, not part of the importable library surface (keeps the executable out
+// of the tree-shakeable graph). The `cli/index.ts` barrel exists for tests only.
+
 // Re-export the core metadata model + validation so consumers need one import.
 export {
   validateHypertableMetadata,

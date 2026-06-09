@@ -36,18 +36,21 @@ export interface GenerateFileOptions {
 
 /**
  * Generate a migration and write it to `{outDir}/{timestamp}-{name}.ts` (TypeORM's
- * file-naming convention). Returns the written path and class name.
+ * file-naming convention). Returns the written path and class name, or `null` when
+ * the DataSource has no `@Hypertable` entities (nothing to generate) — in which case
+ * no file is written, so a typo'd/empty DataSource never produces a silent no-op file.
  */
 export function generateMigrationFile(
   dataSource: DataSource,
   options: GenerateFileOptions,
   writer: FileWriter = nodeFileWriter,
-): { path: string; className: string } {
+): { path: string; className: string } | null {
   const base = options.name ?? 'Timescale';
   const migration = generateTimescaleMigration(dataSource, {
     name: base,
     ...(options.timestamp !== undefined && { timestamp: options.timestamp }),
   });
+  if (migration.up.length === 0) return null;
   const path = join(options.outDir, `${migration.timestamp}-${base}.ts`);
   writer.mkdirp(options.outDir);
   writer.write(path, renderTimescaleMigration(migration));
