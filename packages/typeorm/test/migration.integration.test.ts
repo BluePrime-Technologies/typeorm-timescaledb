@@ -9,8 +9,10 @@ import {
   Hypertable,
   TimeColumn,
   HypertablePrimaryKey,
+  assertSchema,
   createTimescaleMigration,
   generateTimescaleMigration,
+  TimescaleError,
 } from '../src/index.js';
 
 const IMAGE = process.env.TIMESCALE_IMAGE;
@@ -112,5 +114,28 @@ describe.skipIf(!IMAGE)('TimescaleDB migration integration', () => {
     } finally {
       await qr.release();
     }
+  }, 120_000);
+
+  it('assertSchema passes when in sync and detects drift when a policy is dropped', async () => {
+    // ensure the migration is applied (idempotent) so we start in sync
+    const qr = ds.createQueryRunner();
+    try {
+      await createTimescaleMigration(generateTimescaleMigration(ds, { timestamp: TS })).up(qr);
+    } finally {
+      await qr.release();
+    }
+
+    // in sync → no drift
+    expect(await assertSchema(ds)).toEqual([]);
+
+    // introduce drift: drop the retention policy out from under the entity
+    await ds.query(`SELECT remove_retention_policy('"public"."metric"', if_exists => TRUE)`);
+
+    // warn mode reports it...
+    const drift = await assertSchema(ds, { mode: 'warn', logger: () => {} });
+    expect(drift.some((d) => d.message.includes('retention policy is missing'))).toBe(true);
+
+    // ...and assert mode throws
+    await expect(assertSchema(ds)).rejects.toBeInstanceOf(TimescaleError);
   }, 120_000);
 });
