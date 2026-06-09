@@ -44,6 +44,8 @@ describe.skipIf(!IMAGE)('TimescaleDB migration integration', () => {
     container = await new GenericContainer(IMAGE as string)
       .withEnvironment({ POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'test' })
       .withExposedPorts(5432)
+      // The image logs "ready to accept connections" twice (init bootstrap, then real
+      // start); wait for the 2nd so we don't connect to the throwaway bootstrap instance.
       .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2))
       .start();
 
@@ -68,16 +70,17 @@ describe.skipIf(!IMAGE)('TimescaleDB migration integration', () => {
     await container?.stop();
   });
 
+  // Filter on schema + name, matching the predicates the builders' `inspect` SQL uses.
   const procNames = async (): Promise<string[]> => {
     const rows: Array<{ proc_name: string }> = await ds.query(
-      `SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_name = 'metric'`,
+      `SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_schema = 'public' AND hypertable_name = 'metric'`,
     );
     return rows.map((r) => r.proc_name);
   };
 
   const isHypertable = async (): Promise<boolean> => {
     const rows: unknown[] = await ds.query(
-      `SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'metric'`,
+      `SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_schema = 'public' AND hypertable_name = 'metric'`,
     );
     return rows.length === 1;
   };

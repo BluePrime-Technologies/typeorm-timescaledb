@@ -44,7 +44,15 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm add -D -w typeorm@${{ matrix.typeorm }}
+      # Override the version on the package that imports typeorm (not the root), so the
+      # matrix actually exercises 0.3.20 — a root -w add leaves the package's own devDep.
+      - run: pnpm --filter typeorm-timescaledb add -D typeorm@${{ matrix.typeorm }}
+      # Fail loud if the wrong version resolved (guards the matrix from silently no-op'ing).
+      - name: Verify resolved TypeORM version
+        run: |
+          RESOLVED=$(pnpm --filter typeorm-timescaledb exec node -p "require('typeorm/package.json').version")
+          echo "Resolved typeorm: $RESOLVED (expected ${{ matrix.typeorm }})"
+          case "$RESOLVED" in ${{ matrix.typeorm }}*) ;; *) echo "::error::typeorm $RESOLVED != ${{ matrix.typeorm }}"; exit 1 ;; esac
       - run: pnpm build
       - run: pnpm test
         env:
