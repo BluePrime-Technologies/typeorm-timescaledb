@@ -13,6 +13,9 @@
     }
   },
   "types": "./dist/index.d.ts",
+  "bin": {
+    "typeorm-timescaledb": "./dist/cli/main.js"
+  },
   "files": [
     "dist",
     "LICENSE",
