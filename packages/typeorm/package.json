@@ -10,6 +10,12 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./nestjs": {
+      "import": {
+        "types": "./dist/nestjs/index.d.ts",
+        "default": "./dist/nestjs/index.js"
+      }
     }
   },
   "types": "./dist/index.d.ts",
@@ -32,10 +38,18 @@
     "@blueprime-technologies/timescaledb-core": "workspace:*"
   },
   "peerDependencies": {
+    "@nestjs/common": "^10.0.0 || ^11.0.0",
+    "@nestjs/core": "^10.0.0 || ^11.0.0",
     "reflect-metadata": "^0.2.0",
     "typeorm": "^0.3.20 || ^1.0.0"
   },
   "peerDependenciesMeta": {
+    "@nestjs/common": {
+      "optional": true
+    },
+    "@nestjs/core": {
+      "optional": true
+    },
     "reflect-metadata": {
       "optional": false
     }
@@ -62,8 +76,12 @@
     "access": "public"
   },
   "devDependencies": {
+    "@nestjs/common": "^11.1.26",
+    "@nestjs/core": "^11.1.26",
+    "@nestjs/testing": "^11.1.26",
     "pg": "^8.21.0",
     "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
     "testcontainers": "^12.0.1",
     "typeorm": "^1.0.0"
   }
