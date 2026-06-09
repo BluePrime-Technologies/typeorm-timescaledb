@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// The bin is the process entrypoint, so install the decorator-metadata shim before
+// loading any user DataSource/entities (their app entrypoint may import it elsewhere).
+import 'reflect-metadata';
 import {
   generateMigrationFile,
   revertMigrationCommand,
@@ -7,7 +10,7 @@ import {
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
-import { loadDataSource } from './load.js';
+import { initializeForCli, loadDataSource } from './load.js';
 
 async function main(argv: readonly string[]): Promise<void> {
   if (argv.includes('-h') || argv.includes('--help')) {
@@ -18,7 +21,7 @@ async function main(argv: readonly string[]): Promise<void> {
   const logger: Logger = console;
   const args = parseArgs(argv);
   const dataSource = await loadDataSource(args.dataSource);
-  if (!dataSource.isInitialized) await dataSource.initialize();
+  await initializeForCli(dataSource);
 
   try {
     switch (args.command) {

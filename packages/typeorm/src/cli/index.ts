@@ -8,4 +8,4 @@ export {
 export type { Logger, FileWriter, GenerateFileOptions } from './commands.js';
 export { parseArgs, COMMANDS, CliError, USAGE } from './args.js';
 export type { Command, ParsedArgs } from './args.js';
-export { loadDataSource, isDataSource } from './load.js';
+export { loadDataSource, isDataSource, initializeForCli } from './load.js';

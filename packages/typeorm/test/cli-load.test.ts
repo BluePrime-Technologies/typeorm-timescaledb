@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { loadDataSource, isDataSource, CliError } from '../src/cli/index.js';
+import type { DataSource } from 'typeorm';
+import { loadDataSource, isDataSource, initializeForCli, CliError } from '../src/cli/index.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'tsdb-cli-load-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -36,8 +37,56 @@ describe('loadDataSource', () => {
     expect(isDataSource(await loadDataSource(path))).toBe(true);
   });
 
+  it('awaits a Promise<DataSource> default export', async () => {
+    const path = writeModule('ds-promise.mjs', `export default Promise.resolve(${DS_LITERAL});`);
+    expect(isDataSource(await loadDataSource(path))).toBe(true);
+  });
+
   it('throws CliError when the module exports no DataSource', async () => {
     const path = writeModule('ds-none.mjs', `export const config = { foo: 1 };`);
     await expect(loadDataSource(path)).rejects.toBeInstanceOf(CliError);
+  });
+});
+
+describe('initializeForCli', () => {
+  it('disables synchronize/migrationsRun/dropSchema before initializing', async () => {
+    let options: Record<string, unknown> | undefined;
+    let initialized = false;
+    const ds = {
+      isInitialized: false,
+      setOptions(o: Record<string, unknown>) {
+        options = o;
+        return this;
+      },
+      async initialize() {
+        initialized = true;
+      },
+    } as unknown as DataSource;
+
+    await initializeForCli(ds);
+    expect(options).toMatchObject({
+      synchronize: false,
+      migrationsRun: false,
+      dropSchema: false,
+      subscribers: [],
+    });
+    expect(initialized).toBe(true);
+  });
+
+  it('leaves an already-initialized DataSource untouched', async () => {
+    let touched = false;
+    const ds = {
+      isInitialized: true,
+      setOptions() {
+        touched = true;
+        return this;
+      },
+      async initialize() {
+        touched = true;
+      },
+    } as unknown as DataSource;
+
+    await initializeForCli(ds);
+    expect(touched).toBe(false);
   });
 });
