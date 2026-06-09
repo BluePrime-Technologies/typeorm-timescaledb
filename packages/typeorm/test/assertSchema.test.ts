@@ -26,10 +26,14 @@ interface CatalogState {
   procs: string[];
 }
 
-function stubDataSource(state: CatalogState, initialized = true): DataSource {
+function stubDataSource(
+  state: CatalogState,
+  initialized = true,
+  columns: Array<{ propertyName: string; databaseName: string }> = [],
+): DataSource {
   return {
     isInitialized: initialized,
-    entityMetadatas: [{ target: Metric, tableName: 'metric', columns: [] }],
+    entityMetadatas: [{ target: Metric, tableName: 'metric', columns }],
     query: async (sql: string): Promise<unknown[]> => {
       if (sql.includes('timescaledb_information.hypertables')) {
         return state.hypertable ? [{ ok: 1 }] : [];
@@ -86,6 +90,19 @@ describe('assertSchema', () => {
         TimescaleErrorCode.INVALID_ARGUMENT,
       );
     }
+  });
+
+  it('maps the entity property name to the physical column when checking dimensions', async () => {
+    // @Column({ name: 'ts' }) on the `time` property → drift check must use 'ts', not 'time'
+    const columns = [{ propertyName: 'time', databaseName: 'ts' }];
+    // dimension is the physical column 'ts' → in sync
+    expect(await assertSchema(stubDataSource({ ...inSync, dims: ['ts'] }, true, columns))).toEqual(
+      [],
+    );
+    // dimension under the property name 'time' would only match if we (wrongly) skipped the rename
+    await expect(
+      assertSchema(stubDataSource({ ...inSync, dims: ['time'] }, true, columns)),
+    ).rejects.toBeInstanceOf(TimescaleError);
   });
 
   it('is exposed on the createTimescale context', async () => {

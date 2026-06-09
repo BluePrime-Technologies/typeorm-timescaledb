@@ -13,6 +13,8 @@ import { getTimescaleMetadata, hasTimescaleMetadata } from '../decorators/index.
 
 type Ctor = abstract new (...args: never[]) => unknown;
 
+const defaultLogger = (message: string): void => console.warn(message);
+
 export interface AssertSchemaOptions {
   /**
    * `'assert'` (default) throws `TimescaleError(SCHEMA_DRIFT)` on any drift;
@@ -116,7 +118,7 @@ export async function assertSchema(
     if ((options.mode ?? 'assert') === 'assert') {
       throw new TimescaleError(TimescaleErrorCode.SCHEMA_DRIFT, message, { drift });
     }
-    (options.logger ?? ((m: string) => console.warn(m)))(message);
+    (options.logger ?? defaultLogger)(message);
   }
 
   return drift;
