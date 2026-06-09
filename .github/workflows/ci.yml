@@ -33,7 +33,9 @@ jobs:
       matrix:
         node: [20, 22, 24]
         typeorm: ['0.3.20', '1.0.0']
-        timescaledb: ['2.17.2-pg16', 'latest-pg17']
+        # 2.18 is the floor: the columnstore DDL we emit (enable_columnstore /
+        # add_columnstore_policy) landed in 2.18.0; 2.17 only has legacy compression.
+        timescaledb: ['2.18.0-pg16', 'latest-pg17']
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
