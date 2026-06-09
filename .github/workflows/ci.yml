@@ -50,7 +50,8 @@ jobs:
       # Fail loud if the wrong version resolved (guards the matrix from silently no-op'ing).
       - name: Verify resolved TypeORM version
         run: |
-          RESOLVED=$(pnpm --filter typeorm-timescaledb exec node -p "require('typeorm/package.json').version")
+          # read the file by path (typeorm's exports map doesn't expose ./package.json)
+          RESOLVED=$(node -p "require('./packages/typeorm/node_modules/typeorm/package.json').version")
           echo "Resolved typeorm: $RESOLVED (expected ${{ matrix.typeorm }})"
           case "$RESOLVED" in ${{ matrix.typeorm }}*) ;; *) echo "::error::typeorm $RESOLVED != ${{ matrix.typeorm }}"; exit 1 ;; esac
       - run: pnpm build
