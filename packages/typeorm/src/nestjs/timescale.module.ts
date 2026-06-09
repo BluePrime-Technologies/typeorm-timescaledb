@@ -1,6 +1,6 @@
-import { Inject, Injectable, Module } from '@nestjs/common';
-import type { DynamicModule, OnApplicationBootstrap, Provider } from '@nestjs/common';
-import type { DataSource, EntityTarget, ObjectLiteral } from 'typeorm';
+import { Inject, Injectable, Logger, Module } from '@nestjs/common';
+import type { DynamicModule, OnApplicationBootstrap, Provider, Type } from '@nestjs/common';
+import type { DataSource, ObjectLiteral } from 'typeorm';
 import { createTimescale, type TimescaleContext } from '../runtime/createTimescale.js';
 import { TIMESCALE_CONTEXT, TIMESCALE_OPTIONS, getTimescaleRepositoryToken } from './tokens.js';
 
@@ -12,6 +12,8 @@ export interface TimescaleModuleOptions {
    * throws on drift, `'warn'` logs it, `false` skips the check entirely.
    */
   readonly assert?: 'assert' | 'warn' | false;
+  /** Sink for `'warn'`-mode drift. Defaults to the NestJS `Logger`. */
+  readonly logger?: (message: string) => void;
   /** Register as a global module so `forFeature` works without re-importing. */
   readonly global?: boolean;
 }
@@ -22,6 +24,8 @@ export interface TimescaleModuleOptions {
  */
 @Injectable()
 export class TimescaleBootstrap implements OnApplicationBootstrap {
+  private readonly logger = new Logger('TimescaleModule');
+
   constructor(
     @Inject(TIMESCALE_CONTEXT) private readonly context: TimescaleContext,
     @Inject(TIMESCALE_OPTIONS) private readonly options: TimescaleModuleOptions,
@@ -29,7 +33,11 @@ export class TimescaleBootstrap implements OnApplicationBootstrap {
 
   async onApplicationBootstrap(): Promise<void> {
     if (this.options.assert === false) return;
-    await this.context.assertSchema({ mode: this.options.assert ?? 'assert' });
+    await this.context.assertSchema({
+      mode: this.options.assert ?? 'assert',
+      // route warn-mode drift through Nest's logger by default, not raw console
+      logger: this.options.logger ?? ((m) => this.logger.warn(m)),
+    });
   }
 }
 
@@ -62,10 +70,11 @@ export class TimescaleModule {
   }
 
   /**
-   * Register one `TimescaleRepository` provider per `@Hypertable` entity, injectable
-   * with `@InjectTimescaleRepository(Entity)`.
+   * Register one `TimescaleRepository` provider per `@Hypertable` entity class,
+   * injectable with `@InjectTimescaleRepository(Entity)`. Requires `forRoot` to be
+   * present (same module, or imported as `global`).
    */
-  static forFeature(entities: ReadonlyArray<EntityTarget<ObjectLiteral>>): DynamicModule {
+  static forFeature(entities: ReadonlyArray<Type<ObjectLiteral>>): DynamicModule {
     const providers: Provider[] = entities.map((entity) => ({
       provide: getTimescaleRepositoryToken(entity),
       useFactory: (context: TimescaleContext) => context.getRepository(entity),

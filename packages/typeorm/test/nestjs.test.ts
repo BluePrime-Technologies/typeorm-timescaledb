@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { describe, expect, it } from 'vitest';
 import { Test } from '@nestjs/testing';
+import { Module } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 import { Hypertable, TimeColumn, HypertablePrimaryKey, TimescaleErrorCode } from '../src/index.js';
 import {
@@ -102,6 +103,20 @@ describe('TimescaleModule', () => {
     const boot = ref.get(TimescaleBootstrap, { strict: false });
     await boot.onApplicationBootstrap();
     expect(queries).toHaveLength(0);
+  });
+
+  it('forFeature resolves from a separate module when forRoot is global', async () => {
+    const { ds } = stubDataSource(inSync);
+    @Module({ imports: [TimescaleModule.forFeature([Metric])] })
+    class FeatureModule {}
+    const ref = await Test.createTestingModule({
+      imports: [
+        TimescaleModule.forRoot({ dataSource: ds, assert: false, global: true }),
+        FeatureModule,
+      ],
+    }).compile();
+    const repo = ref.get(getTimescaleRepositoryToken(Metric), { strict: false });
+    expect(repo).toBeInstanceOf(Repository);
   });
 
   it('does not mutate DataSource.prototype (no global pollution)', async () => {

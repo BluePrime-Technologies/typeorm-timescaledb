@@ -1,5 +1,6 @@
 import { Inject } from '@nestjs/common';
-import type { EntityTarget, ObjectLiteral } from 'typeorm';
+import type { Type } from '@nestjs/common';
+import type { ObjectLiteral } from 'typeorm';
 
 /** DI token for the DataSource-scoped `TimescaleContext`. */
 export const TIMESCALE_CONTEXT = Symbol('typeorm-timescaledb:context');
@@ -7,29 +8,26 @@ export const TIMESCALE_CONTEXT = Symbol('typeorm-timescaledb:context');
 /** DI token for the resolved module options. */
 export const TIMESCALE_OPTIONS = Symbol('typeorm-timescaledb:options');
 
-/** The entity's display name, used to build a stable per-entity provider token. */
-function entityName(entity: EntityTarget<ObjectLiteral>): string {
-  if (typeof entity === 'function') return entity.name;
-  if (typeof entity === 'string') return entity;
-  // EntitySchema or { name } objects
-  const named = entity as { name?: unknown; options?: { name?: unknown } };
-  const name = named.options?.name ?? named.name;
-  return typeof name === 'string' ? name : String(entity);
-}
-
-/** Stable DI token for a feature `TimescaleRepository<Entity>`. */
-export function getTimescaleRepositoryToken(entity: EntityTarget<ObjectLiteral>): string {
-  return `TimescaleRepository:${entityName(entity)}`;
+/**
+ * Stable DI token for a feature `TimescaleRepository<Entity>`, derived from the
+ * entity class name.
+ *
+ * Note: the token is the class name, so entity classes must be uniquely named
+ * across the DataSource (two same-named `@Hypertable` classes would collide).
+ */
+export function getTimescaleRepositoryToken(entity: Type<ObjectLiteral>): string {
+  return `TimescaleRepository:${entity.name}`;
 }
 
 /**
  * Inject a feature `TimescaleRepository` registered via `TimescaleModule.forFeature([...])`.
+ * Only class entities are supported (the underlying repository factory requires the class).
  *
  * @example
  * constructor(\@InjectTimescaleRepository(Trade) private readonly trades: TimescaleRepository<Trade>) {}
  */
 export function InjectTimescaleRepository(
-  entity: EntityTarget<ObjectLiteral>,
+  entity: Type<ObjectLiteral>,
 ): ParameterDecorator & PropertyDecorator {
   return Inject(getTimescaleRepositoryToken(entity));
 }
