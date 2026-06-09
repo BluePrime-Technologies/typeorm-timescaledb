@@ -12,7 +12,9 @@
       "dependsOn": ["^build"]
     },
     "test": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build"],
+      "env": ["TIMESCALE_IMAGE"],
+      "cache": false
     }
   }
 }
