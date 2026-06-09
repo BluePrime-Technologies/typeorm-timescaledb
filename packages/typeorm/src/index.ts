@@ -12,6 +12,14 @@ export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.j
 export { createTimescale } from './runtime/createTimescale.js';
 export type { TimescaleContext, TimescaleRepository } from './runtime/createTimescale.js';
 
+// Migration generation — Django/Prisma-style codegen from @Hypertable metadata.
+export {
+  generateTimescaleMigration,
+  renderTimescaleMigration,
+  createTimescaleMigration,
+} from './migrations/index.js';
+export type { GeneratedMigration, GenerateMigrationOptions } from './migrations/index.js';
+
 // Re-export the core metadata model + validation so consumers need one import.
 export {
   validateHypertableMetadata,
