@@ -4,8 +4,9 @@ import {
   TimescaleErrorCode,
   validateHypertableMetadata,
 } from '@blueprime-technologies/timescaledb-core';
-import type { TimescaleEntityMetadata } from '@blueprime-technologies/timescaledb-core';
+import type { DriftItem, TimescaleEntityMetadata } from '@blueprime-technologies/timescaledb-core';
 import { getTimescaleMetadata } from '../decorators/index.js';
+import { assertSchema, type AssertSchemaOptions } from './assertSchema.js';
 
 /** A TypeORM repository augmented (per instance) with its validated hypertable metadata. */
 export interface TimescaleRepository<T extends ObjectLiteral> extends Repository<T> {
@@ -18,6 +19,12 @@ export interface TimescaleContext {
   readonly dataSource: DataSource;
   /** Get a hypertable repository. Throws if the entity is not a `@Hypertable`. */
   getRepository<T extends ObjectLiteral>(entity: EntityTarget<T>): TimescaleRepository<T>;
+  /**
+   * Verify the live database matches the `@Hypertable` entities on this DataSource.
+   * Throws `TimescaleError(SCHEMA_DRIFT)` on drift (`mode: 'assert'`, default) or
+   * logs and returns it (`mode: 'warn'`). Returns `[]` when in sync.
+   */
+  assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]>;
 }
 
 /**
@@ -56,6 +63,9 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
       const repo = dataSource.getRepository<T>(entity);
       // Per-instance augmentation only — NEVER Repository.prototype.
       return Object.assign(repo, { timescaleMetadata: meta }) as TimescaleRepository<T>;
+    },
+    assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]> {
+      return assertSchema(dataSource, options);
     },
   };
 }
