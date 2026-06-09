@@ -7,9 +7,10 @@ import { Hypertable, TimeColumn, HypertablePrimaryKey, TimescaleErrorCode } from
 import {
   TimescaleModule,
   getTimescaleRepositoryToken,
-  TIMESCALE_CONTEXT,
+  getTimescaleContextToken,
 } from '../src/nestjs/index.js';
 import { TimescaleBootstrap } from '../src/nestjs/timescale.module.js';
+import { getTimescaleBootstrapToken } from '../src/nestjs/tokens.js';
 import type { TimescaleContext } from '../src/index.js';
 
 class Metric {}
@@ -65,7 +66,7 @@ describe('TimescaleModule', () => {
   it('forRoot provides the Timescale context', async () => {
     const { ds } = stubDataSource(inSync);
     const ref = await buildModule(ds, false);
-    const ctx = ref.get<TimescaleContext>(TIMESCALE_CONTEXT, { strict: false });
+    const ctx = ref.get<TimescaleContext>(getTimescaleContextToken(), { strict: false });
     expect(ctx.dataSource).toBe(ds);
     expect(typeof ctx.getRepository).toBe('function');
     expect(typeof ctx.assertSchema).toBe('function');
@@ -84,7 +85,8 @@ describe('TimescaleModule', () => {
   it('onApplicationBootstrap throws SCHEMA_DRIFT in assert mode when drifted', async () => {
     const { ds } = stubDataSource({ hypertable: false, dims: [], procs: [] });
     const ref = await buildModule(ds, 'assert');
-    const boot = ref.get(TimescaleBootstrap, { strict: false });
+    const boot = ref.get<TimescaleBootstrap>(getTimescaleBootstrapToken(), { strict: false });
+    expect(boot).toBeInstanceOf(TimescaleBootstrap);
     await expect(boot.onApplicationBootstrap()).rejects.toMatchObject({
       code: TimescaleErrorCode.SCHEMA_DRIFT,
     });
@@ -93,14 +95,14 @@ describe('TimescaleModule', () => {
   it('warn mode does not throw on drift', async () => {
     const { ds } = stubDataSource({ ...inSync, procs: ['policy_compression'] }); // retention missing
     const ref = await buildModule(ds, 'warn');
-    const boot = ref.get(TimescaleBootstrap, { strict: false });
+    const boot = ref.get<TimescaleBootstrap>(getTimescaleBootstrapToken(), { strict: false });
     await expect(boot.onApplicationBootstrap()).resolves.toBeUndefined();
   });
 
   it('assert:false skips the check entirely (no catalog queries)', async () => {
     const { ds, queries } = stubDataSource({ hypertable: false, dims: [], procs: [] });
     const ref = await buildModule(ds, false);
-    const boot = ref.get(TimescaleBootstrap, { strict: false });
+    const boot = ref.get<TimescaleBootstrap>(getTimescaleBootstrapToken(), { strict: false });
     await boot.onApplicationBootstrap();
     expect(queries).toHaveLength(0);
   });
@@ -117,6 +119,35 @@ describe('TimescaleModule', () => {
     }).compile();
     const repo = ref.get(getTimescaleRepositoryToken(Metric), { strict: false });
     expect(repo).toBeInstanceOf(Repository);
+  });
+
+  it('binds each named context to its own DataSource (multi-DataSource)', async () => {
+    const { ds: dsA } = stubDataSource(inSync);
+    const { ds: dsB } = stubDataSource(inSync);
+    const ref = await Test.createTestingModule({
+      imports: [
+        TimescaleModule.forRoot({ dataSource: dsA, name: 'a', assert: false, global: true }),
+        TimescaleModule.forRoot({ dataSource: dsB, name: 'b', assert: false, global: true }),
+        TimescaleModule.forFeature([Metric], 'a'),
+        TimescaleModule.forFeature([Metric], 'b'),
+      ],
+    }).compile();
+
+    const ctxA = ref.get<TimescaleContext>(getTimescaleContextToken('a'), { strict: false });
+    const ctxB = ref.get<TimescaleContext>(getTimescaleContextToken('b'), { strict: false });
+    expect(ctxA.dataSource).toBe(dsA);
+    expect(ctxB.dataSource).toBe(dsB);
+
+    // the same entity registers under distinct, non-colliding tokens per context
+    expect(getTimescaleRepositoryToken(Metric, 'a')).not.toBe(
+      getTimescaleRepositoryToken(Metric, 'b'),
+    );
+    expect(ref.get(getTimescaleRepositoryToken(Metric, 'a'), { strict: false })).toBeInstanceOf(
+      Repository,
+    );
+    expect(ref.get(getTimescaleRepositoryToken(Metric, 'b'), { strict: false })).toBeInstanceOf(
+      Repository,
+    );
   });
 
   it('does not mutate DataSource.prototype (no global pollution)', async () => {

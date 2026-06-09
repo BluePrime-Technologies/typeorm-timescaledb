@@ -2,25 +2,46 @@ import { Inject } from '@nestjs/common';
 import type { Type } from '@nestjs/common';
 import type { ObjectLiteral } from 'typeorm';
 
-/** DI token for the DataSource-scoped `TimescaleContext`. */
-export const TIMESCALE_CONTEXT = Symbol('typeorm-timescaledb:context');
+/** Name of the default Timescale context when `forRoot` is called without a `name`. */
+export const DEFAULT_TIMESCALE_NAME = 'default';
 
-/** DI token for the resolved module options. */
-export const TIMESCALE_OPTIONS = Symbol('typeorm-timescaledb:options');
+/** DI token for a named DataSource-scoped `TimescaleContext`. */
+export function getTimescaleContextToken(name: string = DEFAULT_TIMESCALE_NAME): string {
+  return `TimescaleContext:${name}`;
+}
 
-/**
- * Stable DI token for a feature `TimescaleRepository<Entity>`, derived from the
- * entity class name.
- *
- * Note: the token is the class name, so entity classes must be uniquely named
- * across the DataSource (two same-named `@Hypertable` classes would collide).
- */
-export function getTimescaleRepositoryToken(entity: Type<ObjectLiteral>): string {
-  return `TimescaleRepository:${entity.name}`;
+/** DI token for a named context's resolved options. */
+export function getTimescaleOptionsToken(name: string = DEFAULT_TIMESCALE_NAME): string {
+  return `TimescaleOptions:${name}`;
+}
+
+/** DI token for a named context's bootstrap (drift-check) provider. */
+export function getTimescaleBootstrapToken(name: string = DEFAULT_TIMESCALE_NAME): string {
+  return `TimescaleBootstrap:${name}`;
 }
 
 /**
- * Inject a feature `TimescaleRepository` registered via `TimescaleModule.forFeature([...])`.
+ * Stable DI token for a feature `TimescaleRepository<Entity>`. The `name` scopes the
+ * token to a specific Timescale context (DataSource), so the same entity class can be
+ * registered against multiple DataSources without colliding.
+ *
+ * Note: within a single context, entity classes must be uniquely named (the token uses
+ * the class name) — the same constraint as `@nestjs/typeorm`'s `getRepositoryToken`.
+ */
+export function getTimescaleRepositoryToken(
+  entity: Type<ObjectLiteral>,
+  name: string = DEFAULT_TIMESCALE_NAME,
+): string {
+  return `TimescaleRepository:${name}:${entity.name}`;
+}
+
+/** Inject a named Timescale context (the one registered via `forRoot({ name })`). */
+export function InjectTimescaleContext(name?: string): ParameterDecorator & PropertyDecorator {
+  return Inject(getTimescaleContextToken(name));
+}
+
+/**
+ * Inject a feature `TimescaleRepository` registered via `TimescaleModule.forFeature([...], name?)`.
  * Only class entities are supported (the underlying repository factory requires the class).
  *
  * @example
@@ -28,6 +49,7 @@ export function getTimescaleRepositoryToken(entity: Type<ObjectLiteral>): string
  */
 export function InjectTimescaleRepository(
   entity: Type<ObjectLiteral>,
+  name?: string,
 ): ParameterDecorator & PropertyDecorator {
-  return Inject(getTimescaleRepositoryToken(entity));
+  return Inject(getTimescaleRepositoryToken(entity, name));
 }

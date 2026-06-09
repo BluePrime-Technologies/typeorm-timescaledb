@@ -2,6 +2,8 @@ export { TimescaleModule } from './timescale.module.js';
 export type { TimescaleModuleOptions } from './timescale.module.js';
 export {
   InjectTimescaleRepository,
+  InjectTimescaleContext,
   getTimescaleRepositoryToken,
-  TIMESCALE_CONTEXT,
+  getTimescaleContextToken,
+  DEFAULT_TIMESCALE_NAME,
 } from './tokens.js';
