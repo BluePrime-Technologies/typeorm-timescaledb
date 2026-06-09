@@ -11,6 +11,8 @@ export { Hypertable, TimeColumn, HypertablePrimaryKey } from './decorators/index
 export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.js';
 export { createTimescale } from './runtime/createTimescale.js';
 export type { TimescaleContext, TimescaleRepository } from './runtime/createTimescale.js';
+export { assertSchema } from './runtime/assertSchema.js';
+export type { AssertSchemaOptions } from './runtime/assertSchema.js';
 
 // Migration generation — Django/Prisma-style codegen from @Hypertable metadata.
 export {
@@ -37,4 +39,5 @@ export type {
   RetentionOptions,
   SpacePartitionOptions,
   TimescaleEntityMetadata,
+  DriftItem,
 } from '@blueprime-technologies/timescaledb-core';
