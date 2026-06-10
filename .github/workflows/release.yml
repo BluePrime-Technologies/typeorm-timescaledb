@@ -1,0 +1,51 @@
+name: release
+
+# Releases are cut by pushing a version tag, e.g. `git tag v0.1.0 && git push origin v0.1.0`.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write # npm provenance + OIDC trusted publishing (tokenless)
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:unit
+
+      # The tag must match the published versions (v0.1.0 -> 0.1.0).
+      - name: Verify tag matches package versions
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          for pkg in core typeorm; do
+            V=$(node -p "require('./packages/$pkg/package.json').version")
+            if [ "$V" != "$TAG" ]; then
+              echo "::error::tag $GITHUB_REF_NAME != packages/$pkg version $V"; exit 1
+            fi
+          done
+          echo "tag $GITHUB_REF_NAME matches version $TAG"
+
+      # pnpm publish rewrites the workspace:* core dependency to the real version and
+      # emits npm provenance. core is published first (typeorm-timescaledb depends on it).
+      # If you use a token instead of OIDC trusted publishing, set the NPM_TOKEN secret;
+      # otherwise configure a trusted publisher for both packages on npmjs.com.
+      - name: Publish @blueprime-technologies/timescaledb-core
+        run: pnpm --filter @blueprime-technologies/timescaledb-core publish --no-git-checks --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish typeorm-timescaledb
+        run: pnpm --filter typeorm-timescaledb publish --no-git-checks --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
