@@ -15,7 +15,7 @@ The existing TypeORM ↔ TimescaleDB packages are abandoned and share a fatal bu
 ## Install
 
 ```sh
-npm install typeorm-timescaledb typeorm reflect-metadata
+npm install typeorm-timescaledb typeorm pg reflect-metadata
 ```
 
 Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 || ^1.0.0`, Node `>=20.19 || >=22.12`.
@@ -67,6 +67,8 @@ npx typeorm-timescaledb generate -d src/data-source.ts -o src/migrations
 # 3. apply it (also: revert | status):
 npx typeorm-timescaledb run -d src/data-source.ts
 ```
+
+> **TypeScript DataSource?** The CLI uses native `import()`, so a `.ts` `-d` file needs a TypeScript loader. Run it under [`tsx`](https://tsx.is) (`npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations`) or [`ts-node`](https://typestrong.org/ts-node/) (`node --import ts-node/esm`), or point `-d` at a compiled `.js` DataSource.
 
 Get a typed, hypertable-aware repository — scoped to your DataSource, no globals:
 
