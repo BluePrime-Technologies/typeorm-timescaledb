@@ -5,7 +5,7 @@ workflow then publishes both packages to npm.
 
 ## One-time setup (npmjs.com)
 
-1. Create/confirm the **`@blueprime-technologies`** npm org (owns `@blueprime/timescaledb-core`).
+1. Create/confirm the **`@blueprime`** npm org (owns `@blueprime/timescaledb-core`).
 2. Pick an auth method for the `release` workflow:
    - **Automation token (recommended — reliable today):** create a granular npm automation
      token scoped to both packages and add it as the repo secret **`NPM_TOKEN`**. The
