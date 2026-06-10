@@ -7,11 +7,13 @@ workflow then publishes both packages to npm.
 
 1. Create/confirm the **`@blueprime-technologies`** npm org (owns `@blueprime-technologies/timescaledb-core`).
 2. Pick an auth method for the `release` workflow:
-   - **Trusted Publishing (OIDC, recommended — no stored token):** in npm, add a trusted
-     publisher for **both** packages → GitHub Actions, repo `BluePrime-Technologies/typeorm-timescaledb`,
-     workflow `release.yml`. The workflow already requests `id-token: write`.
-   - **Automation token (alternative):** create a granular npm automation token scoped to
-     both packages and add it as the repo secret **`NPM_TOKEN`**.
+   - **Automation token (recommended — reliable today):** create a granular npm automation
+     token scoped to both packages and add it as the repo secret **`NPM_TOKEN`**. The
+     workflow still emits npm **provenance** via `id-token: write`.
+   - **Trusted Publishing (tokenless OIDC):** add a trusted publisher for **both** packages
+     → GitHub Actions, repo `BluePrime-Technologies/typeorm-timescaledb`, workflow
+     `release.yml`, and leave `NPM_TOKEN` unset. Requires a pnpm version that supports
+     tokenless OIDC publishing; if a release fails to authenticate, use the token method.
 
 Both package names (`typeorm-timescaledb`, `@blueprime-technologies/timescaledb-core`) are currently unclaimed.
 
