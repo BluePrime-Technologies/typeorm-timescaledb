@@ -55,6 +55,15 @@ jobs:
           echo "Resolved typeorm: $RESOLVED (expected ${{ matrix.typeorm }})"
           case "$RESOLVED" in ${{ matrix.typeorm }}*) ;; *) echo "::error::typeorm $RESOLVED != ${{ matrix.typeorm }}"; exit 1 ;; esac
       - run: pnpm build
+      # Pre-pull the image with retries so a transient Docker Hub 500 doesn't fail the
+      # suite (Testcontainers reuses the cached image instead of pulling mid-test).
+      - name: Pre-pull TimescaleDB image
+        run: |
+          for i in 1 2 3 4 5; do
+            docker pull "timescale/timescaledb:${{ matrix.timescaledb }}" && exit 0
+            echo "pull attempt $i failed; retrying in $((i*10))s..."; sleep $((i*10))
+          done
+          echo "::error::could not pull timescale/timescaledb:${{ matrix.timescaledb }} after retries"; exit 1
       - run: pnpm test
         env:
           # Testcontainers boots TimescaleDB itself; image selected per matrix cell.

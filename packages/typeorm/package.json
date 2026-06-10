@@ -1,7 +1,7 @@
 {
   "name": "typeorm-timescaledb",
-  "version": "0.0.0",
-  "description": "A complete, multi-DataSource-safe TimescaleDB integration for TypeORM.",
+  "version": "0.1.0",
+  "description": "Multi-DataSource-safe TimescaleDB integration for TypeORM: typed hypertables, columnstore, retention, and reversible migrations.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
@@ -9,12 +9,20 @@
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
       }
     },
     "./nestjs": {
       "import": {
         "types": "./dist/nestjs/index.d.ts",
         "default": "./dist/nestjs/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/nestjs/index.d.ts",
+        "default": "./dist/cjs/nestjs/index.js"
       }
     }
   },
@@ -29,10 +37,11 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && tsc -p tsconfig.cjs.json && node ../../scripts/write-cjs-pkgjson.mjs",
     "typecheck": "tsc -b",
     "test:unit": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts'",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "prepack": "cp ../../README.md README.md"
   },
   "dependencies": {
     "@blueprime-technologies/timescaledb-core": "workspace:*"
@@ -55,7 +64,7 @@
     }
   },
   "engines": {
-    "node": ">=20.19 || >=22.12"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "keywords": [
     "typeorm",
@@ -84,5 +93,14 @@
     "rxjs": "^7.8.2",
     "testcontainers": "^12.0.1",
     "typeorm": "^1.0.0"
+  },
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
+  "typesVersions": {
+    "*": {
+      "nestjs": [
+        "./dist/nestjs/index.d.ts"
+      ]
+    }
   }
 }

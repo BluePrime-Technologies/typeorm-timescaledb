@@ -1,35 +1,127 @@
 # typeorm-timescaledb
 
-> A complete, multi-DataSource-safe [TimescaleDB](https://www.tigerdata.com/) integration for [TypeORM](https://typeorm.io/).
+> A multi-DataSource-safe [TimescaleDB](https://www.tigerdata.com/) integration for [TypeORM](https://typeorm.io/) — define hypertables, columnstore, and retention as typed entities, and generate/apply migrations for them.
 
-**The goal:** every TimescaleDB capability — hypertables, Hypercore columnstore, retention, continuous aggregates, and every hyperfunction — expressed through typed ORM constructs, so you never have to hand-write TimescaleDB SQL. An ORM is a mapper; this package does the mapping work for TimescaleDB the way Django's ORM does it for Postgres.
+**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.1.0** delivers the foundation (see [Scope](#whats-in-010) below); hyperfunctions and continuous aggregates come next.
 
 ## Why this exists
 
-The existing TypeORM ↔ TimescaleDB packages (`@timescaledb/typeorm` and its fork) are abandoned and share a fatal bug: they **globally reassign `DataSource.prototype`** at import, which breaks any application that runs more than one `DataSource` (the standard NestJS "Postgres + TimescaleDB" setup). One of them even deletes data on migration rollback.
+The existing TypeORM ↔ TimescaleDB packages are abandoned and share a fatal bug: they **globally reassign `DataSource.prototype`** at import, breaking any app that runs more than one `DataSource` (the standard NestJS "Postgres + TimescaleDB" setup); one even deletes data on rollback.
 
 `typeorm-timescaledb` is built on one hard rule:
 
-> **No global mutation. Ever.** Every extension is scoped to the `DataSource` you pass in — proven by a CI gate that boots two DataSources and asserts the plain one is untouched.
+> **No global mutation. Ever.** Everything is scoped to the `DataSource` you pass in — enforced by a CI gate that boots two DataSources and asserts the plain one is untouched.
 
-## Status
+## Install
 
-🚧 Early development. Built first for [BluePrime](https://blueprime.app)'s own use; published openly under Apache-2.0. APIs may change before `1.0`.
+```sh
+npm install typeorm-timescaledb typeorm pg reflect-metadata
+```
+
+Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 || ^1.0.0`, Node `>=20.19 || >=22.12`.
+
+## Quick start
+
+Define your schema with one import — entities, columns, relations, and the TimescaleDB extensions all come from `typeorm-timescaledb` (you never reach for raw `typeorm`):
+
+```ts
+import {
+  Entity,
+  PrimaryColumn,
+  Column,
+  Hypertable,
+  TimeColumn,
+  HypertablePrimaryKey,
+} from 'typeorm-timescaledb';
+
+@Entity('reading')
+@Hypertable({
+  chunkInterval: '1 day',
+  columnstore: {
+    segmentBy: ['sensorId'],
+    orderBy: [{ column: 'time', direction: 'DESC' }],
+    compressAfter: '7 days',
+  },
+  retention: { dropAfter: '90 days' },
+})
+export class Reading {
+  @PrimaryColumn({ type: 'timestamptz' })
+  @TimeColumn()
+  @HypertablePrimaryKey()
+  time!: Date;
+
+  @Column({ type: 'text' })
+  sensorId!: string;
+
+  @Column({ type: 'double precision' })
+  value!: number;
+}
+```
+
+Generate and run a migration with the CLI (point `-d` at your DataSource module):
+
+```sh
+# 1. your DataSource/TypeORM creates the plain table (synchronize or a TypeORM migration)
+# 2. generate the TimescaleDB migration from your @Hypertable entities:
+npx typeorm-timescaledb generate -d src/data-source.ts -o src/migrations
+# 3. apply it (also: revert | status):
+npx typeorm-timescaledb run -d src/data-source.ts
+```
+
+> **TypeScript DataSource?** The CLI uses native `import()`, so a `.ts` `-d` file needs a TypeScript loader. Run it under [`tsx`](https://tsx.is) (`npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations`) or [`ts-node`](https://typestrong.org/ts-node/) (`node --import ts-node/esm`), or point `-d` at a compiled `.js` DataSource.
+
+Get a typed, hypertable-aware repository — scoped to your DataSource, no globals:
+
+```ts
+import { createTimescale } from 'typeorm-timescaledb';
+
+const ts = createTimescale(dataSource);
+const readings = ts.getRepository(Reading);
+await ts.assertSchema(); // fail fast if the live DB drifted from your entities
+```
+
+### NestJS
+
+```ts
+import { TimescaleModule, InjectTimescaleRepository } from 'typeorm-timescaledb/nestjs';
+
+@Module({
+  imports: [
+    TimescaleModule.forRoot({ dataSource, assert: 'assert' }), // boot-time drift check
+    TimescaleModule.forFeature([Reading]),
+  ],
+})
+export class AppModule {}
+```
+
+Multiple TimescaleDB DataSources? Pass a `name` to `forRoot` / `forFeature` / `@InjectTimescaleRepository`.
+
+## What's in 0.1.0
+
+**Works today (verified end-to-end against real TimescaleDB):**
+
+- `@Hypertable` / `@TimeColumn` / `@HypertablePrimaryKey` — hypertables with chunk interval, **columnstore** (segmentby/orderby + policy), **retention** policy, and **space (hash) partitioning**.
+- **Migration generation + CLI** (`generate | run | revert | status`) — reviewable, reversible migrations; `down()` is **never destructive**.
+- **Per-DataSource repositories** (`createTimescale`) and **boot-time drift detection** (`assertSchema`).
+- **NestJS module** with optional-peer wiring and named multi-DataSource contexts.
+- Unified import surface (one package, never raw `typeorm`); dual ESM + CJS.
+
+**Migration model (important):** generated migrations are **additive / desired-state** — they emit the full hypertable setup idempotently (`if_not_exists`). Adding configuration (a new entity, a new policy) propagates on the next `generate` + `run`. **Removing or altering** existing config (e.g. dropping a retention policy, changing a chunk interval) is **not** auto-diffed yet — do those in a hand-written migration for now. A full entity↔DB diff engine is planned. (The base `CREATE TABLE` is TypeORM's job — via `synchronize` or its own migration; this package adds the TimescaleDB layer on top.)
+
+**Not yet (planned):** continuous aggregates, hyperfunction query expressions, the full diff engine, and validated cross-store references.
 
 ## Design principles
 
-1. **Full coverage, no gaps.** Every TimescaleDB feature gets a first-class typed construct — decorators for schema, query-builder expression classes for hyperfunctions, typed result objects for non-entity result shapes. A raw `tsRaw` passthrough exists for convenience, never as an excuse to leave a feature unmapped.
-2. **Multi-DataSource safe.** No prototype patching, no global singletons. Composition and explicit per-DataSource factories only.
-3. **Migration-driven DDL.** Hypertables, policies, and continuous aggregates are created via reviewable migrations — never `synchronize: true`. Rollbacks never destroy data.
-4. **Tested against real TimescaleDB.** Integration tests run against a real TimescaleDB container and assert against `timescaledb_information.*` catalog views, not SQL strings.
+1. **Multi-DataSource safe** — no prototype patching, no global singletons; per-DataSource factories only.
+2. **Migration-driven DDL** — never `synchronize: true` for TimescaleDB objects; rollbacks never destroy data.
+3. **Tested against real TimescaleDB** — integration + deep E2E tests run against a real container and assert against `timescaledb_information.*`, not SQL strings.
 
 ## Packages
 
-| Package                                    | Description                                                                             |
-| ------------------------------------------ | --------------------------------------------------------------------------------------- |
-| `typeorm-timescaledb`                      | The TypeORM integration: decorators, repository, migrations, NestJS module.             |
-| `@blueprime-technologies/timescaledb-core` | ORM-agnostic SQL/DDL generation, metadata model, identifier safety.                     |
-| `@blueprime-technologies/cross-store`      | Validated cross-store (`@Resolve`) references between TimescaleDB and another database. |
+| Package                                    | Description                                                                      |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| `typeorm-timescaledb`                      | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module. |
+| `@blueprime-technologies/timescaledb-core` | ORM-agnostic SQL/DDL generation, metadata model, identifier safety.              |
 
 ## License
 
