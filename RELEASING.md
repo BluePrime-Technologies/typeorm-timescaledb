@@ -32,15 +32,10 @@ Both package names (`typeorm-timescaledb`, `@blueprime-technologies/timescaledb-
 
 ## If a release half-publishes
 
-Publishing is sequential (core, then typeorm-timescaledb). If core publishes but
-typeorm-timescaledb fails, **re-running the workflow won't work** — re-publishing the
-already-published core version errors and blocks the retry. Publish the remaining
-package manually from an up-to-date `main` at that version:
-
-```sh
-pnpm build
-pnpm --filter typeorm-timescaledb publish --no-git-checks --access public --provenance
-```
+Publishing is sequential (core, then typeorm-timescaledb) and **idempotent** — each step
+skips a version already on npm. So if core publishes but typeorm-timescaledb fails (e.g. a
+transient npm outage), just **re-run the `release` workflow on the same tag**: it skips the
+already-published core and publishes the rest.
 
 ## Notes
 

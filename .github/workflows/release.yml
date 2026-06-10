@@ -21,13 +21,26 @@ jobs:
     steps:
       # SHA-pinned: this workflow holds publish credentials (NPM_TOKEN + OIDC), so the
       # actions are pinned to commit SHAs rather than moving tags for supply-chain safety.
+      # SHA-pinned: this workflow holds publish credentials (NPM_TOKEN + OIDC), so the
+      # actions are pinned to commit SHAs rather than moving tags for supply-chain safety.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # need history to verify the tag is on main
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
           cache: pnpm
+
+      # Only publish tags that point at a commit on main (releases come from reviewed main).
+      - name: Verify tag is on main
+        run: |
+          git fetch --no-tags --depth=2147483647 origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME ($GITHUB_SHA) is not an ancestor of main — releases must come from main"; exit 1
+          fi
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test:unit
@@ -44,15 +57,27 @@ jobs:
           done
           echo "tag $GITHUB_REF_NAME matches version $TAG"
 
-      # pnpm publish rewrites the workspace:* core dependency to the real version and
-      # emits npm provenance. core is published first (typeorm-timescaledb depends on it).
-      # If you use a token instead of OIDC trusted publishing, set the NPM_TOKEN secret;
-      # otherwise configure a trusted publisher for both packages on npmjs.com.
+      # Publish core first (typeorm-timescaledb depends on it). pnpm publish rewrites the
+      # workspace:* core dependency to the real version and emits npm provenance. Each step
+      # is idempotent — it skips a version already on npm so a half-failed release can be
+      # re-run on the same tag. Auth: NPM_TOKEN secret, or OIDC trusted publishing if unset.
       - name: Publish @blueprime-technologies/timescaledb-core
-        run: pnpm --filter @blueprime-technologies/timescaledb-core publish --no-git-checks --access public --provenance
+        run: |
+          V=$(node -p "require('./packages/core/package.json').version")
+          if npm view "@blueprime-technologies/timescaledb-core@$V" version >/dev/null 2>&1; then
+            echo "core@$V already published — skipping"
+          else
+            pnpm --filter @blueprime-technologies/timescaledb-core publish --no-git-checks --access public --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish typeorm-timescaledb
-        run: pnpm --filter typeorm-timescaledb publish --no-git-checks --access public --provenance
+        run: |
+          V=$(node -p "require('./packages/typeorm/package.json').version")
+          if npm view "typeorm-timescaledb@$V" version >/dev/null 2>&1; then
+            echo "typeorm-timescaledb@$V already published — skipping"
+          else
+            pnpm --filter typeorm-timescaledb publish --no-git-checks --access public --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
