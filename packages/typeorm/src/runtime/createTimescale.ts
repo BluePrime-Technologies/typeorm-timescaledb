@@ -3,8 +3,8 @@ import {
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
-} from '@blueprime-technologies/timescaledb-core';
-import type { DriftItem, TimescaleEntityMetadata } from '@blueprime-technologies/timescaledb-core';
+} from '@blueprime/timescaledb-core';
+import type { DriftItem, TimescaleEntityMetadata } from '@blueprime/timescaledb-core';
 import { getTimescaleMetadata } from '../decorators/index.js';
 import { assertSchema, type AssertSchemaOptions } from './assertSchema.js';
 

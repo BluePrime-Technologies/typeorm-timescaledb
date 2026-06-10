@@ -1,5 +1,5 @@
 {
-  "name": "@blueprime-technologies/cross-store",
+  "name": "@blueprime/cross-store",
   "version": "0.0.0",
   "description": "Validated cross-store (@Resolve) references between TimescaleDB and another database.",
   "license": "Apache-2.0",
@@ -27,7 +27,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@blueprime-technologies/timescaledb-core": "workspace:*"
+    "@blueprime/timescaledb-core": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

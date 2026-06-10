@@ -1,4 +1,4 @@
-# @blueprime-technologies/timescaledb-core
+# @blueprime/timescaledb-core
 
 ORM-agnostic core for [`typeorm-timescaledb`](https://www.npmjs.com/package/typeorm-timescaledb): TimescaleDB SQL/DDL generation, the hypertable metadata model, identifier-safety helpers, and schema-drift comparison. No TypeORM dependency.
 

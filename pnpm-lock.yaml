@@ -42,13 +42,13 @@ importers:
 
   packages/cross-store:
     dependencies:
-      '@blueprime-technologies/timescaledb-core':
+      '@blueprime/timescaledb-core':
         specifier: workspace:*
         version: link:../core
 
   packages/typeorm:
     dependencies:
-      '@blueprime-technologies/timescaledb-core':
+      '@blueprime/timescaledb-core':
         specifier: workspace:*
         version: link:../core
     devDependencies:

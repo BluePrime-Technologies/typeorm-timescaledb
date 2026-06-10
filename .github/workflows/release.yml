@@ -61,13 +61,13 @@ jobs:
       # workspace:* core dependency to the real version and emits npm provenance. Each step
       # is idempotent — it skips a version already on npm so a half-failed release can be
       # re-run on the same tag. Auth: NPM_TOKEN secret, or OIDC trusted publishing if unset.
-      - name: Publish @blueprime-technologies/timescaledb-core
+      - name: Publish @blueprime/timescaledb-core
         run: |
           V=$(node -p "require('./packages/core/package.json').version")
-          if npm view "@blueprime-technologies/timescaledb-core@$V" version >/dev/null 2>&1; then
+          if npm view "@blueprime/timescaledb-core@$V" version >/dev/null 2>&1; then
             echo "core@$V already published — skipping"
           else
-            pnpm --filter @blueprime-technologies/timescaledb-core publish --no-git-checks --access public --provenance
+            pnpm --filter @blueprime/timescaledb-core publish --no-git-checks --access public --provenance
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

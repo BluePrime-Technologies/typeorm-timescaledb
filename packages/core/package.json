@@ -1,5 +1,5 @@
 {
-  "name": "@blueprime-technologies/timescaledb-core",
+  "name": "@blueprime/timescaledb-core",
   "version": "0.1.0",
   "description": "ORM-agnostic core for TimescaleDB: SQL/DDL generation, metadata model, identifier safety.",
   "license": "Apache-2.0",

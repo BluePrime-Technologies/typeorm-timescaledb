@@ -8,7 +8,7 @@ import {
   type ActualHypertable,
   type DriftItem,
   type ExpectedHypertable,
-} from '@blueprime-technologies/timescaledb-core';
+} from '@blueprime/timescaledb-core';
 import { getTimescaleMetadata, hasTimescaleMetadata } from '../decorators/index.js';
 
 type Ctor = abstract new (...args: never[]) => unknown;
