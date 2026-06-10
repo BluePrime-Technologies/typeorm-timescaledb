@@ -9,14 +9,21 @@ permissions:
   contents: read
   id-token: write # npm provenance + OIDC trusted publishing (tokenless)
 
+# Never run two publish jobs for the same tag concurrently; never cancel a publish mid-flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: publish to npm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      # SHA-pinned: this workflow holds publish credentials (NPM_TOKEN + OIDC), so the
+      # actions are pinned to commit SHAs rather than moving tags for supply-chain safety.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
