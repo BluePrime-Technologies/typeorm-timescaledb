@@ -55,10 +55,7 @@ Entity('event')(Event);
 PrimaryColumn({ type: 'timestamptz' })(Event.prototype, 'ts');
 PrimaryColumn({ type: 'text' })(Event.prototype, 'tenant');
 Column({ type: 'jsonb', nullable: true })(Event.prototype, 'payload');
-Hypertable({
-  chunkInterval: '1 hour',
-  spacePartition: { column: 'tenant', partitions: 4 },
-})(Event);
+Hypertable({ chunkInterval: '1 hour', spacePartition: { column: 'tenant', partitions: 4 } })(Event);
 TimeColumn()(Event.prototype, 'ts');
 HypertablePrimaryKey()(Event.prototype, 'ts');
 HypertablePrimaryKey()(Event.prototype, 'tenant');
@@ -74,6 +71,15 @@ Hypertable({
 })(Sample);
 TimeColumn()(Sample.prototype, 'measuredAt');
 HypertablePrimaryKey()(Sample.prototype, 'measuredAt');
+
+// Columnstore enabled WITHOUT a policy (compressAfter omitted) — distinct builder branch.
+class Telemetry {}
+Entity('telemetry')(Telemetry);
+PrimaryColumn({ type: 'timestamptz' })(Telemetry.prototype, 'time');
+Column({ type: 'text' })(Telemetry.prototype, 'host');
+Hypertable({ chunkInterval: '1 day', columnstore: { segmentBy: ['host'] } })(Telemetry);
+TimeColumn()(Telemetry.prototype, 'time');
+HypertablePrimaryKey()(Telemetry.prototype, 'time');
 
 describe.skipIf(!IMAGE)('deep E2E against real TimescaleDB', () => {
   let container: StartedTestContainer;
@@ -106,7 +112,8 @@ describe.skipIf(!IMAGE)('deep E2E against real TimescaleDB', () => {
     await container?.stop();
   });
 
-  async function open(entities: EntityClass[]): Promise<DataSource> {
+  /** Open a DataSource for the given entities and drop their tables first (order-independent tests). */
+  async function open(entities: EntityClass[], tables: string[]): Promise<DataSource> {
     const ds = new DataSource({
       type: 'postgres',
       host,
@@ -118,10 +125,11 @@ describe.skipIf(!IMAGE)('deep E2E against real TimescaleDB', () => {
       synchronize: false,
     });
     await ds.initialize();
+    for (const t of tables) await ds.query(`DROP TABLE IF EXISTS "${t}" CASCADE`);
+    await ds.synchronize(); // create the plain tables
     return ds;
   }
 
-  /** Apply the generated migration's up statements via a query runner. */
   async function applyUp(ds: DataSource): Promise<void> {
     const qr = ds.createQueryRunner();
     try {
@@ -131,144 +139,218 @@ describe.skipIf(!IMAGE)('deep E2E against real TimescaleDB', () => {
     }
   }
 
-  it('full lifecycle: generate+apply, real data, chunks, compression, retention, queries', async () => {
-    const ds = await open([Reading]);
+  async function applyDown(ds: DataSource): Promise<void> {
+    const qr = ds.createQueryRunner();
     try {
-      await ds.synchronize(); // creates the plain "reading" table
+      await createTimescaleMigration(generateTimescaleMigration(ds, { timestamp: TS })).down(qr);
+    } finally {
+      await qr.release();
+    }
+  }
+
+  const num = (rows: Array<Record<string, string>>, key = 'n'): number => Number(rows[0]?.[key]);
+
+  it('full lifecycle: data, chunks, compression (correct cross-boundary queries), retention', async () => {
+    const ds = await open([Reading], ['reading']);
+    try {
       await applyUp(ds);
 
-      // --- catalog: hypertable + policies present ---
-      const ht: unknown[] = await ds.query(
-        `SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'reading'`,
-      );
-      expect(ht).toHaveLength(1);
+      // hypertable + both policies recorded in the catalog
+      expect(
+        await ds.query(
+          `SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'reading'`,
+        ),
+      ).toHaveLength(1);
       const procs: Array<{ proc_name: string }> = await ds.query(
         `SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_name = 'reading'`,
       );
-      const procNames = procs.map((p) => p.proc_name);
-      expect(procNames).toContain('policy_compression');
-      expect(procNames).toContain('policy_retention');
+      expect(procs.map((p) => p.proc_name).sort()).toEqual([
+        'policy_compression',
+        'policy_retention',
+      ]);
 
-      // columnstore was enabled with our segmentby/orderby
-      const cs: unknown[] = await ds.query(
-        `SELECT 1 FROM timescaledb_information.compression_settings WHERE hypertable_name = 'reading'`,
+      // the EXACT segmentby/orderby we configured actually landed
+      const settings: Array<{
+        attname: string;
+        segmentby_column_index: number | null;
+        orderby_column_index: number | null;
+      }> = await ds.query(
+        `SELECT attname, segmentby_column_index, orderby_column_index
+             FROM timescaledb_information.compression_settings WHERE hypertable_name = 'reading'`,
       );
-      expect(cs.length).toBeGreaterThan(0);
+      const seg = settings.find((s) => s.attname === 'sensorId');
+      const ord = settings.find((s) => s.attname === 'time');
+      expect(seg?.segmentby_column_index).not.toBeNull();
+      expect(ord?.orderby_column_index).not.toBeNull();
 
-      // --- real data spanning multiple daily chunks ---
+      // real data: 17 rows over 5 daily chunks
       await ds.query(
         `INSERT INTO "reading" ("time","sensorId","value")
-           SELECT ts, 'sensor-a', 1
-           FROM generate_series('2020-01-01'::timestamptz, '2020-01-05'::timestamptz, '6 hours') ts`,
+         SELECT ts, 'sensor-a', 1
+         FROM generate_series('2020-01-01'::timestamptz, '2020-01-05'::timestamptz, '6 hours') ts`,
       );
-      const totalRows: Array<{ n: string }> = await ds.query(
-        `SELECT count(*)::text n FROM "reading"`,
-      );
-      const insertedCount = Number(totalRows[0]?.n);
-      expect(insertedCount).toBeGreaterThan(10);
+      expect(num(await ds.query(`SELECT count(*)::text n FROM "reading"`))).toBe(17);
+      expect(
+        num(
+          await ds.query(
+            `SELECT count(*)::text n FROM timescaledb_information.chunks WHERE hypertable_name = 'reading'`,
+          ),
+        ),
+      ).toBeGreaterThanOrEqual(4);
 
-      const chunksBefore: Array<{ n: string }> = await ds.query(
-        `SELECT count(*)::text n FROM timescaledb_information.chunks WHERE hypertable_name = 'reading'`,
-      );
-      expect(Number(chunksBefore[0]?.n)).toBeGreaterThan(1); // multiple chunks created
-
-      // --- compress the oldest chunk, then query across compressed + uncompressed ---
+      // compress exactly one chunk, then verify queries are correct across the boundary
       await ds.query(
         `SELECT compress_chunk(c) FROM (SELECT show_chunks('"reading"') c ORDER BY 1 LIMIT 1) s`,
       );
-      const compressed: Array<{ n: string }> = await ds.query(
-        `SELECT count(*)::text n FROM timescaledb_information.chunks WHERE hypertable_name = 'reading' AND is_compressed`,
-      );
-      expect(Number(compressed[0]?.n)).toBeGreaterThanOrEqual(1);
-
-      // queries must return correct results across the compressed boundary
-      const sum: Array<{ total: string; cnt: string }> = await ds.query(
+      expect(
+        num(
+          await ds.query(
+            `SELECT count(*)::text n FROM timescaledb_information.chunks WHERE hypertable_name = 'reading' AND is_compressed`,
+          ),
+        ),
+      ).toBe(1);
+      const agg: Array<{ total: string; cnt: string }> = await ds.query(
         `SELECT sum(value)::text total, count(*)::text cnt FROM "reading"`,
       );
-      expect(Number(sum[0]?.cnt)).toBe(insertedCount);
-      expect(Number(sum[0]?.total)).toBe(insertedCount); // each value = 1
+      expect(Number(agg[0]?.cnt)).toBe(17);
+      expect(Number(agg[0]?.total)).toBe(17); // each value = 1, read across compressed + uncompressed
 
-      // --- retention: drop old chunks, verify rows/chunks shrink ---
+      // a time_bucket aggregation (the common real-world query shape) works on the hypertable
+      const buckets: Array<{ bucket: string; c: string }> = await ds.query(
+        `SELECT time_bucket('1 day', "time") bucket, count(*)::text c FROM "reading" GROUP BY 1 ORDER BY 1`,
+      );
+      expect(buckets.length).toBeGreaterThanOrEqual(4);
+      expect(buckets.reduce((a, b) => a + Number(b.c), 0)).toBe(17);
+
+      // retention: drop old chunks
       await ds.query(`SELECT drop_chunks('"reading"', older_than => '2020-01-03'::timestamptz)`);
-      const after: Array<{ n: string }> = await ds.query(`SELECT count(*)::text n FROM "reading"`);
-      expect(Number(after[0]?.n)).toBeLessThan(insertedCount);
+      const afterDrop = num(await ds.query(`SELECT count(*)::text n FROM "reading"`));
+      expect(afterDrop).toBeLessThan(17);
 
-      // --- migration down is non-destructive: policies gone, hypertable + data stay ---
-      const qr = ds.createQueryRunner();
-      try {
-        await createTimescaleMigration(generateTimescaleMigration(ds, { timestamp: TS })).down(qr);
-      } finally {
-        await qr.release();
-      }
-      const procsAfterDown: Array<{ proc_name: string }> = await ds.query(
+      // non-destructive down: BOTH policies removed, hypertable + remaining data stay
+      await applyDown(ds);
+      const procsDown: Array<{ proc_name: string }> = await ds.query(
         `SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_name = 'reading'`,
       );
-      expect(procsAfterDown.map((p) => p.proc_name)).not.toContain('policy_retention');
-      const stillHt: unknown[] = await ds.query(
-        `SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'reading'`,
-      );
-      expect(stillHt).toHaveLength(1);
-      const dataKept: Array<{ n: string }> = await ds.query(
-        `SELECT count(*)::text n FROM "reading"`,
-      );
-      expect(Number(dataKept[0]?.n)).toBe(Number(after[0]?.n));
+      expect(procsDown.map((p) => p.proc_name)).not.toContain('policy_retention');
+      expect(procsDown.map((p) => p.proc_name)).not.toContain('policy_compression');
+      expect(
+        await ds.query(
+          `SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'reading'`,
+        ),
+      ).toHaveLength(1);
+      expect(num(await ds.query(`SELECT count(*)::text n FROM "reading"`))).toBe(afterDrop); // data intact
 
-      // --- re-apply up is idempotent (policies restored, no error) ---
+      // idempotent re-up: policies restored
       await applyUp(ds);
       const procsReUp: Array<{ proc_name: string }> = await ds.query(
         `SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_name = 'reading'`,
       );
-      expect(procsReUp.map((p) => p.proc_name)).toContain('policy_retention');
+      expect(procsReUp.map((p) => p.proc_name).sort()).toEqual([
+        'policy_compression',
+        'policy_retention',
+      ]);
     } finally {
       await ds.destroy();
     }
   }, 180_000);
 
   it('space partitioning: by_hash adds a second dimension', async () => {
-    const ds = await open([Event]);
+    const ds = await open([Event], ['event']);
     try {
-      await ds.synchronize();
       await applyUp(ds);
       const dims: Array<{ column_name: string }> = await ds.query(
         `SELECT column_name FROM timescaledb_information.dimensions WHERE hypertable_name = 'event' ORDER BY column_name`,
       );
-      const cols = dims.map((d) => d.column_name);
-      expect(cols).toContain('ts'); // time dimension
-      expect(cols).toContain('tenant'); // space (hash) dimension
-      expect(cols).toHaveLength(2);
+      expect(dims.map((d) => d.column_name).sort()).toEqual(['tenant', 'ts']);
     } finally {
       await ds.destroy();
     }
   }, 120_000);
 
   it('@Column({ name }) rename: generated DDL targets physical columns', async () => {
-    const ds = await open([Sample]);
+    const ds = await open([Sample], ['sample']);
     try {
-      await ds.synchronize();
       await applyUp(ds);
-      // hypertable on the physical column measured_at
       const dims: Array<{ column_name: string }> = await ds.query(
         `SELECT column_name FROM timescaledb_information.dimensions WHERE hypertable_name = 'sample'`,
       );
       expect(dims.map((d) => d.column_name)).toContain('measured_at');
-      // data round-trips on the physical schema
       await ds.query(
         `INSERT INTO "sample" ("measured_at","device_id") VALUES ('2021-01-01'::timestamptz, 'dev-1')`,
       );
-      const rows: Array<{ n: string }> = await ds.query(`SELECT count(*)::text n FROM "sample"`);
-      expect(Number(rows[0]?.n)).toBe(1);
+      expect(num(await ds.query(`SELECT count(*)::text n FROM "sample"`))).toBe(1);
     } finally {
       await ds.destroy();
     }
   }, 120_000);
 
-  it('repository access + assertSchema (in-sync, then drift)', async () => {
-    const ds = await open([Reading]);
+  it('columnstore without a policy: enabled, no policy job, non-destructive down', async () => {
+    const ds = await open([Telemetry], ['telemetry']);
     try {
-      await ds.synchronize();
       await applyUp(ds);
+      // columnstore enabled (settings present) but NO compression policy job
+      expect(
+        num(
+          await ds.query(
+            `SELECT count(*)::text n FROM timescaledb_information.compression_settings WHERE hypertable_name = 'telemetry'`,
+          ),
+        ),
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        num(
+          await ds.query(
+            `SELECT count(*)::text n FROM timescaledb_information.jobs WHERE hypertable_name = 'telemetry' AND proc_name = 'policy_compression'`,
+          ),
+        ),
+      ).toBe(0);
+      // down is a no-op (no policy to remove); hypertable stays
+      await applyDown(ds);
+      expect(
+        await ds.query(
+          `SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'telemetry'`,
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await ds.destroy();
+    }
+  }, 120_000);
 
-      // repository from the Timescale context performs real CRUD on the hypertable
+  it('multi-entity: one migration converts every hypertable on the DataSource', async () => {
+    const ds = await open([Reading, Event, Sample], ['reading', 'event', 'sample']);
+    try {
+      await applyUp(ds);
+      const hts: Array<{ hypertable_name: string }> = await ds.query(
+        `SELECT hypertable_name FROM timescaledb_information.hypertables ORDER BY hypertable_name`,
+      );
+      const names = hts.map((h) => h.hypertable_name);
+      expect(names).toContain('reading');
+      expect(names).toContain('event');
+      expect(names).toContain('sample');
+      // per-table policies are correct: reading has retention, event (no columnstore/retention) has none
+      expect(
+        num(
+          await ds.query(
+            `SELECT count(*)::text n FROM timescaledb_information.jobs WHERE hypertable_name = 'reading' AND proc_name = 'policy_retention'`,
+          ),
+        ),
+      ).toBe(1);
+      expect(
+        num(
+          await ds.query(
+            `SELECT count(*)::text n FROM timescaledb_information.jobs WHERE hypertable_name = 'event'`,
+          ),
+        ),
+      ).toBe(0);
+    } finally {
+      await ds.destroy();
+    }
+  }, 180_000);
+
+  it('repository access + assertSchema (in-sync, then drift)', async () => {
+    const ds = await open([Reading], ['reading']);
+    try {
+      await applyUp(ds);
       const ctx = createTimescale(ds);
       const repo = ctx.getRepository(Reading);
       await repo.save({
@@ -280,10 +362,7 @@ describe.skipIf(!IMAGE)('deep E2E against real TimescaleDB', () => {
       expect(found).toHaveLength(1);
       expect(repo.timescaleMetadata.timeColumn).toBe('time');
 
-      // assertSchema: in sync
-      expect(await ctx.assertSchema()).toEqual([]);
-
-      // introduce drift → detected
+      expect(await ctx.assertSchema()).toEqual([]); // in sync
       await ds.query(`SELECT remove_retention_policy('"reading"', if_exists => TRUE)`);
       await expect(ctx.assertSchema()).rejects.toBeInstanceOf(TimescaleError);
     } finally {
