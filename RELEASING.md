@@ -5,7 +5,7 @@ workflow then publishes both packages to npm.
 
 ## One-time setup (npmjs.com)
 
-1. Create/confirm the **`@blueprime-technologies`** npm org (owns `@blueprime-technologies/timescaledb-core`).
+1. Create/confirm the **`@blueprime-technologies`** npm org (owns `@blueprime/timescaledb-core`).
 2. Pick an auth method for the `release` workflow:
    - **Automation token (recommended — reliable today):** create a granular npm automation
      token scoped to both packages and add it as the repo secret **`NPM_TOKEN`**. The
@@ -15,7 +15,7 @@ workflow then publishes both packages to npm.
      `release.yml`, and leave `NPM_TOKEN` unset. Requires a pnpm version that supports
      tokenless OIDC publishing; if a release fails to authenticate, use the token method.
 
-Both package names (`typeorm-timescaledb`, `@blueprime-technologies/timescaledb-core`) are currently unclaimed.
+Both package names (`typeorm-timescaledb`, `@blueprime/timescaledb-core`) are currently unclaimed.
 
 ## Cutting a release
 
@@ -40,7 +40,7 @@ already-published core and publishes the rest.
 ## Notes
 
 - The published `typeorm-timescaledb` README is the repo root `README.md` (copied in via the
-  package `prepack` step); `@blueprime-technologies/timescaledb-core` ships its own README.
+  package `prepack` step); `@blueprime/timescaledb-core` ships its own README.
 - Pre-publish quality is already validated on every PR (lint, typecheck, unit, the integration
   matrix on TimescaleDB 2.18 + latest, `publint`, `attw`). The release workflow assumes the
   tagged commit passed CI.

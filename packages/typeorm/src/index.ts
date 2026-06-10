@@ -32,7 +32,7 @@ export {
   parseHypertableOptions,
   TimescaleError,
   TimescaleErrorCode,
-} from '@blueprime-technologies/timescaledb-core';
+} from '@blueprime/timescaledb-core';
 export type {
   HypertableOptions,
   ColumnstoreOptions,
@@ -40,4 +40,4 @@ export type {
   SpacePartitionOptions,
   TimescaleEntityMetadata,
   DriftItem,
-} from '@blueprime-technologies/timescaledb-core';
+} from '@blueprime/timescaledb-core';

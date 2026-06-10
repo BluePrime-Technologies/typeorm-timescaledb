@@ -118,10 +118,10 @@ Multiple TimescaleDB DataSources? Pass a `name` to `forRoot` / `forFeature` / `@
 
 ## Packages
 
-| Package                                    | Description                                                                      |
-| ------------------------------------------ | -------------------------------------------------------------------------------- |
-| `typeorm-timescaledb`                      | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module. |
-| `@blueprime-technologies/timescaledb-core` | ORM-agnostic SQL/DDL generation, metadata model, identifier safety.              |
+| Package                       | Description                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| `typeorm-timescaledb`         | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module. |
+| `@blueprime/timescaledb-core` | ORM-agnostic SQL/DDL generation, metadata model, identifier safety.              |
 
 ## License
 

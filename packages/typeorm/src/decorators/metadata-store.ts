@@ -1,7 +1,7 @@
 import type {
   HypertableOptions,
   TimescaleEntityMetadata,
-} from '@blueprime-technologies/timescaledb-core';
+} from '@blueprime/timescaledb-core';
 
 /** An entity class constructor — the public key type for reading metadata. */
 type Ctor = abstract new (...args: never[]) => unknown;

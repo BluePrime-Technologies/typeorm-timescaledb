@@ -44,7 +44,7 @@
     "prepack": "cp ../../README.md README.md"
   },
   "dependencies": {
-    "@blueprime-technologies/timescaledb-core": "workspace:*"
+    "@blueprime/timescaledb-core": "workspace:*"
   },
   "peerDependencies": {
     "@nestjs/common": "^10.0.0 || ^11.0.0",

@@ -1,5 +1,5 @@
-import { parseHypertableOptions } from '@blueprime-technologies/timescaledb-core';
-import type { HypertableOptions } from '@blueprime-technologies/timescaledb-core';
+import { parseHypertableOptions } from '@blueprime/timescaledb-core';
+import type { HypertableOptions } from '@blueprime/timescaledb-core';
 import { setHypertableOptions } from './metadata-store.js';
 
 /**
