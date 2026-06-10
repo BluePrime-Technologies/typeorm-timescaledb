@@ -79,7 +79,8 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BluePrime-Technologies/typeorm-timescaledb.git"
+    "url": "git+https://github.com/BluePrime-Technologies/typeorm-timescaledb.git",
+    "directory": "packages/typeorm"
   },
   "publishConfig": {
     "access": "public"
@@ -102,5 +103,9 @@
         "./dist/nestjs/index.d.ts"
       ]
     }
+  },
+  "homepage": "https://github.com/BluePrime-Technologies/typeorm-timescaledb#readme",
+  "bugs": {
+    "url": "https://github.com/BluePrime-Technologies/typeorm-timescaledb/issues"
   }
 }
