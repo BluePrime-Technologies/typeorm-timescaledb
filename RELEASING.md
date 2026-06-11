@@ -37,6 +37,15 @@ skips a version already on npm. So if core publishes but typeorm-timescaledb fai
 transient npm outage), just **re-run the `release` workflow on the same tag**: it skips the
 already-published core and publishes the rest.
 
+## Scoped-package "published but 404" (first publish under a new org)
+
+A scoped package's **first** publish under a freshly created npm org can report success
+(`+ @blueprime/...`, "public access") yet still return **404** to anonymous `npm view` /
+`npm install` until access is re-asserted. The `release` workflow now defends against this by
+running `npm access set status=public @blueprime/timescaledb-core` after the core publish
+(idempotent; skipped under tokenless OIDC since there's no token for the access call). If you
+ever hit it manually, the fix is the same one-liner, authenticated as the publishing account.
+
 ## Notes
 
 - The published `typeorm-timescaledb` README is the repo root `README.md` (copied in via the
