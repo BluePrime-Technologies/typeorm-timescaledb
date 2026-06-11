@@ -6,11 +6,11 @@
 
 ## Why this exists
 
-The existing TypeORM ↔ TimescaleDB packages are abandoned and share a fatal bug: they **globally reassign `DataSource.prototype`** at import, breaking any app that runs more than one `DataSource` (the standard NestJS "Postgres + TimescaleDB" setup); one even deletes data on rollback.
+Modeling TimescaleDB in TypeScript should be as simple as modeling any other table. Today, getting hypertables, columnstore, and retention into a TypeORM project means dropping into raw SQL and hand-managing migrations. `typeorm-timescaledb` closes that gap: you express TimescaleDB features as typed ORM constructs on your entities, and the package generates and applies the migrations for you — so working with time-series in TypeORM feels native, minimal, and obvious.
 
-`typeorm-timescaledb` is built on one hard rule:
+It's built on one hard rule:
 
-> **No global mutation. Ever.** Everything is scoped to the `DataSource` you pass in — enforced by a CI gate that boots two DataSources and asserts the plain one is untouched.
+> **No global mutation. Ever.** Everything is scoped to the `DataSource` you pass in — so an app can safely run multiple DataSources side by side (e.g. a NestJS "Postgres + TimescaleDB" setup). Enforced by a CI gate that boots two DataSources and asserts the plain one is untouched.
 
 ## Install
 
