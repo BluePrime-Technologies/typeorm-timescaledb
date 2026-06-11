@@ -1,6 +1,6 @@
 {
   "name": "typeorm-timescaledb",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-DataSource-safe TimescaleDB integration for TypeORM: typed hypertables, columnstore, retention, and reversible migrations.",
   "license": "Apache-2.0",
   "type": "module",
