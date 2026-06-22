@@ -1,0 +1,85 @@
+name: General issue
+description: Propose a task, documentation update, feature request, or maintenance item
+title: "task: "
+labels: [triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for non-bug issues related to typeorm-timescaledb. Do not include secrets, credentials, private customer data, or security vulnerability details.
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Issue type
+      description: Select the category that best describes this issue.
+      options:
+        - Documentation
+        - Feature request
+        - Example request
+        - Package metadata
+        - Release readiness
+        - CI or testing
+        - Maintenance
+        - Governance
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the issue, request, or task in a few sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Explain why this matters for users, maintainers, contributors, or package adoption.
+    validations:
+      required: true
+  - type: textarea
+    id: current-state
+    attributes:
+      label: Current state
+      description: Describe the current behavior, documentation, package metadata, or repository state.
+    validations:
+      required: false
+  - type: textarea
+    id: desired-outcome
+    attributes:
+      label: Desired outcome
+      description: Describe what should be true when this issue is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-work
+    attributes:
+      label: Proposed work
+      description: List the expected work items or implementation notes.
+      placeholder: |
+        - Update README wording
+        - Add or adjust examples
+        - Update tests or CI where needed
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: List clear conditions that must be true before this issue is considered done.
+      placeholder: |
+        - The change is accurate for the shipped package scope.
+        - The change can be reviewed without private context.
+        - Relevant docs, tests, or examples are updated when needed.
+    validations:
+      required: true
+  - type: checkboxes
+    id: public-safety
+    attributes:
+      label: Public repository safety check
+      options:
+        - label: I have not included secrets, credentials, tokens, private customer data, internal URLs, or private infrastructure details.
+          required: true
+        - label: This is not a security vulnerability report. Security reports should follow the repository security policy.
+          required: true
