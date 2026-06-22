@@ -64,15 +64,15 @@ state, release state, or known limitation.
 
 ### In scope
 
-- [ ]
-- [ ]
-- [ ]
+- [ ] Add first in-scope item.
+- [ ] Add second in-scope item.
+- [ ] Add third in-scope item.
 
 ### Out of scope
 
-- [ ]
-- [ ]
-- [ ]
+- [ ] Add first out-of-scope item.
+- [ ] Add second out-of-scope item.
+- [ ] Add third out-of-scope item.
 
 ## Affected system or area
 
@@ -103,9 +103,7 @@ Do not paste raw secrets. Use secret references instead.
 
 Relevant files, services, links, or references:
 
--
--
--
+<!-- Add links, file paths, or references here. -->
 
 ## Dependencies and blockers
 
@@ -114,9 +112,9 @@ List upstream/downstream dependencies, approvals, design decisions, access needs
 customer dependencies, or unresolved questions.
 -->
 
-- [ ]
-- [ ]
-- [ ]
+- [ ] Add first dependency or blocker.
+- [ ] Add second dependency or blocker.
+- [ ] Add third dependency or blocker.
 
 ## Risk and impact
 
@@ -148,9 +146,9 @@ Target date or milestone, if any:
 List concrete tasks. These should be specific enough for an assignee to start.
 -->
 
-- [ ]
-- [ ]
-- [ ]
+- [ ] Add first task.
+- [ ] Add second task.
+- [ ] Add third task.
 
 ## Acceptance criteria
 
@@ -168,27 +166,22 @@ The issue is done only when these are true.
 ## Validation plan
 
 <!--
-How should reviewers verify the work?
-Examples: run tests, inspect docs, check npm metadata, review screenshots, execute a
-runbook, validate with a stakeholder, or compare against acceptance criteria.
+How should reviewers verify the work? Examples include running tests, inspecting docs,
+checking package metadata, reviewing screenshots, executing a runbook, or validating with a stakeholder.
 -->
 
-- [ ]
-- [ ]
-- [ ]
+- [ ] Add first validation step.
+- [ ] Add second validation step.
+- [ ] Add third validation step.
 
 ## Security, privacy, and access check
 
 <!-- Required for private repositories. -->
 
-- [ ] No raw secrets, tokens, private keys, or full connection strings are pasted into
-      this issue.
-- [ ] Any sensitive details are necessary for the work and appropriate for this private
-      repository.
-- [ ] If this issue may affect public docs or public package claims, public wording will
-      be reviewed before release.
-- [ ] If this is a vulnerability or incident, the correct private security process is
-      being followed.
+- [ ] No raw secrets, tokens, private keys, or full connection strings are pasted into this issue.
+- [ ] Sensitive details are necessary for the work and appropriate for this private repository.
+- [ ] Public wording will be reviewed before release if this issue affects public docs or package claims.
+- [ ] The correct private security process is being followed if this is a vulnerability or incident.
 
 ## Stakeholders and reviewers
 
