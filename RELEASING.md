@@ -17,6 +17,15 @@ workflow then publishes both packages to npm.
 
 Both package names (`typeorm-timescaledb`, `@blueprime/timescaledb-core`) are currently unclaimed.
 
+## Public claims gate
+
+Before publishing a release, updating npm-facing documentation, or preparing public
+release notes, run the [public claims checklist](docs/public-claims-checklist.md).
+Use [feature status for 0.1.x](docs/feature-status-0.1.x.md) as the source of truth
+for what is shipped, planned, experimental, or unsupported.
+
+Do not publish release copy that presents planned features as shipped functionality.
+
 ## Cutting a release
 
 1. Bump the version in **both** `packages/core/package.json` and `packages/typeorm/package.json`
