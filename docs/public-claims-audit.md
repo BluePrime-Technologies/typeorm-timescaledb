@@ -26,6 +26,7 @@ should remain constrained until later releases ship more capabilities.
 - `.github/ISSUE_TEMPLATE/bug.yml`
 - TypeORM package source and integration tests
 - Core package identifier-safety source
+- Shipped code comments / JSDoc (published in `.d.ts`)
 
 ## Summary
 
@@ -407,6 +408,28 @@ Recommended wording:
 - Public docs should not yet claim a full issue-template suite on `main` unless
   the general/non-bug issue form PR has landed.
 - It is safe to say the repository has a bug report template.
+
+### Code comments / JSDoc shipped in `.d.ts`
+
+Status: supported; no overclaim found.
+
+Evidence:
+
+- `packages/typeorm/src/index.ts`, `packages/typeorm/src/runtime/createTimescale.ts`,
+  and `packages/typeorm/src/runtime/assertSchema.ts` doc-comments describe the
+  no-global-mutation and per-DataSource isolation design; these match the audited
+  README claims and are enforced by the two-DataSource isolation integration test.
+- `packages/core/src/identifier.ts` doc-comments scope safety to dynamic
+  identifiers (validate then quote); they do not imply the library can make
+  arbitrary user-written raw SQL safe.
+- These comments ship in the published `.d.ts` files and appear on consumer IDE
+  hover, so they are audited here as a public-claims surface in their own right.
+
+Recommended wording:
+
+- Keep JSDoc claims tied to the same evidence as the README.
+- Treat any future `guarantee`, `automatic`, or `fully` language in shipped
+  comments as a public claim that requires the same evidence link.
 
 ## Claims that should stay explicitly out of 0.1.x
 
