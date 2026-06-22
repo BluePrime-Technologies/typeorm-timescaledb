@@ -1,6 +1,6 @@
 name: General issue
 description: Propose a task, documentation update, feature request, or maintenance item
-title: "task: "
+title: 'task: '
 labels: [triage]
 body:
   - type: markdown
