@@ -16,28 +16,28 @@ import {
   Hypertable,
   TimeColumn,
   HypertablePrimaryKey,
-} from "typeorm-timescaledb";
+} from 'typeorm-timescaledb';
 
-@Entity("reading")
+@Entity('reading')
 @Hypertable({
-  chunkInterval: "1 day",
+  chunkInterval: '1 day',
   columnstore: {
-    segmentBy: ["sensorId"],
-    orderBy: [{ column: "time", direction: "DESC" }],
-    compressAfter: "7 days",
+    segmentBy: ['sensorId'],
+    orderBy: [{ column: 'time', direction: 'DESC' }],
+    compressAfter: '7 days',
   },
-  retention: { dropAfter: "90 days" },
+  retention: { dropAfter: '90 days' },
 })
 export class Reading {
-  @PrimaryColumn({ type: "timestamptz" })
+  @PrimaryColumn({ type: 'timestamptz' })
   @TimeColumn()
   @HypertablePrimaryKey()
   time!: Date;
 
-  @Column({ type: "text" })
+  @Column({ type: 'text' })
   sensorId!: string;
 
-  @Column({ type: "double precision" })
+  @Column({ type: 'double precision' })
   value!: number;
 }
 ```
@@ -60,7 +60,7 @@ migrations that the DataSource already knows about.
 ```ts
 export const AppDataSource = new DataSource({
   // ...the rest of your DataSource options
-  migrations: ["src/migrations/*.{ts,js}"],
+  migrations: ['src/migrations/*.{ts,js}'],
 });
 ```
 
@@ -104,7 +104,7 @@ npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js run -d src/data-source
 ## 5. Use the runtime context
 
 ```ts
-import { createTimescale } from "typeorm-timescaledb";
+import { createTimescale } from 'typeorm-timescaledb';
 
 const ts = createTimescale(dataSource);
 const readings = ts.getRepository(Reading);

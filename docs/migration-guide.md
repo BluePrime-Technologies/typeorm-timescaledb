@@ -43,7 +43,7 @@ That means the generated path must also be included in the DataSource
 ```ts
 export const AppDataSource = new DataSource({
   // ...the rest of your DataSource options
-  migrations: ["src/migrations/*.{ts,js}"],
+  migrations: ['src/migrations/*.{ts,js}'],
 });
 ```
 

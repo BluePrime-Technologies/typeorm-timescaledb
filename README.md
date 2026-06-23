@@ -38,28 +38,28 @@ import {
   Hypertable,
   TimeColumn,
   HypertablePrimaryKey,
-} from "typeorm-timescaledb";
+} from 'typeorm-timescaledb';
 
-@Entity("reading")
+@Entity('reading')
 @Hypertable({
-  chunkInterval: "1 day",
+  chunkInterval: '1 day',
   columnstore: {
-    segmentBy: ["sensorId"],
-    orderBy: [{ column: "time", direction: "DESC" }],
-    compressAfter: "7 days",
+    segmentBy: ['sensorId'],
+    orderBy: [{ column: 'time', direction: 'DESC' }],
+    compressAfter: '7 days',
   },
-  retention: { dropAfter: "90 days" },
+  retention: { dropAfter: '90 days' },
 })
 export class Reading {
-  @PrimaryColumn({ type: "timestamptz" })
+  @PrimaryColumn({ type: 'timestamptz' })
   @TimeColumn()
   @HypertablePrimaryKey()
   time!: Date;
 
-  @Column({ type: "text" })
+  @Column({ type: 'text' })
   sensorId!: string;
 
-  @Column({ type: "double precision" })
+  @Column({ type: 'double precision' })
   value!: number;
 }
 ```
@@ -79,7 +79,7 @@ npx typeorm-timescaledb run -d src/data-source.ts
 Get a typed, hypertable-aware repository — scoped to your DataSource, no globals:
 
 ```ts
-import { createTimescale } from "typeorm-timescaledb";
+import { createTimescale } from 'typeorm-timescaledb';
 
 const ts = createTimescale(dataSource);
 const readings = ts.getRepository(Reading);
@@ -89,14 +89,11 @@ await ts.assertSchema(); // fail fast if the live DB drifted from your entities
 ### NestJS
 
 ```ts
-import {
-  TimescaleModule,
-  InjectTimescaleRepository,
-} from "typeorm-timescaledb/nestjs";
+import { TimescaleModule, InjectTimescaleRepository } from 'typeorm-timescaledb/nestjs';
 
 @Module({
   imports: [
-    TimescaleModule.forRoot({ dataSource, assert: "assert" }), // boot-time drift check
+    TimescaleModule.forRoot({ dataSource, assert: 'assert' }), // boot-time drift check
     TimescaleModule.forFeature([Reading]),
   ],
 })
