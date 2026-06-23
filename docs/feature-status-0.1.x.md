@@ -61,7 +61,6 @@ The following items are product direction, not shipped 0.1.x functionality:
 - Hyperfunction query expressions.
 - Full entity-to-database diff engine.
 - Validated cross-store references.
-- Automatic destructive or altering migrations.
 - Complete coverage of every TimescaleDB feature.
 
 These may be described as planned, next, future, or not yet supported. They
@@ -77,6 +76,20 @@ when entity metadata is removed or changed.
 
 For now, removals or altering operations should be handled through hand-written
 migrations. Public copy should keep this distinction clear.
+
+## Unsupported by design
+
+Some behavior is intentionally not offered and is not on the roadmap:
+
+- **Automatic destructive migrations** — auto-dropping, truncating, or rewriting
+  live data or existing TimescaleDB objects. This is **Unsupported** and **not
+  planned**. Generated `down()` behavior is always non-destructive; any
+  destructive change to existing objects is **Manual** and must be written and
+  reviewed by hand.
+
+The planned diff/reconcile work (see "Full entity-to-database diff engine" above)
+covers only safe, reviewable changes. It must not be described as a future
+ability to generate destructive migrations automatically.
 
 ## Copy guidance
 
