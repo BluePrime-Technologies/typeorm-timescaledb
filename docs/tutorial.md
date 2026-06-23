@@ -316,7 +316,9 @@ Confirm that `src/data-source.ts` includes the generated directory in the
 `migrations` option:
 
 ```ts
-migrations: ["src/migrations/*.{ts,js}"];
+export const AppDataSource = new DataSource({
+  migrations: ["src/migrations/*.{ts,js}"],
+});
 ```
 
 ### `create_hypertable` is missing
