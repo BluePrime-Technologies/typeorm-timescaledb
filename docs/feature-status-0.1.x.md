@@ -45,8 +45,8 @@ The following platform claims are safe to use when they match package metadata
 and CI:
 
 - TimescaleDB `>= 2.18`.
-- TypeORM `^0.3.20 || ^1.0.0`.
-- Node `^20.19.0 || >=22.12.0`.
+- TypeORM `^0.3.20 \|\| ^1.0.0`.
+- Node `^20.19.0 \|\| >=22.12.0`.
 - NestJS peers are optional and support the ranges declared in
   `packages/typeorm/package.json`.
 
