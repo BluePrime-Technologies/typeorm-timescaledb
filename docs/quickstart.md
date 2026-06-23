@@ -3,6 +3,9 @@
 This quickstart shows the shortest path from a TypeORM entity to a TimescaleDB
 migration.
 
+For a complete local walkthrough with Docker, full files, expected output,
+insert/query verification, and cleanup, use the [10-minute tutorial](tutorial.md).
+
 ## 1. Define an entity
 
 ```ts
@@ -114,5 +117,6 @@ current comparison scope.
 
 ## Next
 
-Step 4 will expand this into a full 10-minute tutorial with a local TimescaleDB
-setup, commands, expected output, insert/query steps, and drift verification.
+Continue to the [10-minute tutorial](tutorial.md) when you want a full local
+setup with TimescaleDB, complete TypeScript files, expected output, insert/query
+steps, and cleanup.
