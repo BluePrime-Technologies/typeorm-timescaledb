@@ -20,9 +20,9 @@ You will:
 - Docker with Compose support.
 - npm.
 
-This tutorial uses TypeScript files directly with `tsx`. If your app runs
-compiled JavaScript instead, use a compiled `.js` DataSource path with the
-published `typeorm-timescaledb` binary.
+This tutorial uses TypeScript files directly with `tsx`. The CLI examples keep
+both migration generation and migration execution on the TypeScript-loader path
+because generated TimescaleDB migration files are TypeScript source files.
 
 ## 1. Create a demo project
 
@@ -30,7 +30,11 @@ published `typeorm-timescaledb` binary.
 mkdir typeorm-timescaledb-demo
 cd typeorm-timescaledb-demo
 npm init -y
+npm pkg set type=module
 ```
+
+The `type=module` setting is required for this tutorial because `tsconfig.json`
+uses `module: "NodeNext"` and the scripts below use top-level `await`.
 
 Install runtime dependencies:
 
@@ -170,8 +174,8 @@ export const AppDataSource = new DataSource({
 });
 ```
 
-The `migrations` option is important. The `generate` command writes a file to
-`src/migrations`, and the `run` command delegates to TypeORM's
+The `migrations` option is important. The `generate` command writes a TypeScript
+migration file to `src/migrations`, and the `run` command delegates to TypeORM's
 `dataSource.runMigrations()`. If the DataSource does not include the generated
 migration path, `run` can report that there are no pending migrations.
 
@@ -216,7 +220,7 @@ a TypeScript loader:
 npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations
 ```
 
-Expected result: a new migration file appears under `src/migrations`.
+Expected result: a new TypeScript migration file appears under `src/migrations`.
 
 Check it:
 
@@ -224,12 +228,10 @@ Check it:
 ls src/migrations
 ```
 
-If you use compiled JavaScript in your own project, compile first and call the
-published binary with a `.js` DataSource path instead:
-
-```sh
-npx typeorm-timescaledb generate -d dist/data-source.js -o dist/migrations
-```
+Generated TimescaleDB migration files are TypeScript source files. Keep the
+`run` step below on the same TypeScript-loader path unless your application build
+has compiled those migration files to JavaScript and your DataSource points at
+the compiled output.
 
 ## 8. Run the TimescaleDB migration
 
@@ -306,7 +308,7 @@ chunk interval, ordering change, retention interval change, or extra policy.
 
 The CLI loads the DataSource with native dynamic `import()`. Use `tsx` or another
 TypeScript loader for `.ts` DataSource files, or point `-d` at compiled
-JavaScript.
+JavaScript only after your build emits compiled DataSource and migration files.
 
 ### `No pending migrations`
 
