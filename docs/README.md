@@ -35,6 +35,7 @@ Continuous aggregates, hyperfunction query expressions, safer diff improvements,
 validated cross-store references, and complete TimescaleDB feature coverage are
 planned or future scope, not shipped 0.1.x functionality.
 
-Automatic data-removing migrations are unsupported and should not be described
-as a future package capability. Data-affecting changes require explicit
-hand-written migrations controlled by the user.
+Automatic changes to existing TimescaleDB configuration are not a promised
+package capability. Changes such as changing chunk intervals, replacing existing
+policies, or other live-configuration changes require explicit hand-written
+migrations controlled by the user.
