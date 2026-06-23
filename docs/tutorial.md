@@ -73,7 +73,7 @@ services:
       POSTGRES_PASSWORD: timescale
       POSTGRES_DB: tutorial
     ports:
-      - '5432:5432'
+      - "5432:5432"
     volumes:
       - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 ```
@@ -125,28 +125,28 @@ import {
   HypertablePrimaryKey,
   PrimaryColumn,
   TimeColumn,
-} from 'typeorm-timescaledb';
+} from "typeorm-timescaledb";
 
-@Entity('reading')
+@Entity("reading")
 @Hypertable({
-  chunkInterval: '1 day',
+  chunkInterval: "1 day",
   columnstore: {
-    segmentBy: ['sensorId'],
-    orderBy: [{ column: 'time', direction: 'DESC' }],
-    compressAfter: '7 days',
+    segmentBy: ["sensorId"],
+    orderBy: [{ column: "time", direction: "DESC" }],
+    compressAfter: "7 days",
   },
-  retention: { dropAfter: '90 days' },
+  retention: { dropAfter: "90 days" },
 })
 export class Reading {
-  @PrimaryColumn({ type: 'timestamptz' })
+  @PrimaryColumn({ type: "timestamptz" })
   @TimeColumn()
   @HypertablePrimaryKey()
   time!: Date;
 
-  @Column({ type: 'text' })
+  @Column({ type: "text" })
   sensorId!: string;
 
-  @Column({ type: 'double precision' })
+  @Column({ type: "double precision" })
   value!: number;
 }
 ```
@@ -156,19 +156,19 @@ export class Reading {
 Create `src/data-source.ts`:
 
 ```ts
-import 'reflect-metadata';
-import { DataSource } from 'typeorm-timescaledb';
-import { Reading } from './entities/Reading.js';
+import "reflect-metadata";
+import { DataSource } from "typeorm-timescaledb";
+import { Reading } from "./entities/Reading.js";
 
 export const AppDataSource = new DataSource({
-  type: 'postgres',
-  host: 'localhost',
+  type: "postgres",
+  host: "localhost",
   port: 5432,
-  username: 'timescale',
-  password: 'timescale',
-  database: 'tutorial',
+  username: "timescale",
+  password: "timescale",
+  database: "tutorial",
   entities: [Reading],
-  migrations: ['src/migrations/*.{ts,js}'],
+  migrations: ["src/migrations/*.{ts,js}"],
   synchronize: false,
   logging: false,
 });
@@ -190,13 +190,13 @@ table. In production, prefer normal TypeORM migrations for base table changes.
 Create `src/create-base-table.ts`:
 
 ```ts
-import { AppDataSource } from './data-source.js';
+import { AppDataSource } from "./data-source.js";
 
 await AppDataSource.initialize();
 await AppDataSource.synchronize();
 await AppDataSource.destroy();
 
-console.log('Base TypeORM table created.');
+console.log("Base TypeORM table created.");
 ```
 
 Run it:
@@ -256,9 +256,9 @@ Expected result: the output includes `reading`.
 Create `src/demo.ts`:
 
 ```ts
-import { createTimescale } from 'typeorm-timescaledb';
-import { AppDataSource } from './data-source.js';
-import { Reading } from './entities/Reading.js';
+import { createTimescale } from "typeorm-timescaledb";
+import { AppDataSource } from "./data-source.js";
+import { Reading } from "./entities/Reading.js";
 
 await AppDataSource.initialize();
 
@@ -269,12 +269,12 @@ const readings = ts.getRepository(Reading);
 
 await readings.insert({
   time: new Date(),
-  sensorId: 'sensor-1',
+  sensorId: "sensor-1",
   value: 42.5,
 });
 
 const latest = await readings.find({
-  order: { time: 'DESC' },
+  order: { time: "DESC" },
   take: 1,
 });
 
@@ -316,7 +316,7 @@ Confirm that `src/data-source.ts` includes the generated directory in the
 `migrations` option:
 
 ```ts
-migrations: ['src/migrations/*.{ts,js}'];
+migrations: ["src/migrations/*.{ts,js}"];
 ```
 
 ### `create_hypertable` is missing
