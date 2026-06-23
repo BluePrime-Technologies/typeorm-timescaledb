@@ -4,12 +4,12 @@ This page lists the public compatibility surface for the current package scope.
 
 ## Runtime support
 
-| Area | Supported range |
-| --- | --- |
-| Node.js | `^20.19.0 || >=22.12.0` |
-| TypeORM | `^0.3.20 || ^1.0.0` |
-| TimescaleDB | `>= 2.18` |
-| NestJS | Optional peers declared by the package |
+| Area        | Supported range                        |
+| ----------- | -------------------------------------- |
+| Node.js     | `^20.19.0 \|\| >=22.12.0`              |
+| TypeORM     | `^0.3.20 \|\| ^1.0.0`                  |
+| TimescaleDB | `>= 2.18`                              |
+| NestJS      | Optional peers declared by the package |
 
 ## Package formats
 
