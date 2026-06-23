@@ -1,6 +1,7 @@
 # Quickstart
 
-This quickstart shows the shortest path from a TypeORM entity to a TimescaleDB migration.
+This quickstart shows the shortest path from a TypeORM entity to a TimescaleDB
+migration.
 
 ## 1. Define an entity
 
@@ -38,20 +39,63 @@ export class Reading {
 }
 ```
 
-## 2. Let TypeORM create the base table
+## 2. Prepare the database and DataSource
 
-`typeorm-timescaledb` adds the TimescaleDB layer. Your TypeORM setup still owns the base `CREATE TABLE` step through `synchronize` or a TypeORM migration.
+`typeorm-timescaledb` adds the TimescaleDB layer. Your TypeORM setup still owns
+the base `CREATE TABLE` step through `synchronize` or a TypeORM migration.
+
+The target database must already have the TimescaleDB extension enabled:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+```
+
+Also make sure your TypeORM DataSource includes the generated migrations path.
+The `run` command delegates to `dataSource.runMigrations()`, so it only applies
+migrations that the DataSource already knows about.
+
+```ts
+export const AppDataSource = new DataSource({
+  // ...the rest of your DataSource options
+  migrations: ['src/migrations/*.{ts,js}'],
+});
+```
+
+You can also point generation at an existing migrations directory that is already
+configured in the DataSource.
 
 ## 3. Generate the TimescaleDB migration
 
+If the DataSource path is a compiled JavaScript file, call the published binary
+directly:
+
 ```sh
-npx typeorm-timescaledb generate -d src/data-source.ts -o src/migrations
+npx typeorm-timescaledb generate -d dist/data-source.js -o dist/migrations
 ```
+
+If the DataSource path is a TypeScript file, run the CLI with a TypeScript loader:
+
+```sh
+npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations
+```
+
+A `.ts` DataSource path without a loader fails because the CLI loads the
+DataSource with native dynamic `import()`.
 
 ## 4. Apply the migration
 
+Use the same DataSource format you used for generation.
+
+Compiled JavaScript example:
+
 ```sh
-npx typeorm-timescaledb run -d src/data-source.ts
+npx typeorm-timescaledb run -d dist/data-source.js
+```
+
+TypeScript loader example:
+
+```sh
+npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js run -d src/data-source.ts
 ```
 
 ## 5. Use the runtime context
@@ -64,6 +108,11 @@ const readings = ts.getRepository(Reading);
 await ts.assertSchema();
 ```
 
+`assertSchema()` is useful as a boot-time sanity check, but it is not a full
+database diff engine. See the [Production guide](production-guide.md) for its
+current comparison scope.
+
 ## Next
 
-Step 4 will expand this into a full 10-minute tutorial with a local TimescaleDB setup, commands, expected output, insert/query steps, and drift verification.
+Step 4 will expand this into a full 10-minute tutorial with a local TimescaleDB
+setup, commands, expected output, insert/query steps, and drift verification.
