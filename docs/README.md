@@ -2,7 +2,9 @@
 
 This directory is the documentation skeleton for `typeorm-timescaledb`.
 
-The goal of Step 3 is to create the public documentation structure first, even before every guide is complete. Each page gives users a clear starting point and marks where deeper guides will be expanded next.
+The goal of Step 3 is to create the public documentation structure first, even
+before every guide is complete. Each page gives users a clear starting point and
+marks where deeper guides will be expanded next.
 
 ## Start here
 
@@ -25,6 +27,15 @@ The goal of Step 3 is to create the public documentation structure first, even b
 
 ## Current scope
 
-`typeorm-timescaledb` is a pre-1.0 foundation release. It currently focuses on typed TimescaleDB hypertables, columnstore, retention, space partitioning, migration generation, CLI commands, per-DataSource runtime access, schema drift detection, NestJS support, and dual ESM/CJS packaging.
+`typeorm-timescaledb` is a pre-1.0 foundation release. It currently focuses on
+typed TimescaleDB hypertables, columnstore, retention, space partitioning,
+migration generation, CLI commands, per-DataSource runtime access, schema drift
+detection, NestJS support, and dual ESM/CJS packaging.
 
-Continuous aggregates, hyperfunction query expressions, a full entity-to-database diff engine, validated cross-store references, automatic destructive/altering migrations, and complete TimescaleDB feature coverage are planned or future scope, not shipped 0.1.x functionality.
+Continuous aggregates, hyperfunction query expressions, safer diff improvements,
+validated cross-store references, and complete TimescaleDB feature coverage are
+planned or future scope, not shipped 0.1.x functionality.
+
+Automatic destructive migrations are unsupported and should not be described as
+a future package capability. Destructive or unsafe changes require explicit
+hand-written migrations controlled by the user.
