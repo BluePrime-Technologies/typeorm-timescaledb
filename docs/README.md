@@ -1,17 +1,16 @@
 # typeorm-timescaledb documentation
 
-This directory is the documentation skeleton for `typeorm-timescaledb`.
+This directory is the developer documentation for `typeorm-timescaledb`.
 
-The goal of Step 3 is to create the public documentation structure first, even
-before every guide is complete. Each page gives users a clear starting point and
-marks where deeper guides will be expanded next.
+Start with the tutorial if you want a complete local walkthrough, or use the
+quickstart when you already have a TypeORM project and TimescaleDB database.
 
 ## Start here
 
 1. [Overview](overview.md) — what the package is and what problem it solves.
 2. [Installation](installation.md) — install requirements and peer dependencies.
-3. [Quickstart](quickstart.md) — the shortest path from entity metadata to a TimescaleDB migration.
-4. [Tutorial](tutorial.md) — placeholder for the full 10-minute walkthrough in Step 4.
+3. [Tutorial](tutorial.md) — a 10-minute end-to-end local walkthrough.
+4. [Quickstart](quickstart.md) — the shortest path from entity metadata to a TimescaleDB migration.
 
 ## Core guides
 
@@ -36,6 +35,7 @@ Continuous aggregates, hyperfunction query expressions, safer diff improvements,
 validated cross-store references, and complete TimescaleDB feature coverage are
 planned or future scope, not shipped 0.1.x functionality.
 
-Automatic destructive migrations are unsupported and should not be described as
-a future package capability. Destructive or unsafe changes require explicit
-hand-written migrations controlled by the user.
+Automatic changes to existing TimescaleDB configuration are not a promised
+package capability. Changes such as changing chunk intervals, replacing existing
+policies, or other live-configuration changes require explicit hand-written
+migrations controlled by the user.
