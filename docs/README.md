@@ -11,6 +11,7 @@ quickstart when you already have a TypeORM project and TimescaleDB database.
 2. [Installation](installation.md) — install requirements and peer dependencies.
 3. [Tutorial](tutorial.md) — a 10-minute end-to-end local walkthrough.
 4. [Quickstart](quickstart.md) — the shortest path from entity metadata to a TimescaleDB migration.
+5. [Docker Compose local setup](../examples/docker-compose-local/README.md) — reusable local TimescaleDB setup with env vars, DataSource config, migration commands, and verification commands.
 
 ## Core guides
 
