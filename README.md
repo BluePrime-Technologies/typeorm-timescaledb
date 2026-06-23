@@ -24,7 +24,7 @@ It's built on one hard rule:
 npm install typeorm-timescaledb typeorm pg reflect-metadata
 ```
 
-Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 || ^1.0.0`, Node `^20.19.0 || >=22.12.0`.
+Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 \|\| ^1.0.0`, Node `^20.19.0 \|\| >=22.12.0`.
 
 ## Quick start
 
@@ -38,28 +38,28 @@ import {
   Hypertable,
   TimeColumn,
   HypertablePrimaryKey,
-} from 'typeorm-timescaledb';
+} from "typeorm-timescaledb";
 
-@Entity('reading')
+@Entity("reading")
 @Hypertable({
-  chunkInterval: '1 day',
+  chunkInterval: "1 day",
   columnstore: {
-    segmentBy: ['sensorId'],
-    orderBy: [{ column: 'time', direction: 'DESC' }],
-    compressAfter: '7 days',
+    segmentBy: ["sensorId"],
+    orderBy: [{ column: "time", direction: "DESC" }],
+    compressAfter: "7 days",
   },
-  retention: { dropAfter: '90 days' },
+  retention: { dropAfter: "90 days" },
 })
 export class Reading {
-  @PrimaryColumn({ type: 'timestamptz' })
+  @PrimaryColumn({ type: "timestamptz" })
   @TimeColumn()
   @HypertablePrimaryKey()
   time!: Date;
 
-  @Column({ type: 'text' })
+  @Column({ type: "text" })
   sensorId!: string;
 
-  @Column({ type: 'double precision' })
+  @Column({ type: "double precision" })
   value!: number;
 }
 ```
@@ -70,7 +70,7 @@ Generate and run a migration with the CLI (point `-d` at your DataSource module)
 # 1. your DataSource/TypeORM creates the plain table (synchronize or a TypeORM migration)
 # 2. generate the TimescaleDB migration from your @Hypertable entities:
 npx typeorm-timescaledb generate -d src/data-source.ts -o src/migrations
-# 3. apply it (also: revert | status):
+# 3. apply it (also: revert \| status):
 npx typeorm-timescaledb run -d src/data-source.ts
 ```
 
@@ -79,7 +79,7 @@ npx typeorm-timescaledb run -d src/data-source.ts
 Get a typed, hypertable-aware repository — scoped to your DataSource, no globals:
 
 ```ts
-import { createTimescale } from 'typeorm-timescaledb';
+import { createTimescale } from "typeorm-timescaledb";
 
 const ts = createTimescale(dataSource);
 const readings = ts.getRepository(Reading);
@@ -89,11 +89,14 @@ await ts.assertSchema(); // fail fast if the live DB drifted from your entities
 ### NestJS
 
 ```ts
-import { TimescaleModule, InjectTimescaleRepository } from 'typeorm-timescaledb/nestjs';
+import {
+  TimescaleModule,
+  InjectTimescaleRepository,
+} from "typeorm-timescaledb/nestjs";
 
 @Module({
   imports: [
-    TimescaleModule.forRoot({ dataSource, assert: 'assert' }), // boot-time drift check
+    TimescaleModule.forRoot({ dataSource, assert: "assert" }), // boot-time drift check
     TimescaleModule.forFeature([Reading]),
   ],
 })
@@ -107,7 +110,7 @@ Multiple TimescaleDB DataSources? Pass a `name` to `forRoot` / `forFeature` / `@
 **Works today (verified end-to-end against real TimescaleDB):**
 
 - `@Hypertable` / `@TimeColumn` / `@HypertablePrimaryKey` — hypertables with chunk interval, **columnstore** (segmentby/orderby + policy), **retention** policy, and **space (hash) partitioning**.
-- **Migration generation + CLI** (`generate | run | revert | status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
+- **Migration generation + CLI** (`generate \| run \| revert \| status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
 - **Per-DataSource repositories** (`createTimescale`) and **boot-time drift detection** (`assertSchema`).
 - **NestJS module** with optional-peer wiring and named multi-DataSource contexts.
 - Unified import surface (one package, never raw `typeorm`); dual ESM + CJS.
