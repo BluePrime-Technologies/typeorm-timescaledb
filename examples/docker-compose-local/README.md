@@ -58,7 +58,19 @@ POSTGRES_PORT=5432
 TIMESCALEDB_IMAGE=timescale/timescaledb:2.18.0-pg16
 ```
 
-These values are for local development only.
+These values are for local development only. Docker Compose reads `.env` for the
+container, but Node does not automatically load this file for your TypeORM
+DataSource. Export matching values into the shell before running CLI commands:
+
+```sh
+export POSTGRES_USER=timescale
+export POSTGRES_PASSWORD=timescale
+export POSTGRES_DB=typeorm_timescaledb_local
+export POSTGRES_PORT=5432
+```
+
+Use your application's own configuration loader instead if it already loads
+environment variables before the DataSource is imported.
 
 ## DataSource config
 
@@ -68,6 +80,8 @@ Use `data-source.ts` as a starting point for a local TypeORM DataSource:
 import 'reflect-metadata';
 import { DataSource } from 'typeorm-timescaledb';
 
+// This example reads process.env. Export the variables from .env before running
+// the CLI commands, or replace this with your app's own config loader.
 const port = Number(process.env.POSTGRES_PORT ?? '5432');
 
 export const LocalTimescaleDataSource = new DataSource({
@@ -94,6 +108,10 @@ From `examples/docker-compose-local`:
 ```sh
 cp .env.example .env
 docker compose up -d
+export POSTGRES_USER=timescale
+export POSTGRES_PASSWORD=timescale
+export POSTGRES_DB=typeorm_timescaledb_local
+export POSTGRES_PORT=5432
 ```
 
 The first startup runs `init.sql`:
@@ -113,12 +131,18 @@ npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-s
 npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js run -d src/data-source.ts
 ```
 
-If the DataSource is compiled JavaScript, call the published binary directly:
+For a compiled JavaScript application, generate source migrations before
+compiling, then run the compiled DataSource after your build produces JavaScript
+migration files:
 
 ```sh
-npx typeorm-timescaledb generate -d dist/data-source.js -o dist/migrations
+npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations
+npm run build
 npx typeorm-timescaledb run -d dist/data-source.js
 ```
+
+Do not generate directly into `dist/migrations` and immediately run the JS
+binary unless your build step also compiles the generated migration first.
 
 ## Test command
 
