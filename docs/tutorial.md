@@ -5,14 +5,16 @@ by TimescaleDB.
 
 You will:
 
-1. Start a local TimescaleDB database.
-2. Install `typeorm-timescaledb` and TypeORM dependencies.
-3. Create a TypeORM DataSource.
+1. Create a demo project.
+2. Start TimescaleDB locally.
+3. Configure TypeScript.
 4. Define a hypertable entity.
-5. Create the base table with TypeORM.
-6. Generate and run the TimescaleDB migration.
-7. Insert and query a row.
-8. Run a scoped schema sanity check.
+5. Create the DataSource.
+6. Create the base table.
+7. Generate the TimescaleDB migration.
+8. Run the TimescaleDB migration.
+9. Insert and query a row.
+10. Understand what `assertSchema()` checks here.
 
 ## Prerequisites
 
