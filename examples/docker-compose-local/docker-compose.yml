@@ -6,12 +6,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-timescale}
       POSTGRES_DB: ${POSTGRES_DB:-typeorm_timescaledb_local}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - '${POSTGRES_PORT:-5432}:5432'
     volumes:
       - timescaledb-data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/001-init-timescaledb.sql:ro
     healthcheck:
-      test: "pg_isready -U $${POSTGRES_USER:-timescale} -d $${POSTGRES_DB:-typeorm_timescaledb_local}"
+      test: 'pg_isready -U $${POSTGRES_USER:-timescale} -d $${POSTGRES_DB:-typeorm_timescaledb_local}'
       interval: 5s
       timeout: 5s
       retries: 20
