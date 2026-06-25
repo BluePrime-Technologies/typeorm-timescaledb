@@ -15,6 +15,9 @@ quickstart when you already have a TypeORM project and TimescaleDB database.
 5. [Docker Compose local setup](../examples/docker-compose-local/README.md) —
    reusable local TimescaleDB setup with environment variables, DataSource
    config, setup command, migration command, and test command.
+6. [Runnable quickstart example](../examples/quickstart/README.md) — standalone
+   mini-project with install, setup, migration, demo, expected output, and
+   cleanup commands.
 
 ## Core guides
 
