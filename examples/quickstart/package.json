@@ -11,7 +11,7 @@
     "migration:generate": "dotenv -e .env -- tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations",
     "migration:run": "dotenv -e .env -- tsx node_modules/typeorm-timescaledb/dist/cli/main.js run -d src/data-source.ts",
     "demo": "dotenv -e .env -- tsx src/demo.ts",
-    "verify:hypertable": "dotenv -e .env -- docker compose exec -T db psql -U timescale -d quickstart -c \"SELECT hypertable_name FROM timescaledb_information.hypertables;\"",
+    "verify:hypertable": "dotenv -e .env -- sh -c 'docker compose exec -T db psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -c \"SELECT hypertable_name FROM timescaledb_information.hypertables;\"'",
     "quickstart": "npm run db:up && npm run table:create && npm run migration:generate && npm run migration:run && npm run demo && npm run verify:hypertable"
   },
   "dependencies": {
