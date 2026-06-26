@@ -84,14 +84,33 @@ The time column must correspond to a real TypeORM column.
 
 ### `HypertablePrimaryKey()`
 
-Marks the time column as part of the hypertable-aware primary key model used by
-this package.
+Records a TypeORM primary-key column as part of the hypertable-aware primary key
+metadata used by this package.
 
 ```ts
 @PrimaryColumn({ type: 'timestamptz' })
 @TimeColumn()
 @HypertablePrimaryKey()
 time!: Date;
+```
+
+When a hypertable entity declares a primary key, TimescaleDB requires that key to
+include every partitioning column. That means the time column and, when
+`spacePartition` is configured, the space-partition column must both be marked
+with `@HypertablePrimaryKey()`.
+
+For example, a space-partitioned entity should mark both partitioning primary-key
+columns:
+
+```ts
+@PrimaryColumn({ type: 'timestamptz' })
+@TimeColumn()
+@HypertablePrimaryKey()
+time!: Date;
+
+@PrimaryColumn({ type: 'text' })
+@HypertablePrimaryKey()
+sensorId!: string;
 ```
 
 ## Metadata helpers
@@ -295,26 +314,57 @@ import { TimescaleModule } from 'typeorm-timescaledb/nestjs';
 
 ### `TimescaleModule`
 
-Registers TimescaleDB repository/context providers for NestJS applications.
+Registers a DataSource-scoped Timescale context with `forRoot()` and repository
+providers with `forFeature()`.
 
 ```ts
 @Module({
   imports: [
-    TimescaleModule.forFeature({
+    TimescaleModule.forRoot({
       dataSource: AppDataSource,
-      entities: [Reading],
     }),
+    TimescaleModule.forFeature([Reading]),
   ],
 })
 export class ReadingsModule {}
 ```
 
-Use the NestJS guide for complete integration patterns.
+Use `forRoot()` once for the DataSource/context. Use `forFeature([Entity])` to
+register injectable repositories for specific hypertable entities. Use the NestJS
+guide for complete integration patterns.
+
+For named or multi-DataSource contexts, pass the same name to both calls:
+
+```ts
+@Module({
+  imports: [
+    TimescaleModule.forRoot({
+      name: 'analytics',
+      dataSource: AnalyticsDataSource,
+    }),
+    TimescaleModule.forFeature([Reading], 'analytics'),
+  ],
+})
+export class AnalyticsReadingsModule {}
+```
 
 ### `TimescaleModuleOptions`
 
-Options object used when registering the NestJS module. It identifies the
-DataSource and entities that should receive Timescale providers.
+Options object used by `TimescaleModule.forRoot(options)`.
+
+Common fields include:
+
+- `dataSource`
+- `name`
+- `assert`
+- `logger`
+- `global`
+
+### `TimescaleModule.forFeature(entities, name?)`
+
+Registers one `TimescaleRepository` provider per `@Hypertable` entity class. It
+requires a matching `forRoot()` registration in the same module graph, or a
+`forRoot({ global: true })` registration.
 
 ### `InjectTimescaleRepository(entity, name?)`
 
@@ -323,6 +373,15 @@ NestJS injection decorator for a Timescale repository provider.
 ```ts
 constructor(
   @InjectTimescaleRepository(Reading)
+  private readonly readings: TimescaleRepository<Reading>,
+) {}
+```
+
+For a named context, pass the same name used in `forRoot()` and `forFeature()`:
+
+```ts
+constructor(
+  @InjectTimescaleRepository(Reading, 'analytics')
   private readonly readings: TimescaleRepository<Reading>,
 ) {}
 ```
