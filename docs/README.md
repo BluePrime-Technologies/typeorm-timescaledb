@@ -24,6 +24,7 @@ quickstart when you already have a TypeORM project and TimescaleDB database.
 - [Migration guide](migration-guide.md)
 - [NestJS guide](nestjs-guide.md)
 - [Production guide](production-guide.md)
+- [API reference](api-reference.md)
 
 ## Support docs
 
