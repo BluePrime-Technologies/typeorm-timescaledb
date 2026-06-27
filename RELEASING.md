@@ -29,7 +29,8 @@ Do not publish release copy that presents planned features as shipped functional
 ## Cutting a release
 
 1. Bump the version in **both** `packages/core/package.json` and `packages/typeorm/package.json`
-   to the same value (they release in lockstep), open a PR, and merge it once CI is green.
+   to the same value (they release in lockstep), add a dated `CHANGELOG.md` section for the
+   version (and update its compare links), open a PR, and merge it once CI is green.
 2. From an up-to-date `main`:
    ```sh
    git tag v0.1.0        # must equal the package version
