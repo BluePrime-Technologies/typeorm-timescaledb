@@ -22,6 +22,7 @@ export type {
   TimeBucketAggFn,
   TimeBucketRow,
 } from './query/getTimeBucket.js';
+export type { StandardAggregate } from './query/aggregate.js';
 export {
   toNumber,
   toNumberOrNull,

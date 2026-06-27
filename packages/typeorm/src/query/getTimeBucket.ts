@@ -1,12 +1,16 @@
 import type { ObjectLiteral, Repository } from 'typeorm';
 import {
   firstExpr,
+  interpolateExpr,
   lastExpr,
+  locfExpr,
   safeIdent,
   timeBucketExpr,
+  timeBucketGapfillExpr,
   TimescaleError,
   TimescaleErrorCode,
 } from '@blueprime/timescaledb-core';
+import { standardAggregateExpr } from './aggregate.js';
 
 /** Standard SQL aggregates supported by {@link getTimeBucket} (allow-listed). */
 export type TimeBucketAggFn = 'avg' | 'sum' | 'min' | 'max' | 'count';
@@ -21,6 +25,11 @@ export interface TimeBucketMetric {
   readonly column?: string;
   /** For `first`/`last`: the time property; defaults to the bucket time column. */
   readonly timeColumn?: string;
+  /**
+   * Fill empty gapfill buckets for this metric: `locf` (carry last value forward)
+   * or `interpolate` (linear). Requires `gapfill` on the query.
+   */
+  readonly fill?: 'locf' | 'interpolate';
 }
 
 export interface GetTimeBucketOptions {
@@ -37,26 +46,29 @@ export interface GetTimeBucketOptions {
   readonly timezone?: string;
   readonly origin?: string;
   readonly offset?: string;
-  /** Order rows by bucket. Default unordered. */
+  /**
+   * Emit a row for every bucket in the range (via `time_bucket_gapfill`), including
+   * empty ones — pair with a metric `fill`. Requires bounds: either `start`+`finish`
+   * here, or `range.from`+`range.to`. Incompatible with `timezone`/`origin`/`offset`.
+   */
+  readonly gapfill?: { readonly start?: Date | string; readonly finish?: Date | string };
+  /** Order rows by bucket. Defaults to `ASC` when gapfilling (required for locf/interpolate). */
   readonly order?: 'ASC' | 'DESC';
 }
 
 /** A raw time-bucket result row: the bucket plus each metric alias. */
 export type TimeBucketRow = Record<string, unknown> & { readonly bucket: unknown };
 
-const AGGREGATES: ReadonlySet<string> = new Set(['avg', 'sum', 'min', 'max', 'count']);
-
-function metricExpression(
+function metricBaseExpr(
   metric: TimeBucketMetric,
   resolve: (property: string) => string,
   defaultTimeColumn: string,
 ): string {
-  const role = `metric "${metric.alias}"`;
   if (metric.fn === 'first' || metric.fn === 'last') {
     if (!metric.column) {
       throw new TimescaleError(
         TimescaleErrorCode.INVALID_ARGUMENT,
-        `${role}: ${metric.fn} requires a column`,
+        `metric "${metric.alias}": ${metric.fn} requires a column`,
         { alias: metric.alias },
       );
     }
@@ -64,25 +76,19 @@ function metricExpression(
     const time = metric.timeColumn ? resolve(metric.timeColumn) : defaultTimeColumn;
     return metric.fn === 'first' ? firstExpr(value, time) : lastExpr(value, time);
   }
-  if (!AGGREGATES.has(metric.fn)) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      `${role}: unsupported aggregate "${String(metric.fn)}"`,
-      { alias: metric.alias, fn: String(metric.fn) },
-    );
-  }
-  if (metric.fn === 'count' && !metric.column) {
-    return 'count(*)';
-  }
-  if (!metric.column) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      `${role}: ${metric.fn} requires a column`,
-      { alias: metric.alias },
-    );
-  }
-  // `fn` is allow-listed above; column flows through safeIdent.
-  return `${metric.fn}(${safeIdent(resolve(metric.column), `${role} column`)})`;
+  // standard aggregate — fn allow-listed + column quoted by standardAggregateExpr.
+  return standardAggregateExpr(metric.fn, metric.column ? resolve(metric.column) : undefined);
+}
+
+function metricExpression(
+  metric: TimeBucketMetric,
+  resolve: (property: string) => string,
+  defaultTimeColumn: string,
+): string {
+  const base = metricBaseExpr(metric, resolve, defaultTimeColumn);
+  if (metric.fill === 'locf') return locfExpr(base);
+  if (metric.fill === 'interpolate') return interpolateExpr(base);
+  return base;
 }
 
 /**
@@ -113,13 +119,95 @@ export function getTimeBucket<T extends ObjectLiteral>(
     );
   }
 
-  const bucketExpr = timeBucketExpr({
-    interval: options.interval,
-    column: timeColumn,
-    ...(options.timezone !== undefined ? { timezone: options.timezone } : {}),
-    ...(options.origin !== undefined ? { origin: options.origin } : {}),
-    ...(options.offset !== undefined ? { offset: options.offset } : {}),
-  });
+  const gapfill = options.gapfill;
+  const hasFill = options.metrics.some((m) => m.fill !== undefined);
+  if (!gapfill && hasFill) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'metric `fill` (locf/interpolate) requires `gapfill` on the query',
+      {},
+    );
+  }
+  if (hasFill && options.order === 'DESC') {
+    // locf/interpolate fill forward; DESC ordering would invert their semantics.
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'order: "DESC" is incompatible with locf/interpolate fills (they require ascending buckets)',
+      {},
+    );
+  }
+  // interpolate on a count produces fractional "counts" between buckets — almost
+  // always a mistake. locf (carry the integer forward) is the sane fill for counts.
+  const badInterp = options.metrics.find((m) => m.fill === 'interpolate' && m.fn === 'count');
+  if (badInterp) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `metric "${badInterp.alias}": interpolate on a count yields fractional counts — use fill: 'locf' instead`,
+      { alias: badInterp.alias },
+    );
+  }
+
+  let bucketExpr: string;
+  if (gapfill) {
+    if (
+      options.timezone !== undefined ||
+      options.origin !== undefined ||
+      options.offset !== undefined
+    ) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        'gapfill is incompatible with timezone/origin/offset',
+        {},
+      );
+    }
+    const { start, finish } = gapfill;
+    // A lone start/finish would be silently dropped below — fail loudly instead.
+    if ((start === undefined) !== (finish === undefined)) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        'gapfill: pass BOTH start and finish, or neither (then range.from+range.to drive the bounds)',
+        {},
+      );
+    }
+    const hasExplicit = start !== undefined && finish !== undefined;
+    const hasRange = options.range?.from !== undefined && options.range?.to !== undefined;
+    if (!hasExplicit && !hasRange) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        'gapfill requires bounds: pass gapfill.start+finish, or range.from+range.to',
+        {},
+      );
+    }
+    // Reject an inverted window on the range-driven path too (the core builder only
+    // sees the explicit start/finish form). Best-effort: parseable timestamps only.
+    if (!hasExplicit && hasRange) {
+      const f = Date.parse(String(options.range?.from));
+      const t = Date.parse(String(options.range?.to));
+      if (!Number.isNaN(f) && !Number.isNaN(t) && t <= f) {
+        throw new TimescaleError(
+          TimescaleErrorCode.INVALID_ARGUMENT,
+          `gapfill: range.to (${String(options.range?.to)}) must be after range.from (${String(options.range?.from)})`,
+          {},
+        );
+      }
+    }
+    const tsLit = (v: Date | string): string => (v instanceof Date ? v.toISOString() : v);
+    bucketExpr = timeBucketGapfillExpr({
+      interval: options.interval,
+      column: timeColumn,
+      ...(start !== undefined && finish !== undefined
+        ? { start: tsLit(start), finish: tsLit(finish) }
+        : {}),
+    });
+  } else {
+    bucketExpr = timeBucketExpr({
+      interval: options.interval,
+      column: timeColumn,
+      ...(options.timezone !== undefined ? { timezone: options.timezone } : {}),
+      ...(options.origin !== undefined ? { origin: options.origin } : {}),
+      ...(options.offset !== undefined ? { offset: options.offset } : {}),
+    });
+  }
   const bucketAlias = options.bucketAlias ?? 'bucket';
 
   const qb = repo.createQueryBuilder('e').select(bucketExpr, bucketAlias).groupBy(bucketExpr);
@@ -132,8 +220,22 @@ export function getTimeBucket<T extends ObjectLiteral>(
   if (options.range?.to !== undefined) {
     qb.andWhere(`${safeIdent(timeColumn)} < :__tsTo`, { __tsTo: options.range.to });
   }
-  if (options.order) {
-    qb.orderBy(bucketExpr, options.order);
+  // gapfill's start/finish set the OUTPUT range but do NOT filter input rows — without
+  // a matching WHERE, data from earlier/later buckets still aggregates in. Add the
+  // bounds so the typed API is correct-by-default (range bounds above cover that case).
+  if (gapfill?.start !== undefined && gapfill.finish !== undefined) {
+    qb.andWhere(
+      `${safeIdent(timeColumn)} >= :__gfStart AND ${safeIdent(timeColumn)} < :__gfFinish`,
+      {
+        __gfStart: gapfill.start,
+        __gfFinish: gapfill.finish,
+      },
+    );
+  }
+  // gapfill needs buckets in ascending time order for locf/interpolate to fill correctly.
+  const order = options.order ?? (gapfill ? 'ASC' : undefined);
+  if (order) {
+    qb.orderBy(bucketExpr, order);
   }
 
   return qb.getRawMany<TimeBucketRow>();

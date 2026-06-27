@@ -9,5 +9,17 @@ export type {
   ColumnstorePolicyInput,
   RetentionPolicyInput,
 } from './hypertable.js';
-export { timeBucketExpr, firstExpr, lastExpr, histogramExpr } from './hyperfunctions.js';
-export type { TimeBucketExprInput, HistogramExprInput } from './hyperfunctions.js';
+export {
+  timeBucketExpr,
+  firstExpr,
+  lastExpr,
+  histogramExpr,
+  timeBucketGapfillExpr,
+  locfExpr,
+  interpolateExpr,
+} from './hyperfunctions.js';
+export type {
+  TimeBucketExprInput,
+  HistogramExprInput,
+  TimeBucketGapfillExprInput,
+} from './hyperfunctions.js';

@@ -170,6 +170,76 @@ export function histogramExpr(input: HistogramExprInput): string {
   return `histogram(${col}, ${min}, ${max}, ${nbuckets})`;
 }
 
+export interface TimeBucketGapfillExprInput {
+  /** Bucket width as a PostgreSQL interval, e.g. `'1 hour'`. */
+  readonly interval: string;
+  /** Time/partition column to bucket (untrusted identifier — allow-listed). */
+  readonly column: string;
+  /**
+   * Explicit gapfill range as timestamp literals. Pass BOTH or neither — without
+   * them the surrounding query's `WHERE` bounds drive the gapfill range (and are
+   * then required by TimescaleDB).
+   */
+  readonly start?: string;
+  readonly finish?: string;
+}
+
+/**
+ * `time_bucket_gapfill(...)` — like `time_bucket` but emits a row for every bucket
+ * in the range, including empty ones (so `locf`/`interpolate` can fill them).
+ *
+ * TimescaleDB requires the gapfill range to be bounded: pass explicit
+ * `start`/`finish`, or constrain the query's time column in `WHERE`.
+ */
+export function timeBucketGapfillExpr(input: TimeBucketGapfillExprInput): string {
+  const width = `INTERVAL ${quoteLiteral(assertInterval(input.interval, 'time_bucket_gapfill interval'))}`;
+  const col = safeIdent(input.column, 'time_bucket_gapfill column');
+  const { start, finish } = input;
+  if ((start === undefined) !== (finish === undefined)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'time_bucket_gapfill: pass BOTH start and finish, or neither (the query WHERE bounds then drive the range)',
+      {},
+    );
+  }
+  if (start !== undefined && finish !== undefined) {
+    // Reject an inverted range up front with a clear error (PG would otherwise
+    // return zero rows or fail at run time). Parseable timestamps only; if either
+    // is non-parseable we leave validation to PG rather than guess.
+    const st = Date.parse(start);
+    const fn = Date.parse(finish);
+    if (!Number.isNaN(st) && !Number.isNaN(fn) && fn <= st) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `time_bucket_gapfill: finish (${finish}) must be after start (${start})`,
+        { start, finish },
+      );
+    }
+    const s = `TIMESTAMPTZ ${quoteLiteral(start, 'time_bucket_gapfill start')}`;
+    const f = `TIMESTAMPTZ ${quoteLiteral(finish, 'time_bucket_gapfill finish')}`;
+    return `time_bucket_gapfill(${width}, ${col}, ${s}, ${f})`;
+  }
+  return `time_bucket_gapfill(${width}, ${col})`;
+}
+
+/**
+ * `locf(expr)` — last-observation-carried-forward over the gaps created by
+ * `time_bucket_gapfill`. **Only valid inside a gapfill query.** `aggregateExpr`
+ * must be an already-safe SQL fragment (e.g. built from an allow-listed aggregate
+ * over a {@link safeIdent}-quoted column) — it is wrapped verbatim.
+ */
+export function locfExpr(aggregateExpr: string): string {
+  return `locf(${aggregateExpr})`;
+}
+
+/**
+ * `interpolate(expr)` — linear interpolation across gapfill gaps. **Only valid
+ * inside a gapfill query.** `aggregateExpr` must be an already-safe SQL fragment.
+ */
+export function interpolateExpr(aggregateExpr: string): string {
+  return `interpolate(${aggregateExpr})`;
+}
+
 // NOTE: `approx_count_distinct` is a `timescaledb_toolkit` function (NOT base) —
 // verified against a live DB (`function approx_count_distinct(text) does not exist`
 // on stock TimescaleDB). It lands in M2.2 alongside toolkit-presence detection and

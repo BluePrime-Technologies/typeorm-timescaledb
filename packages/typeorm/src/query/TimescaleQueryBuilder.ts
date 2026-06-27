@@ -2,11 +2,18 @@ import type { ObjectLiteral, SelectQueryBuilder } from 'typeorm';
 import {
   firstExpr,
   histogramExpr,
+  interpolateExpr,
   lastExpr,
+  locfExpr,
   timeBucketExpr,
+  timeBucketGapfillExpr,
+  TimescaleError,
+  TimescaleErrorCode,
   type HistogramExprInput,
   type TimeBucketExprInput,
+  type TimeBucketGapfillExprInput,
 } from '@blueprime/timescaledb-core';
+import { standardAggregateExpr, type StandardAggregate } from './aggregate.js';
 
 /** Options for {@link TimescaleQueryBuilder.timeBucket}. */
 export interface TimeBucketSelectOptions {
@@ -31,6 +38,9 @@ export interface TimeBucketSelectOptions {
  * coercion helpers in `./result-mapper`.
  */
 export class TimescaleQueryBuilder<T extends ObjectLiteral> {
+  /** `true` once a gapfill bucket was anchored with an explicit DESC order. */
+  private gapfillDesc = false;
+
   constructor(private readonly qb: SelectQueryBuilder<T>) {}
 
   /** The wrapped TypeORM builder (escape hatch for `where`, params, joins, etc.). */
@@ -78,6 +88,61 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
   /** Add `histogram(value, min, max, nbuckets) AS alias` (returns `int[]`). */
   histogram(input: HistogramExprInput, alias: string): this {
     this.qb.addSelect(histogramExpr(input), alias);
+    return this;
+  }
+
+  /**
+   * Anchor on `time_bucket_gapfill(...)` — like {@link timeBucket} (replaces the
+   * SELECT list, groups by the bucket), but emits empty buckets to be filled by
+   * {@link locf}/{@link interpolate}.
+   *
+   * **You must bound the input window in `WHERE`** on this builder (e.g.
+   * `.queryBuilder.where('time >= :from AND time < :to', …)`). `start`/`finish` set
+   * the *output* gap range but do NOT filter the rows being aggregated, so without a
+   * matching WHERE, data from earlier/later buckets leaks into the result. (The typed
+   * `repo.getTimeBucket({ gapfill })` adds these bounds for you.)
+   */
+  timeBucketGapfill(
+    input: TimeBucketGapfillExprInput,
+    alias = 'bucket',
+    options?: TimeBucketSelectOptions,
+  ): this {
+    const expr = timeBucketGapfillExpr(input);
+    this.qb.select(expr, alias);
+    if (options?.group !== false) {
+      this.qb.addGroupBy(expr);
+    }
+    // Default to ASC: locf/interpolate fill forward and need chronological buckets,
+    // so an unordered gapfill query would silently produce wrong fills. Caller may
+    // override with an explicit `order`, but then locf/interpolate are refused below.
+    const order = options?.order ?? 'ASC';
+    this.gapfillDesc = order === 'DESC';
+    this.qb.addOrderBy(expr, order);
+    return this;
+  }
+
+  /** Guard: locf/interpolate fill forward and are wrong under a DESC gapfill bucket. */
+  private assertAscendingForFill(fn: string): void {
+    if (this.gapfillDesc) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `${fn} fills forward and requires ascending bucket order — remove the DESC order from timeBucketGapfill`,
+        {},
+      );
+    }
+  }
+
+  /** Add `locf(<agg>) AS alias` — carry the last value forward across gapfill gaps. */
+  locf(metric: { fn: StandardAggregate; column?: string }, alias: string): this {
+    this.assertAscendingForFill('locf');
+    this.qb.addSelect(locfExpr(standardAggregateExpr(metric.fn, metric.column)), alias);
+    return this;
+  }
+
+  /** Add `interpolate(<agg>) AS alias` — linearly interpolate across gapfill gaps. */
+  interpolate(metric: { fn: StandardAggregate; column?: string }, alias: string): this {
+    this.assertAscendingForFill('interpolate');
+    this.qb.addSelect(interpolateExpr(standardAggregateExpr(metric.fn, metric.column)), alias);
     return this;
   }
 
