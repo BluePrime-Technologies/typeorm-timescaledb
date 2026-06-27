@@ -80,6 +80,23 @@ services:
       - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 ```
 
+Port conflict warning: this tutorial maps PostgreSQL to local port `5432`. If
+you already have PostgreSQL running on that port and Docker reports that the
+address is already in use, change the compose mapping to another host port, for
+example:
+
+```yaml
+ports:
+  - '55432:5432'
+```
+
+If you use a different host port, use that same value in `src/data-source.ts`
+when you create the DataSource below:
+
+```ts
+port: 55432,
+```
+
 Start the database:
 
 ```sh
@@ -229,6 +246,18 @@ Check it:
 ```sh
 ls src/migrations
 ```
+
+The file name includes a timestamp and will differ on each run. It should look
+similar to:
+
+```txt
+1700000000000-Timescale.ts
+```
+
+Open it: it is a standard TypeORM `MigrationInterface` containing the concrete
+TimescaleDB statements for the `reading` hypertable metadata, such as hypertable
+creation, columnstore policy setup, and retention policy setup. Treat it as a
+generated artifact you review and commit; regenerate rather than hand-editing.
 
 Generated TimescaleDB migration files are TypeScript source files. Keep the
 `run` step below on the same TypeScript-loader path unless your application build
