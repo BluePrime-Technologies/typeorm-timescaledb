@@ -11,6 +11,26 @@ export { Hypertable, TimeColumn, HypertablePrimaryKey } from './decorators/index
 export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.js';
 export { createTimescale } from './runtime/createTimescale.js';
 export type { TimescaleContext, TimescaleRepository } from './runtime/createTimescale.js';
+
+// Query layer (M2): hyperfunctions via a per-instance QueryBuilder wrapper + typed
+// raw-result coercion helpers. No prototype mutation.
+export { TimescaleQueryBuilder } from './query/TimescaleQueryBuilder.js';
+export type { TimeBucketSelectOptions } from './query/TimescaleQueryBuilder.js';
+export type {
+  GetTimeBucketOptions,
+  TimeBucketMetric,
+  TimeBucketAggFn,
+  TimeBucketRow,
+} from './query/getTimeBucket.js';
+export {
+  toNumber,
+  toNumberOrNull,
+  toBigIntString,
+  toDate,
+  toNumberArray,
+  mapRawRows,
+} from './query/result-mapper.js';
+
 export { assertSchema } from './runtime/assertSchema.js';
 export type { AssertSchemaOptions } from './runtime/assertSchema.js';
 

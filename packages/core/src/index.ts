@@ -13,6 +13,8 @@ export type {
   ColumnstorePolicyInput,
   RetentionPolicyInput,
 } from './sql/index.js';
+export { timeBucketExpr, firstExpr, lastExpr, histogramExpr } from './sql/index.js';
+export type { TimeBucketExprInput, HistogramExprInput } from './sql/index.js';
 export { compareHypertable, formatDrift } from './drift.js';
 export type { ExpectedHypertable, ActualHypertable, DriftItem } from './drift.js';
 export {
