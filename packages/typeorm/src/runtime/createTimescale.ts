@@ -15,9 +15,20 @@ import {
 import {
   approxCountDistinct,
   getCandlesticks,
+  getPercentileRanks,
+  getPercentiles,
+  getRegression,
+  getStats,
   type ApproxCountDistinctOptions,
   type Candle,
   type GetCandlesticksOptions,
+  type GetPercentileRanksOptions,
+  type GetPercentilesOptions,
+  type GetRegressionOptions,
+  type GetStatsOptions,
+  type PercentileResult,
+  type Regression,
+  type StatsSummary,
 } from '../query/toolkit.js';
 import { assertSchema, type AssertSchemaOptions } from './assertSchema.js';
 
@@ -47,6 +58,26 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * `timescaledb_toolkit` (throws `TSDB_TOOLKIT_MISSING` if absent).
    */
   approxCountDistinct(options: ApproxCountDistinctOptions): Promise<string>;
+  /**
+   * Typed 1D statistics (`stats_agg`) — average/sum and sample/population moments.
+   * `null` when the set is empty. Requires `timescaledb_toolkit`.
+   */
+  getStats(options: GetStatsOptions): Promise<StatsSummary | null>;
+  /**
+   * Typed 2D linear regression (`stats_agg(y, x)`) — slope/intercept/correlation/R².
+   * `null` when the set is empty. Requires `timescaledb_toolkit`.
+   */
+  getRegression(options: GetRegressionOptions): Promise<Regression | null>;
+  /**
+   * Typed approximate percentiles (`percentile_agg`, uddsketch). `null` when the set
+   * is empty. Requires `timescaledb_toolkit`.
+   */
+  getPercentiles(options: GetPercentilesOptions): Promise<PercentileResult | null>;
+  /**
+   * Typed approximate percentile ranks (`approx_percentile_rank`). `null` when the set
+   * is empty. Requires `timescaledb_toolkit`.
+   */
+  getPercentileRanks(options: GetPercentileRanksOptions): Promise<number[] | null>;
 }
 
 /** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
@@ -126,6 +157,18 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         },
         approxCountDistinct(options: ApproxCountDistinctOptions): Promise<string> {
           return approxCountDistinct(repo, timeColumn, options);
+        },
+        getStats(options: GetStatsOptions): Promise<StatsSummary | null> {
+          return getStats(repo, timeColumn, options);
+        },
+        getRegression(options: GetRegressionOptions): Promise<Regression | null> {
+          return getRegression(repo, timeColumn, options);
+        },
+        getPercentiles(options: GetPercentilesOptions): Promise<PercentileResult | null> {
+          return getPercentiles(repo, timeColumn, options);
+        },
+        getPercentileRanks(options: GetPercentileRanksOptions): Promise<number[] | null> {
+          return getPercentileRanks(repo, timeColumn, options);
         },
       });
     },

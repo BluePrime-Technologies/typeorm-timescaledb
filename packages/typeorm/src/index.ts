@@ -28,6 +28,14 @@ export type {
   Candle,
   GetCandlesticksOptions,
   ApproxCountDistinctOptions,
+  TimeRange,
+  GetStatsOptions,
+  StatsSummary,
+  GetRegressionOptions,
+  Regression,
+  GetPercentilesOptions,
+  PercentileResult,
+  GetPercentileRanksOptions,
 } from './query/toolkit.js';
 export {
   toNumber,
@@ -67,4 +75,5 @@ export type {
   SpacePartitionOptions,
   TimescaleEntityMetadata,
   DriftItem,
+  StatsMethod,
 } from '@blueprime/timescaledb-core';

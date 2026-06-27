@@ -44,6 +44,8 @@ The following features may be described as shipped for the current 0.2.x scope:
 - Gap-filling: `time_bucket_gapfill` with `locf` and `interpolate`.
 - `timescaledb_toolkit` candlesticks: `getCandlesticks()` (typed OHLCV).
 - `timescaledb_toolkit` `approx_count_distinct` via `approxCountDistinct()`.
+- `timescaledb_toolkit` statistics (0.3.0): `getStats()` (1D — average/sum/stddev/variance/skewness/kurtosis, sample or population) and `getRegression()` (2D linear regression — slope/intercept/correlation/R²).
+- `timescaledb_toolkit` percentiles (0.3.0): `getPercentiles()` and `getPercentileRanks()` (uddsketch `approx_percentile` / `approx_percentile_rank`, with mean/error/count).
 - Toolkit-presence detection with the stable `TSDB_TOOLKIT_MISSING` error.
 - Typed raw-result coercion helpers for hyperfunction outputs.
 
@@ -66,8 +68,8 @@ ranges over shorthand wording.
 The following items are product direction, not shipped 0.2.x functionality:
 
 - Continuous aggregates.
-- The remaining `timescaledb_toolkit` aggregates: stats, percentile, counter,
-  gauge, time-weight, state, freq, and heartbeat.
+- The remaining `timescaledb_toolkit` aggregates: counter, gauge, time-weight,
+  state, freq, and heartbeat.
 - Full entity-to-database diff engine.
 - Validated cross-store references.
 - Complete coverage of every TimescaleDB feature.

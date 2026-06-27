@@ -33,8 +33,22 @@ export {
   candlestickAccessorExpr,
   approxCountDistinctAggExpr,
   distinctCountExpr,
+  statsAgg1DExpr,
+  statsAgg2DExpr,
+  statsAccessor1DExpr,
+  statsAccessor2DExpr,
+  percentileAggExpr,
+  approxPercentileExpr,
+  approxPercentileRankExpr,
+  percentileSketchAccessorExpr,
 } from './sql/index.js';
-export type { CandlestickAccessor } from './sql/index.js';
+export type {
+  CandlestickAccessor,
+  StatsMethod,
+  Stats1DAccessor,
+  Stats2DAccessor,
+  PercentileSketchAccessor,
+} from './sql/index.js';
 export { compareHypertable, formatDrift } from './drift.js';
 export type { ExpectedHypertable, ActualHypertable, DriftItem } from './drift.js';
 export {
