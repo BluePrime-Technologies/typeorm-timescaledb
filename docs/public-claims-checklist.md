@@ -43,7 +43,7 @@ Check `packages/typeorm/package.json` and `packages/core/package.json`.
 
 ## 4. Verify shipped versus planned features
 
-Compare public wording with `docs/feature-status-0.1.x.md`.
+Compare public wording with `docs/feature-status.md`.
 
 - [ ] Shipped features are listed as shipped only if implementation and tests
       support them.

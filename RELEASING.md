@@ -21,7 +21,7 @@ Both package names (`typeorm-timescaledb`, `@blueprime/timescaledb-core`) are cu
 
 Before publishing a release, updating npm-facing documentation, or preparing public
 release notes, run the [public claims checklist](docs/public-claims-checklist.md).
-Use [feature status for 0.1.x](docs/feature-status-0.1.x.md) as the source of truth
+Use [feature status](docs/feature-status.md) as the source of truth
 for what is shipped, planned, experimental, or unsupported.
 
 Do not publish release copy that presents planned features as shipped functionality.
@@ -29,7 +29,8 @@ Do not publish release copy that presents planned features as shipped functional
 ## Cutting a release
 
 1. Bump the version in **both** `packages/core/package.json` and `packages/typeorm/package.json`
-   to the same value (they release in lockstep), open a PR, and merge it once CI is green.
+   to the same value (they release in lockstep), add a dated `CHANGELOG.md` section for the
+   version (and update its compare links), open a PR, and merge it once CI is green.
 2. From an up-to-date `main`:
    ```sh
    git tag v0.1.0        # must equal the package version
