@@ -26,6 +26,9 @@ describe('toNumber', () => {
     expect(() => toNumber('abc')).toThrowError(TimescaleError);
     expect(() => toNumber(null)).toThrowError(TimescaleError);
   });
+  it('rejects integer strings beyond safe precision (no silent rounding)', () => {
+    expect(() => toNumber('9007199254740993')).toThrowError(TimescaleError);
+  });
 });
 
 describe('toNumberOrNull', () => {
@@ -49,6 +52,9 @@ describe('toBigIntString', () => {
   it('rejects non-integers', () => {
     expect(() => toBigIntString('1.5')).toThrowError(TimescaleError);
     expect(() => toBigIntString(2.5)).toThrowError(TimescaleError);
+  });
+  it('normalizes negative zero', () => {
+    expect(toBigIntString('-0')).toBe('0');
   });
 });
 

@@ -88,8 +88,14 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
           { entity: ctor.name },
         );
       }
-      // Per-instance augmentation only — NEVER Repository.prototype.
-      return Object.assign(repo, {
+      // Augment a DELEGATING wrapper (Object.create), NOT the repository itself.
+      // `dataSource.getRepository()` returns a cached singleton, so mutating it with
+      // Object.assign would leak `getTimeBucket`/`timescaleMetadata` onto every later
+      // plain `getRepository(Entity)`. Object.create keeps the cached repo untouched
+      // (the wrapper inherits its methods via the prototype chain) — and we still
+      // never touch Repository.prototype.
+      const augmented = Object.create(repo) as TimescaleRepository<T>;
+      return Object.assign(augmented, {
         timescaleMetadata: meta,
         timescaleQueryBuilder(alias = 'e'): TimescaleQueryBuilder<T> {
           return new TimescaleQueryBuilder<T>(repo.createQueryBuilder(alias));
@@ -97,7 +103,7 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         getTimeBucket(options: GetTimeBucketOptions): Promise<TimeBucketRow[]> {
           return getTimeBucket(repo, timeColumn, options);
         },
-      }) as TimescaleRepository<T>;
+      });
     },
     assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]> {
       return assertSchema(dataSource, options);

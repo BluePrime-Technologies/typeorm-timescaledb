@@ -48,7 +48,7 @@ const AGGREGATES: ReadonlySet<string> = new Set(['avg', 'sum', 'min', 'max', 'co
 
 function metricExpression(
   metric: TimeBucketMetric,
-  resolve: (property: string, role: string) => string,
+  resolve: (property: string) => string,
   defaultTimeColumn: string,
 ): string {
   const role = `metric "${metric.alias}"`;
@@ -60,10 +60,8 @@ function metricExpression(
         { alias: metric.alias },
       );
     }
-    const value = resolve(metric.column, `${role} column`);
-    const time = metric.timeColumn
-      ? resolve(metric.timeColumn, `${role} timeColumn`)
-      : defaultTimeColumn;
+    const value = resolve(metric.column);
+    const time = metric.timeColumn ? resolve(metric.timeColumn) : defaultTimeColumn;
     return metric.fn === 'first' ? firstExpr(value, time) : lastExpr(value, time);
   }
   if (!AGGREGATES.has(metric.fn)) {
@@ -84,7 +82,7 @@ function metricExpression(
     );
   }
   // `fn` is allow-listed above; column flows through safeIdent.
-  return `${metric.fn}(${safeIdent(resolve(metric.column, `${role} column`))})`;
+  return `${metric.fn}(${safeIdent(resolve(metric.column), `${role} column`)})`;
 }
 
 /**
@@ -101,17 +99,12 @@ export function getTimeBucket<T extends ObjectLiteral>(
   defaultTimeColumn: string,
   options: GetTimeBucketOptions,
 ): Promise<TimeBucketRow[]> {
-  const resolve = (property: string, role: string): string => {
-    const column = repo.metadata.findColumnWithPropertyName(property);
-    // Fall back to the given name (then core's safeIdent validates it); covers
-    // callers passing a DB column name directly.
-    void role;
-    return column ? column.databaseName : property;
-  };
+  // Map an entity property name to its DB column; fall back to the given name
+  // (core's safeIdent then validates it) so callers may pass a DB column directly.
+  const resolve = (property: string): string =>
+    repo.metadata.findColumnWithPropertyName(property)?.databaseName ?? property;
 
-  const timeColumn = options.timeColumn
-    ? resolve(options.timeColumn, 'timeColumn')
-    : defaultTimeColumn;
+  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
   if (!options.metrics.length) {
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,

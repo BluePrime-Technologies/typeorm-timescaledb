@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
-import { SelectQueryBuilder } from 'typeorm';
+import { Repository, SelectQueryBuilder } from 'typeorm';
 import {
   Column,
   DataSource,
@@ -13,6 +13,7 @@ import {
   createTimescale,
   createTimescaleMigration,
   generateTimescaleMigration,
+  TimescaleError,
   TimescaleQueryBuilder,
   toNumber,
   toBigIntString,
@@ -186,12 +187,58 @@ describe.skipIf(!IMAGE)('M2.0 hyperfunctions against real TimescaleDB', () => {
     expect(rows).toHaveLength(1);
   });
 
-  it('isolation: using the query layer mutates no SelectQueryBuilder prototype', async () => {
-    const before = SelectQueryBuilder.prototype.getRawMany;
+  it('every time_bucket variant (origin/offset/timezone/NULL-placeholder) executes on real DB', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    const m = [{ alias: 'n', fn: 'count' as const }];
+    // Each of these emits a distinct time_bucket overload — prove they're valid SQL,
+    // not just string-asserted (catches bad positional args / the NULL placeholder).
+    await expect(
+      repo.getTimeBucket({ interval: '1 hour', metrics: m, origin: '2024-01-01' }),
+    ).resolves.toBeDefined();
+    await expect(
+      repo.getTimeBucket({ interval: '1 hour', metrics: m, offset: '30 minutes' }),
+    ).resolves.toBeDefined();
+    await expect(
+      repo.getTimeBucket({ interval: '1 day', metrics: m, timezone: 'UTC', offset: '6 hours' }),
+    ).resolves.toBeDefined(); // NULL::timestamptz origin placeholder path
+    await expect(
+      repo.getTimeBucket({
+        interval: '1 day',
+        metrics: m,
+        timezone: 'UTC',
+        origin: '2024-01-01',
+        offset: '6 hours',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('typed layer (getTimeBucket) rejects an unsafe metric column — injection guard', () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    expect(() =>
+      repo.getTimeBucket({
+        interval: '1 hour',
+        metrics: [{ alias: 'x', fn: 'sum', column: 'value); DROP TABLE reading;--' }],
+      }),
+    ).toThrowError(TimescaleError);
+  });
+
+  it('isolation: no global prototype mutation AND the cached repo stays unpolluted', () => {
+    const beforeQB = SelectQueryBuilder.prototype.getRawMany;
+    const beforeRepoSave = Repository.prototype.save;
+
     const ts = createTimescale(ds);
-    const qb = ts.getRepository(Reading).timescaleQueryBuilder('r');
-    expect(qb).toBeInstanceOf(TimescaleQueryBuilder);
-    qb.timeBucket({ interval: '1 hour', column: 'time' });
-    expect(SelectQueryBuilder.prototype.getRawMany).toBe(before);
+    const tsRepo = ts.getRepository(Reading);
+    expect(tsRepo.timescaleQueryBuilder('r')).toBeInstanceOf(TimescaleQueryBuilder);
+    tsRepo.timescaleQueryBuilder('r').timeBucket({ interval: '1 hour', column: 'time' });
+
+    // prototypes untouched
+    expect(SelectQueryBuilder.prototype.getRawMany).toBe(beforeQB);
+    expect(Repository.prototype.save).toBe(beforeRepoSave);
+    expect('getTimeBucket' in Repository.prototype).toBe(false);
+
+    // the TypeORM cached repo for the same entity is NOT polluted by augmentation
+    const plain = ds.getRepository(Reading);
+    expect('getTimeBucket' in plain).toBe(false);
+    expect('timescaleMetadata' in plain).toBe(false);
   });
 });

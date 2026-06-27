@@ -22,8 +22,19 @@ export function toNumber(value: unknown, role = 'value'): number {
     return value;
   }
   if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value);
+    const text = value.trim();
+    const n = Number(text);
     if (Number.isFinite(n)) {
+      // Guard the silent-precision-loss trap: a pg bigint/numeric string beyond
+      // 2^53 would round here without warning. Reject pure integers that exceed
+      // safe precision and point the caller at toBigIntString.
+      if (/^-?\d+$/.test(text) && !Number.isSafeInteger(n)) {
+        throw new TimescaleError(
+          TimescaleErrorCode.INVALID_ARGUMENT,
+          `${role} "${text}" exceeds safe integer precision — use toBigIntString to keep it exact`,
+          { role, value: text },
+        );
+      }
       return n;
     }
   }
@@ -48,7 +59,7 @@ export function toNumberOrNull(value: unknown, role = 'value'): number | null {
  */
 export function toBigIntString(value: unknown, role = 'value'): string {
   if (typeof value === 'string' && /^-?\d+$/.test(value)) {
-    return value;
+    return value === '-0' ? '0' : value; // normalize negative zero
   }
   if (typeof value === 'bigint') {
     return value.toString();
