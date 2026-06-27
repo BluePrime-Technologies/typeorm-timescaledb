@@ -241,4 +241,55 @@ describe.skipIf(!IMAGE)('M2.0 hyperfunctions against real TimescaleDB', () => {
     expect('getTimeBucket' in plain).toBe(false);
     expect('timescaleMetadata' in plain).toBe(false);
   });
+
+  it('gapfill + locf: empty buckets are created and carry the last value forward', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    // 4 hourly buckets 00:00–04:00; data only in 00 (avg 20) and 01 (avg 45) → 02,03 empty.
+    const rows = await repo.getTimeBucket({
+      interval: '1 hour',
+      metrics: [{ alias: 'mean', fn: 'avg', column: 'value', fill: 'locf' }],
+      gapfill: { start: '2024-01-01T00:00:00Z', finish: '2024-01-01T04:00:00Z' },
+    });
+    expect(rows).toHaveLength(4); // gapfill fabricated the two empty buckets
+    expect(toNumber(rows[0]?.mean)).toBe(20);
+    expect(toNumber(rows[1]?.mean)).toBe(45);
+    expect(toNumber(rows[2]?.mean)).toBe(45); // locf carried 01's value forward
+    expect(toNumber(rows[3]?.mean)).toBe(45);
+  });
+
+  it('TimescaleQueryBuilder gapfill + interpolate emits valid SQL that executes', async () => {
+    const rows = await createTimescale(ds)
+      .getRepository(Reading)
+      .timescaleQueryBuilder('r')
+      .timeBucketGapfill(
+        {
+          interval: '1 hour',
+          column: 'time',
+          start: '2024-01-01T00:00:00Z',
+          finish: '2024-01-01T04:00:00Z',
+        },
+        'bucket',
+        { order: 'ASC' },
+      )
+      .interpolate({ fn: 'avg', column: 'value' }, 'mean')
+      .getRawMany<{ bucket: unknown; mean: unknown }>();
+    expect(rows).toHaveLength(4);
+  });
+
+  it('gapfill validation: fill without gapfill, and gapfill without bounds, both throw', () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    expect(() =>
+      repo.getTimeBucket({
+        interval: '1 hour',
+        metrics: [{ alias: 'm', fn: 'avg', column: 'value', fill: 'locf' }],
+      }),
+    ).toThrowError(TimescaleError);
+    expect(() =>
+      repo.getTimeBucket({
+        interval: '1 hour',
+        metrics: [{ alias: 'm', fn: 'avg', column: 'value' }],
+        gapfill: {}, // no bounds (no gapfill.start/finish, no range)
+      }),
+    ).toThrowError(TimescaleError);
+  });
 });

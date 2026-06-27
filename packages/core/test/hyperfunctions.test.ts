@@ -4,6 +4,9 @@ import {
   firstExpr,
   lastExpr,
   histogramExpr,
+  timeBucketGapfillExpr,
+  locfExpr,
+  interpolateExpr,
   TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
@@ -131,5 +134,48 @@ describe('histogramExpr', () => {
     expect(() =>
       histogramExpr({ column: 'v)::int,0,0,0)--', min: 0, max: 1, nbuckets: 1 }),
     ).toThrowError(TimescaleError);
+  });
+});
+
+describe('timeBucketGapfillExpr', () => {
+  it('builds the base form (bounds from WHERE)', () => {
+    expect(timeBucketGapfillExpr({ interval: '1 hour', column: 'ts' })).toBe(
+      `time_bucket_gapfill(INTERVAL '1 hour', "ts")`,
+    );
+  });
+  it('builds the explicit start/finish form', () => {
+    expect(
+      timeBucketGapfillExpr({
+        interval: '1 hour',
+        column: 'ts',
+        start: '2024-01-01',
+        finish: '2024-01-02',
+      }),
+    ).toBe(
+      `time_bucket_gapfill(INTERVAL '1 hour', "ts", TIMESTAMPTZ '2024-01-01', TIMESTAMPTZ '2024-01-02')`,
+    );
+  });
+  it('rejects only-start or only-finish', () => {
+    expect(() =>
+      timeBucketGapfillExpr({ interval: '1 hour', column: 'ts', start: '2024-01-01' }),
+    ).toThrowError(expect.objectContaining({ code: TimescaleErrorCode.INVALID_ARGUMENT }));
+    expect(() =>
+      timeBucketGapfillExpr({ interval: '1 hour', column: 'ts', finish: '2024-01-02' }),
+    ).toThrowError(TimescaleError);
+  });
+  it('rejects an unsafe column and bad interval', () => {
+    expect(() => timeBucketGapfillExpr({ interval: '1 hour', column: 'ts);--' })).toThrowError(
+      TimescaleError,
+    );
+    expect(() => timeBucketGapfillExpr({ interval: 'soon', column: 'ts' })).toThrowError(
+      TimescaleError,
+    );
+  });
+});
+
+describe('locf / interpolate', () => {
+  it('wrap a (trusted) aggregate fragment', () => {
+    expect(locfExpr('avg("v")')).toBe('locf(avg("v"))');
+    expect(interpolateExpr('avg("v")')).toBe('interpolate(avg("v"))');
   });
 });

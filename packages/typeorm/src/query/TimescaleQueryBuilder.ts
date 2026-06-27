@@ -2,11 +2,16 @@ import type { ObjectLiteral, SelectQueryBuilder } from 'typeorm';
 import {
   firstExpr,
   histogramExpr,
+  interpolateExpr,
   lastExpr,
+  locfExpr,
   timeBucketExpr,
+  timeBucketGapfillExpr,
   type HistogramExprInput,
   type TimeBucketExprInput,
+  type TimeBucketGapfillExprInput,
 } from '@blueprime/timescaledb-core';
+import { standardAggregateExpr, type StandardAggregate } from './aggregate.js';
 
 /** Options for {@link TimescaleQueryBuilder.timeBucket}. */
 export interface TimeBucketSelectOptions {
@@ -78,6 +83,40 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
   /** Add `histogram(value, min, max, nbuckets) AS alias` (returns `int[]`). */
   histogram(input: HistogramExprInput, alias: string): this {
     this.qb.addSelect(histogramExpr(input), alias);
+    return this;
+  }
+
+  /**
+   * Anchor on `time_bucket_gapfill(...)` — like {@link timeBucket} (replaces the
+   * SELECT list, groups by the bucket), but emits empty buckets to be filled by
+   * {@link locf}/{@link interpolate}. Bound the time column in `WHERE` (or pass
+   * `start`/`finish`) or TimescaleDB rejects it.
+   */
+  timeBucketGapfill(
+    input: TimeBucketGapfillExprInput,
+    alias = 'bucket',
+    options?: TimeBucketSelectOptions,
+  ): this {
+    const expr = timeBucketGapfillExpr(input);
+    this.qb.select(expr, alias);
+    if (options?.group !== false) {
+      this.qb.addGroupBy(expr);
+    }
+    if (options?.order) {
+      this.qb.addOrderBy(expr, options.order);
+    }
+    return this;
+  }
+
+  /** Add `locf(<agg>) AS alias` — carry the last value forward across gapfill gaps. */
+  locf(metric: { fn: StandardAggregate; column?: string }, alias: string): this {
+    this.qb.addSelect(locfExpr(standardAggregateExpr(metric.fn, metric.column)), alias);
+    return this;
+  }
+
+  /** Add `interpolate(<agg>) AS alias` — linearly interpolate across gapfill gaps. */
+  interpolate(metric: { fn: StandardAggregate; column?: string }, alias: string): this {
+    this.qb.addSelect(interpolateExpr(standardAggregateExpr(metric.fn, metric.column)), alias);
     return this;
   }
 
