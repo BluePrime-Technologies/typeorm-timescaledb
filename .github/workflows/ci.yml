@@ -68,3 +68,29 @@ jobs:
         env:
           # Testcontainers boots TimescaleDB itself; image selected per matrix cell.
           TIMESCALE_IMAGE: timescale/timescaledb:${{ matrix.timescaledb }}
+
+  integration-toolkit:
+    name: integration (timescaledb_toolkit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # timescaledb-ha bundles timescaledb_toolkit (candlesticks / approx_count_distinct).
+      - name: Pre-pull TimescaleDB-HA (toolkit) image
+        run: |
+          for i in 1 2 3 4 5; do
+            docker pull "timescale/timescaledb-ha:pg17" && exit 0
+            echo "pull attempt $i failed; retrying in $((i*10))s..."; sleep $((i*10))
+          done
+          echo "::error::could not pull timescale/timescaledb-ha:pg17 after retries"; exit 1
+      - run: pnpm test
+        env:
+          # Only the toolkit image is set, so the toolkit suite runs and the
+          # no-toolkit guard block self-skips (it needs TIMESCALE_IMAGE).
+          TIMESCALE_TOOLKIT_IMAGE: timescale/timescaledb-ha:pg17

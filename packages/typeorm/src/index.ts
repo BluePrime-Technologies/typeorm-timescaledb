@@ -23,6 +23,12 @@ export type {
   TimeBucketRow,
 } from './query/getTimeBucket.js';
 export type { StandardAggregate } from './query/aggregate.js';
+export { assertToolkit } from './query/toolkit.js';
+export type {
+  Candle,
+  GetCandlesticksOptions,
+  ApproxCountDistinctOptions,
+} from './query/toolkit.js';
 export {
   toNumber,
   toNumberOrNull,
