@@ -6,12 +6,29 @@ import {
 } from '@blueprime/timescaledb-core';
 import type { DriftItem, TimescaleEntityMetadata } from '@blueprime/timescaledb-core';
 import { getTimescaleMetadata } from '../decorators/index.js';
+import { TimescaleQueryBuilder } from '../query/TimescaleQueryBuilder.js';
+import {
+  getTimeBucket,
+  type GetTimeBucketOptions,
+  type TimeBucketRow,
+} from '../query/getTimeBucket.js';
 import { assertSchema, type AssertSchemaOptions } from './assertSchema.js';
 
 /** A TypeORM repository augmented (per instance) with its validated hypertable metadata. */
 export interface TimescaleRepository<T extends ObjectLiteral> extends Repository<T> {
   /** Validated hypertable metadata for this entity. */
   readonly timescaleMetadata: TimescaleEntityMetadata;
+  /**
+   * A fluent {@link TimescaleQueryBuilder} over this repository for ad-hoc
+   * hyperfunction queries (raw-identifier tier).
+   */
+  timescaleQueryBuilder(alias?: string): TimescaleQueryBuilder<T>;
+  /**
+   * Typed `time_bucket` convenience: aggregate rows into time buckets. Resolves
+   * entity property names to DB columns; returns raw rows (coerce with the
+   * `result-mapper` helpers).
+   */
+  getTimeBucket(options: GetTimeBucketOptions): Promise<TimeBucketRow[]>;
 }
 
 /** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
@@ -61,8 +78,26 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
       validateHypertableMetadata(meta, ctor.name);
 
       const repo = dataSource.getRepository<T>(entity);
+      // validateHypertableMetadata guarantees a time column exists (from @TimeColumn
+      // or options.timeColumn) — resolve it for the time_bucket convenience.
+      const timeColumn = meta.timeColumn ?? meta.options.timeColumn;
+      if (timeColumn === undefined) {
+        throw new TimescaleError(
+          TimescaleErrorCode.NO_TIME_COLUMN,
+          `${ctor.name} has no resolvable time column`,
+          { entity: ctor.name },
+        );
+      }
       // Per-instance augmentation only — NEVER Repository.prototype.
-      return Object.assign(repo, { timescaleMetadata: meta }) as TimescaleRepository<T>;
+      return Object.assign(repo, {
+        timescaleMetadata: meta,
+        timescaleQueryBuilder(alias = 'e'): TimescaleQueryBuilder<T> {
+          return new TimescaleQueryBuilder<T>(repo.createQueryBuilder(alias));
+        },
+        getTimeBucket(options: GetTimeBucketOptions): Promise<TimeBucketRow[]> {
+          return getTimeBucket(repo, timeColumn, options);
+        },
+      }) as TimescaleRepository<T>;
     },
     assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]> {
       return assertSchema(dataSource, options);
