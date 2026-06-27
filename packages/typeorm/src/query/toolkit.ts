@@ -5,6 +5,8 @@ import {
   approxPercentileRankExpr,
   candlestickAccessorExpr,
   candlestickAggExpr,
+  counterAccessorExpr,
+  counterAggExpr,
   distinctCountExpr,
   percentileAggExpr,
   percentileSketchAccessorExpr,
@@ -14,10 +16,15 @@ import {
   statsAgg1DExpr,
   statsAgg2DExpr,
   timeBucketExpr,
+  timeWeightAccessorExpr,
+  timeWeightAggExpr,
+  timeWeightIntegralExpr,
   TOOLKIT_PRESENCE_SQL,
   TimescaleError,
   TimescaleErrorCode,
+  type IntegralUnit,
   type StatsMethod,
+  type TimeWeightMethod,
 } from '@blueprime/timescaledb-core';
 import { toDate, toNumber, toNumberOrNull, toBigIntString } from './result-mapper.js';
 
@@ -501,4 +508,190 @@ export async function getPercentileRanks<T extends ObjectLiteral>(
     return null;
   }
   return options.values.map((_, i) => toNumber(row[`r${i}`], `rank[${i}]`));
+}
+
+// ---------------------------------------------------------------------------
+// counter_agg — monotonic counters that may reset
+// ---------------------------------------------------------------------------
+
+export interface GetCounterAggOptions {
+  /** Counter value **property** name (a monotonically increasing counter). */
+  readonly valueColumn: string;
+  /** Inclusive-from / exclusive-to time bounds (bound as parameters). */
+  readonly range?: TimeRange;
+  /** Time **property**; defaults to the entity's `@TimeColumn`. */
+  readonly timeColumn?: string;
+}
+
+/**
+ * A `counter_agg` summary. Rate-family fields (`rate`/`irate*`/`slope`/`intercept`/
+ * `corr`/`idelta*`) are `null` when undefined (e.g. a single sample, zero time span).
+ * `timeDelta` is in **seconds**.
+ */
+export interface CounterSummary {
+  /** Total increase across the window, accounting for resets. */
+  readonly delta: number;
+  /** Per-second rate of increase (`delta / timeDelta`). */
+  readonly rate: number | null;
+  readonly irateLeft: number | null;
+  readonly irateRight: number | null;
+  readonly numResets: number;
+  readonly numChanges: number;
+  readonly numElements: number;
+  readonly slope: number | null;
+  readonly intercept: number | null;
+  readonly corr: number | null;
+  /** Seconds between the first and last sample. */
+  readonly timeDelta: number;
+  readonly firstVal: number;
+  readonly lastVal: number;
+  readonly firstTime: Date;
+  readonly lastTime: Date;
+  readonly ideltaLeft: number | null;
+  readonly ideltaRight: number | null;
+}
+
+/**
+ * Typed `counter_agg` over a hypertable — delta/rate/resets for a monotonic counter
+ * that may reset. Same inner/outer single-evaluation pattern as the other helpers.
+ * Requires `timescaledb_toolkit`. Returns `null` when the (filtered) set is empty.
+ *
+ * (The `extrapolated_delta`/`extrapolated_rate` accessors need the bounded
+ * `counter_agg(ts, value, bounds)` form + a method; use the core builders for those.)
+ */
+export async function getCounterAgg<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetCounterAggOptions,
+): Promise<CounterSummary | null> {
+  await assertToolkit(repo.manager.connection);
+
+  const resolve = columnResolver(repo);
+  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const agg = counterAggExpr(timeColumn, resolve(options.valueColumn));
+
+  const inner = repo.createQueryBuilder('e').select(agg, 'c');
+  applyTimeRange(inner, timeColumn, options.range);
+  const [innerSql, params] = inner.getQueryAndParameters();
+
+  const acc = (a: Parameters<typeof counterAccessorExpr>[0], alias: string): string =>
+    `${counterAccessorExpr(a, 'q."c"')} AS "${alias}"`;
+  const outerSql =
+    `SELECT ${acc('delta', 'delta')}, ${acc('rate', 'rate')}, ${acc('irate_left', 'irate_left')}, ` +
+    `${acc('irate_right', 'irate_right')}, ${acc('num_resets', 'num_resets')}, ` +
+    `${acc('num_changes', 'num_changes')}, ${acc('num_elements', 'num_elements')}, ` +
+    `${acc('slope', 'slope')}, ${acc('intercept', 'intercept')}, ${acc('corr', 'corr')}, ` +
+    `${acc('time_delta', 'time_delta')}, ${acc('first_val', 'first_val')}, ` +
+    `${acc('last_val', 'last_val')}, ${acc('first_time', 'first_time')}, ` +
+    `${acc('last_time', 'last_time')}, ${acc('idelta_left', 'idelta_left')}, ` +
+    `${acc('idelta_right', 'idelta_right')} FROM (${innerSql}) q`;
+
+  const rows = (await repo.query(outerSql, params)) as Array<Record<string, unknown>>;
+  const row = rows[0];
+  if (!row || row.num_elements === null || row.num_elements === undefined) {
+    return null;
+  }
+  return {
+    delta: toNumber(row.delta, 'delta'),
+    rate: toNumberOrNull(row.rate, 'rate'),
+    irateLeft: toNumberOrNull(row.irate_left, 'irate_left'),
+    irateRight: toNumberOrNull(row.irate_right, 'irate_right'),
+    numResets: toNumber(row.num_resets, 'num_resets'),
+    numChanges: toNumber(row.num_changes, 'num_changes'),
+    numElements: toNumber(row.num_elements, 'num_elements'),
+    slope: toNumberOrNull(row.slope, 'slope'),
+    intercept: toNumberOrNull(row.intercept, 'intercept'),
+    corr: toNumberOrNull(row.corr, 'corr'),
+    timeDelta: toNumber(row.time_delta, 'time_delta'),
+    firstVal: toNumber(row.first_val, 'first_val'),
+    lastVal: toNumber(row.last_val, 'last_val'),
+    firstTime: toDate(row.first_time, 'first_time'),
+    lastTime: toDate(row.last_time, 'last_time'),
+    ideltaLeft: toNumberOrNull(row.idelta_left, 'idelta_left'),
+    ideltaRight: toNumberOrNull(row.idelta_right, 'idelta_right'),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// time_weight — time-weighted average / integral
+// ---------------------------------------------------------------------------
+
+export interface GetTimeWeightOptions {
+  /** Value **property** name to time-weight. */
+  readonly valueColumn: string;
+  /** Weighting method. Default `'Linear'`. */
+  readonly method?: TimeWeightMethod;
+  /** Unit for the `integral` field. Default `'second'`. */
+  readonly integralUnit?: IntegralUnit;
+  /** Inclusive-from / exclusive-to time bounds (bound as parameters). */
+  readonly range?: TimeRange;
+  /** Time **property**; defaults to the entity's `@TimeColumn`. */
+  readonly timeColumn?: string;
+}
+
+/** A `time_weight` summary: the time-weighted average plus the integral and endpoints. */
+export interface TimeWeight {
+  /**
+   * Time-weighted average over the window. `null` for a single-sample (zero-duration)
+   * window, where the average is undefined but `firstVal`/`lastVal` are still valid.
+   */
+  readonly average: number | null;
+  /** Time-weighted integral (area under the curve) in `integralUnit`. */
+  readonly integral: number;
+  readonly firstVal: number;
+  readonly lastVal: number;
+  readonly firstTime: Date;
+  readonly lastTime: Date;
+}
+
+/**
+ * Typed `time_weight` over a hypertable — the time-weighted average (and integral) of
+ * an irregularly-sampled value, weighting each sample by how long it was in effect.
+ * `method` defaults to `'Linear'` (interpolate) vs `'LOCF'` (carry forward). Requires
+ * `timescaledb_toolkit`. Returns `null` when the (filtered) set is empty.
+ */
+export async function getTimeWeight<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetTimeWeightOptions,
+): Promise<TimeWeight | null> {
+  await assertToolkit(repo.manager.connection);
+
+  const resolve = columnResolver(repo);
+  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const agg = timeWeightAggExpr(
+    options.method ?? 'Linear',
+    timeColumn,
+    resolve(options.valueColumn),
+  );
+
+  const inner = repo.createQueryBuilder('e').select(agg, 'w');
+  applyTimeRange(inner, timeColumn, options.range);
+  const [innerSql, params] = inner.getQueryAndParameters();
+
+  const outerSql =
+    `SELECT ${timeWeightAccessorExpr('average', 'q."w"')} AS "average", ` +
+    `${timeWeightIntegralExpr('q."w"', options.integralUnit ?? 'second')} AS "integral", ` +
+    `${timeWeightAccessorExpr('first_val', 'q."w"')} AS "first_val", ` +
+    `${timeWeightAccessorExpr('last_val', 'q."w"')} AS "last_val", ` +
+    `${timeWeightAccessorExpr('first_time', 'q."w"')} AS "first_time", ` +
+    `${timeWeightAccessorExpr('last_time', 'q."w"')} AS "last_time" ` +
+    `FROM (${innerSql}) q`;
+
+  const rows = (await repo.query(outerSql, params)) as Array<Record<string, unknown>>;
+  const row = rows[0];
+  // Empty input → time_weight NULL → every accessor NULL. Use first_time as the
+  // sentinel: it is present for ANY non-empty window, whereas `average` is NULL for a
+  // single-sample (zero-duration) window even though first/last values remain valid.
+  if (!row || row.first_time === null || row.first_time === undefined) {
+    return null;
+  }
+  return {
+    average: toNumberOrNull(row.average, 'average'),
+    integral: toNumber(row.integral, 'integral'),
+    firstVal: toNumber(row.first_val, 'first_val'),
+    lastVal: toNumber(row.last_val, 'last_val'),
+    firstTime: toDate(row.first_time, 'first_time'),
+    lastTime: toDate(row.last_time, 'last_time'),
+  };
 }

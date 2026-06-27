@@ -15,20 +15,26 @@ import {
 import {
   approxCountDistinct,
   getCandlesticks,
+  getCounterAgg,
   getPercentileRanks,
   getPercentiles,
   getRegression,
   getStats,
+  getTimeWeight,
   type ApproxCountDistinctOptions,
   type Candle,
+  type CounterSummary,
   type GetCandlesticksOptions,
+  type GetCounterAggOptions,
   type GetPercentileRanksOptions,
   type GetPercentilesOptions,
   type GetRegressionOptions,
   type GetStatsOptions,
+  type GetTimeWeightOptions,
   type PercentileResult,
   type Regression,
   type StatsSummary,
+  type TimeWeight,
 } from '../query/toolkit.js';
 import { assertSchema, type AssertSchemaOptions } from './assertSchema.js';
 
@@ -78,6 +84,16 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * is empty. Requires `timescaledb_toolkit`.
    */
   getPercentileRanks(options: GetPercentileRanksOptions): Promise<number[] | null>;
+  /**
+   * Typed `counter_agg` summary (delta/rate/resets for a monotonic counter). `null`
+   * when the set is empty. Requires `timescaledb_toolkit`.
+   */
+  getCounterAgg(options: GetCounterAggOptions): Promise<CounterSummary | null>;
+  /**
+   * Typed `time_weight` summary (time-weighted average + integral). `null` when the
+   * set is empty. Requires `timescaledb_toolkit`.
+   */
+  getTimeWeight(options: GetTimeWeightOptions): Promise<TimeWeight | null>;
 }
 
 /** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
@@ -169,6 +185,12 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         },
         getPercentileRanks(options: GetPercentileRanksOptions): Promise<number[] | null> {
           return getPercentileRanks(repo, timeColumn, options);
+        },
+        getCounterAgg(options: GetCounterAggOptions): Promise<CounterSummary | null> {
+          return getCounterAgg(repo, timeColumn, options);
+        },
+        getTimeWeight(options: GetTimeWeightOptions): Promise<TimeWeight | null> {
+          return getTimeWeight(repo, timeColumn, options);
         },
       });
     },

@@ -19,6 +19,11 @@ import {
   approxPercentileExpr,
   approxPercentileRankExpr,
   percentileSketchAccessorExpr,
+  counterAggExpr,
+  counterAccessorExpr,
+  timeWeightAggExpr,
+  timeWeightAccessorExpr,
+  timeWeightIntegralExpr,
   TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
@@ -332,5 +337,70 @@ describe('percentile_agg builders', () => {
     const agg = percentileAggExpr('v');
     // @ts-expect-error — not in the union
     expect(() => percentileSketchAccessorExpr('median', agg)).toThrowError(TimescaleError);
+  });
+});
+
+describe('counter_agg builders', () => {
+  it('counterAggExpr quotes time + value columns', () => {
+    expect(counterAggExpr('ts', 'requests')).toBe('counter_agg("ts", "requests")');
+  });
+  it('counterAggExpr rejects unsafe columns', () => {
+    expect(() => counterAggExpr('ts);--', 'v')).toThrowError(TimescaleError);
+    expect(() => counterAggExpr('ts', 'v);--')).toThrowError(TimescaleError);
+  });
+  it('counterAccessorExpr wraps allow-listed accessors', () => {
+    const agg = counterAggExpr('ts', 'v');
+    expect(counterAccessorExpr('delta', agg)).toBe('delta(counter_agg("ts", "v"))');
+    expect(counterAccessorExpr('rate', agg)).toBe('rate(counter_agg("ts", "v"))');
+    expect(counterAccessorExpr('num_resets', agg)).toBe('num_resets(counter_agg("ts", "v"))');
+    expect(counterAccessorExpr('first_time', agg)).toBe('first_time(counter_agg("ts", "v"))');
+    expect(counterAccessorExpr('counter_zero_time', agg)).toBe(
+      'counter_zero_time(counter_agg("ts", "v"))',
+    );
+  });
+  it('counterAccessorExpr rejects an unknown accessor', () => {
+    const agg = counterAggExpr('ts', 'v');
+    // @ts-expect-error — not in the union
+    expect(() => counterAccessorExpr('extrapolated_rate', agg)).toThrowError(TimescaleError);
+  });
+});
+
+describe('time_weight builders', () => {
+  it('timeWeightAggExpr emits the method literal + columns', () => {
+    expect(timeWeightAggExpr('Linear', 'ts', 'v')).toBe('time_weight(\'Linear\', "ts", "v")');
+    expect(timeWeightAggExpr('LOCF', 'ts', 'v')).toBe('time_weight(\'LOCF\', "ts", "v")');
+  });
+  it('timeWeightAggExpr rejects an unknown method and unsafe columns', () => {
+    // @ts-expect-error — not a TimeWeightMethod
+    expect(() => timeWeightAggExpr('linear', 'ts', 'v')).toThrowError(TimescaleError);
+    expect(() => timeWeightAggExpr('Linear', 'ts);--', 'v')).toThrowError(TimescaleError);
+  });
+  it('timeWeightAccessorExpr wraps allow-listed accessors', () => {
+    const agg = timeWeightAggExpr('Linear', 'ts', 'v');
+    expect(timeWeightAccessorExpr('average', agg)).toBe(
+      'average(time_weight(\'Linear\', "ts", "v"))',
+    );
+    expect(timeWeightAccessorExpr('last_val', agg)).toBe(
+      'last_val(time_weight(\'Linear\', "ts", "v"))',
+    );
+  });
+  it('timeWeightAccessorExpr rejects an unknown accessor', () => {
+    const agg = timeWeightAggExpr('LOCF', 'ts', 'v');
+    // @ts-expect-error — not in the union
+    expect(() => timeWeightAccessorExpr('integral', agg)).toThrowError(TimescaleError);
+  });
+  it('timeWeightIntegralExpr defaults to seconds and honours an allow-listed unit', () => {
+    const agg = timeWeightAggExpr('Linear', 'ts', 'v');
+    expect(timeWeightIntegralExpr(agg)).toBe(
+      'integral(time_weight(\'Linear\', "ts", "v"), \'second\')',
+    );
+    expect(timeWeightIntegralExpr(agg, 'hour')).toBe(
+      'integral(time_weight(\'Linear\', "ts", "v"), \'hour\')',
+    );
+  });
+  it('timeWeightIntegralExpr rejects an unknown unit', () => {
+    const agg = timeWeightAggExpr('Linear', 'ts', 'v');
+    // @ts-expect-error — not an IntegralUnit
+    expect(() => timeWeightIntegralExpr(agg, 'fortnight')).toThrowError(TimescaleError);
   });
 });
