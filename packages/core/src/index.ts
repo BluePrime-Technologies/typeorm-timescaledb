@@ -27,6 +27,14 @@ export type {
   HistogramExprInput,
   TimeBucketGapfillExprInput,
 } from './sql/index.js';
+export {
+  TOOLKIT_PRESENCE_SQL,
+  candlestickAggExpr,
+  candlestickAccessorExpr,
+  approxCountDistinctAggExpr,
+  distinctCountExpr,
+} from './sql/index.js';
+export type { CandlestickAccessor } from './sql/index.js';
 export { compareHypertable, formatDrift } from './drift.js';
 export type { ExpectedHypertable, ActualHypertable, DriftItem } from './drift.js';
 export {

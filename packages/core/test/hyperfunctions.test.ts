@@ -7,6 +7,10 @@ import {
   timeBucketGapfillExpr,
   locfExpr,
   interpolateExpr,
+  candlestickAggExpr,
+  candlestickAccessorExpr,
+  approxCountDistinctAggExpr,
+  distinctCountExpr,
   TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
@@ -187,5 +191,27 @@ describe('locf / interpolate', () => {
   it('wrap a (trusted) aggregate fragment', () => {
     expect(locfExpr('avg("v")')).toBe('locf(avg("v"))');
     expect(interpolateExpr('avg("v")')).toBe('interpolate(avg("v"))');
+  });
+});
+
+describe('toolkit builders', () => {
+  it('candlestickAggExpr quotes all three columns', () => {
+    expect(candlestickAggExpr('ts', 'price', 'vol')).toBe('candlestick_agg("ts", "price", "vol")');
+  });
+  it('candlestickAggExpr rejects an unsafe column', () => {
+    expect(() => candlestickAggExpr('ts);--', 'price', 'vol')).toThrowError(TimescaleError);
+  });
+  it('candlestickAccessorExpr wraps the agg with an allow-listed accessor', () => {
+    const cs = candlestickAggExpr('ts', 'price', 'vol');
+    expect(candlestickAccessorExpr('open', cs)).toBe('open(candlestick_agg("ts", "price", "vol"))');
+    expect(candlestickAccessorExpr('vwap', cs)).toBe('vwap(candlestick_agg("ts", "price", "vol"))');
+  });
+  it('approx_count_distinct must be wrapped in distinct_count for a scalar', () => {
+    const agg = approxCountDistinctAggExpr('price');
+    expect(agg).toBe('approx_count_distinct("price")');
+    expect(distinctCountExpr(agg)).toBe('distinct_count(approx_count_distinct("price"))');
+  });
+  it('approxCountDistinctAggExpr rejects an unsafe column', () => {
+    expect(() => approxCountDistinctAggExpr('p) FROM secrets--')).toThrowError(TimescaleError);
   });
 });

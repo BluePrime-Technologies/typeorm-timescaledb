@@ -23,3 +23,11 @@ export type {
   HistogramExprInput,
   TimeBucketGapfillExprInput,
 } from './hyperfunctions.js';
+export {
+  TOOLKIT_PRESENCE_SQL,
+  candlestickAggExpr,
+  candlestickAccessorExpr,
+  approxCountDistinctAggExpr,
+  distinctCountExpr,
+} from './toolkit.js';
+export type { CandlestickAccessor } from './toolkit.js';
