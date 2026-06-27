@@ -291,5 +291,14 @@ describe.skipIf(!IMAGE)('M2.0 hyperfunctions against real TimescaleDB', () => {
         gapfill: {}, // no bounds (no gapfill.start/finish, no range)
       }),
     ).toThrowError(TimescaleError);
+    // DESC ordering is incompatible with a forward-filling metric
+    expect(() =>
+      repo.getTimeBucket({
+        interval: '1 hour',
+        metrics: [{ alias: 'm', fn: 'avg', column: 'value', fill: 'locf' }],
+        gapfill: { start: '2024-01-01T00:00:00Z', finish: '2024-01-01T04:00:00Z' },
+        order: 'DESC',
+      }),
+    ).toThrowError(TimescaleError);
   });
 });

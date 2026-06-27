@@ -102,9 +102,10 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
     if (options?.group !== false) {
       this.qb.addGroupBy(expr);
     }
-    if (options?.order) {
-      this.qb.addOrderBy(expr, options.order);
-    }
+    // Default to ASC: locf/interpolate fill forward and need chronological buckets,
+    // so an unordered gapfill query would silently produce wrong fills. Caller may
+    // override with an explicit `order`.
+    this.qb.addOrderBy(expr, options?.order ?? 'ASC');
     return this;
   }
 

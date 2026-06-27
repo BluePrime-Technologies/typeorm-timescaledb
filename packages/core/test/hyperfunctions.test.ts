@@ -155,6 +155,16 @@ describe('timeBucketGapfillExpr', () => {
       `time_bucket_gapfill(INTERVAL '1 hour', "ts", TIMESTAMPTZ '2024-01-01', TIMESTAMPTZ '2024-01-02')`,
     );
   });
+  it('rejects an inverted range (finish <= start)', () => {
+    expect(() =>
+      timeBucketGapfillExpr({
+        interval: '1 hour',
+        column: 'ts',
+        start: '2024-01-02',
+        finish: '2024-01-01',
+      }),
+    ).toThrowError(expect.objectContaining({ code: TimescaleErrorCode.INVALID_ARGUMENT }));
+  });
   it('rejects only-start or only-finish', () => {
     expect(() =>
       timeBucketGapfillExpr({ interval: '1 hour', column: 'ts', start: '2024-01-01' }),

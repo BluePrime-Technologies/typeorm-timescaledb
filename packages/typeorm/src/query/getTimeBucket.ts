@@ -120,10 +120,19 @@ export function getTimeBucket<T extends ObjectLiteral>(
   }
 
   const gapfill = options.gapfill;
-  if (!gapfill && options.metrics.some((m) => m.fill !== undefined)) {
+  const hasFill = options.metrics.some((m) => m.fill !== undefined);
+  if (!gapfill && hasFill) {
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,
       'metric `fill` (locf/interpolate) requires `gapfill` on the query',
+      {},
+    );
+  }
+  if (hasFill && options.order === 'DESC') {
+    // locf/interpolate fill forward; DESC ordering would invert their semantics.
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'order: "DESC" is incompatible with locf/interpolate fills (they require ascending buckets)',
       {},
     );
   }

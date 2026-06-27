@@ -203,6 +203,18 @@ export function timeBucketGapfillExpr(input: TimeBucketGapfillExprInput): string
     );
   }
   if (start !== undefined && finish !== undefined) {
+    // Reject an inverted range up front with a clear error (PG would otherwise
+    // return zero rows or fail at run time). Parseable timestamps only; if either
+    // is non-parseable we leave validation to PG rather than guess.
+    const st = Date.parse(start);
+    const fn = Date.parse(finish);
+    if (!Number.isNaN(st) && !Number.isNaN(fn) && fn <= st) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `time_bucket_gapfill: finish (${finish}) must be after start (${start})`,
+        { start, finish },
+      );
+    }
     const s = `TIMESTAMPTZ ${quoteLiteral(start, 'time_bucket_gapfill start')}`;
     const f = `TIMESTAMPTZ ${quoteLiteral(finish, 'time_bucket_gapfill finish')}`;
     return `time_bucket_gapfill(${width}, ${col}, ${s}, ${f})`;
