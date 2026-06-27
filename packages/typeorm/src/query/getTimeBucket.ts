@@ -136,6 +136,16 @@ export function getTimeBucket<T extends ObjectLiteral>(
       {},
     );
   }
+  // interpolate on a count produces fractional "counts" between buckets — almost
+  // always a mistake. locf (carry the integer forward) is the sane fill for counts.
+  const badInterp = options.metrics.find((m) => m.fill === 'interpolate' && m.fn === 'count');
+  if (badInterp) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `metric "${badInterp.alias}": interpolate on a count yields fractional counts — use fill: 'locf' instead`,
+      { alias: badInterp.alias },
+    );
+  }
 
   let bucketExpr: string;
   if (gapfill) {
@@ -168,6 +178,19 @@ export function getTimeBucket<T extends ObjectLiteral>(
         {},
       );
     }
+    // Reject an inverted window on the range-driven path too (the core builder only
+    // sees the explicit start/finish form). Best-effort: parseable timestamps only.
+    if (!hasExplicit && hasRange) {
+      const f = Date.parse(String(options.range?.from));
+      const t = Date.parse(String(options.range?.to));
+      if (!Number.isNaN(f) && !Number.isNaN(t) && t <= f) {
+        throw new TimescaleError(
+          TimescaleErrorCode.INVALID_ARGUMENT,
+          `gapfill: range.to (${String(options.range?.to)}) must be after range.from (${String(options.range?.from)})`,
+          {},
+        );
+      }
+    }
     const tsLit = (v: Date | string): string => (v instanceof Date ? v.toISOString() : v);
     bucketExpr = timeBucketGapfillExpr({
       interval: options.interval,
@@ -196,6 +219,18 @@ export function getTimeBucket<T extends ObjectLiteral>(
   }
   if (options.range?.to !== undefined) {
     qb.andWhere(`${safeIdent(timeColumn)} < :__tsTo`, { __tsTo: options.range.to });
+  }
+  // gapfill's start/finish set the OUTPUT range but do NOT filter input rows — without
+  // a matching WHERE, data from earlier/later buckets still aggregates in. Add the
+  // bounds so the typed API is correct-by-default (range bounds above cover that case).
+  if (gapfill?.start !== undefined && gapfill.finish !== undefined) {
+    qb.andWhere(
+      `${safeIdent(timeColumn)} >= :__gfStart AND ${safeIdent(timeColumn)} < :__gfFinish`,
+      {
+        __gfStart: gapfill.start,
+        __gfFinish: gapfill.finish,
+      },
+    );
   }
   // gapfill needs buckets in ascending time order for locf/interpolate to fill correctly.
   const order = options.order ?? (gapfill ? 'ASC' : undefined);

@@ -257,23 +257,47 @@ describe.skipIf(!IMAGE)('M2.0 hyperfunctions against real TimescaleDB', () => {
     expect(toNumber(rows[3]?.mean)).toBe(45);
   });
 
-  it('TimescaleQueryBuilder gapfill + interpolate emits valid SQL that executes', async () => {
-    const rows = await createTimescale(ds)
-      .getRepository(Reading)
-      .timescaleQueryBuilder('r')
-      .timeBucketGapfill(
-        {
-          interval: '1 hour',
-          column: 'time',
-          start: '2024-01-01T00:00:00Z',
-          finish: '2024-01-01T04:00:00Z',
-        },
-        'bucket',
-        { order: 'ASC' },
-      )
-      .interpolate({ fn: 'avg', column: 'value' }, 'mean')
-      .getRawMany<{ bucket: unknown; mean: unknown }>();
-    expect(rows).toHaveLength(4);
+  it('gapfill + interpolate linearly fills an interior gap (exact value)', async () => {
+    // Create an interior gap: bucket 01 (avg 45) and bucket 03 (60) populated, 02 empty.
+    // interpolate must fill 02 at the midpoint = (45 + 60) / 2 = 52.5.
+    await ds.query(`INSERT INTO "reading"("time","sensorId","value") VALUES ($1,$2,$3)`, [
+      '2024-01-01T03:00:00Z',
+      'a',
+      60,
+    ]);
+    try {
+      const tqb = createTimescale(ds)
+        .getRepository(Reading)
+        .timescaleQueryBuilder('r')
+        .timeBucketGapfill(
+          {
+            interval: '1 hour',
+            column: 'time',
+            start: '2024-01-01T01:00:00Z',
+            finish: '2024-01-01T04:00:00Z',
+          },
+          'bucket',
+          { order: 'ASC' },
+        )
+        .interpolate({ fn: 'avg', column: 'value' }, 'mean');
+      // Raw tier: caller bounds the input window (gapfill start/finish only sets the
+      // output range, it doesn't filter rows).
+      tqb.queryBuilder.where('r.time >= :from AND r.time < :to', {
+        from: '2024-01-01T01:00:00Z',
+        to: '2024-01-01T04:00:00Z',
+      });
+      const rows = await tqb.getRawMany<{ bucket: unknown; mean: unknown }>();
+      // first three buckets: 01=45, 02=52.5 (interpolated midpoint), 03=60.
+      // (gapfill also emits a trailing empty bucket at the finish boundary.)
+      expect(rows.length).toBeGreaterThanOrEqual(3);
+      expect(toNumber(rows[0]?.mean)).toBe(45);
+      expect(toNumber(rows[1]?.mean)).toBe(52.5);
+      expect(toNumber(rows[2]?.mean)).toBe(60);
+    } finally {
+      await ds.query(`DELETE FROM "reading" WHERE "time" = $1 AND "value" = 60`, [
+        '2024-01-01T03:00:00Z',
+      ]);
+    }
   });
 
   it('gapfill validation: fill without gapfill, and gapfill without bounds, both throw', () => {
@@ -307,6 +331,23 @@ describe.skipIf(!IMAGE)('M2.0 hyperfunctions against real TimescaleDB', () => {
         metrics: [{ alias: 'm', fn: 'avg', column: 'value' }],
         gapfill: { start: '2024-01-01T00:00:00Z' },
         range: { from: '2024-01-01T00:00:00Z', to: '2024-01-01T04:00:00Z' },
+      }),
+    ).toThrowError(TimescaleError);
+    // interpolate on a count (fractional counts) is rejected
+    expect(() =>
+      repo.getTimeBucket({
+        interval: '1 hour',
+        metrics: [{ alias: 'n', fn: 'count', fill: 'interpolate' }],
+        gapfill: { start: '2024-01-01T00:00:00Z', finish: '2024-01-01T04:00:00Z' },
+      }),
+    ).toThrowError(TimescaleError);
+    // inverted range window on the range-driven gapfill path is rejected
+    expect(() =>
+      repo.getTimeBucket({
+        interval: '1 hour',
+        metrics: [{ alias: 'm', fn: 'avg', column: 'value', fill: 'locf' }],
+        gapfill: {},
+        range: { from: '2024-01-01T04:00:00Z', to: '2024-01-01T00:00:00Z' },
       }),
     ).toThrowError(TimescaleError);
   });

@@ -94,8 +94,13 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
   /**
    * Anchor on `time_bucket_gapfill(...)` — like {@link timeBucket} (replaces the
    * SELECT list, groups by the bucket), but emits empty buckets to be filled by
-   * {@link locf}/{@link interpolate}. Bound the time column in `WHERE` (or pass
-   * `start`/`finish`) or TimescaleDB rejects it.
+   * {@link locf}/{@link interpolate}.
+   *
+   * **You must bound the input window in `WHERE`** on this builder (e.g.
+   * `.queryBuilder.where('time >= :from AND time < :to', …)`). `start`/`finish` set
+   * the *output* gap range but do NOT filter the rows being aggregated, so without a
+   * matching WHERE, data from earlier/later buckets leaks into the result. (The typed
+   * `repo.getTimeBucket({ gapfill })` adds these bounds for you.)
    */
   timeBucketGapfill(
     input: TimeBucketGapfillExprInput,
