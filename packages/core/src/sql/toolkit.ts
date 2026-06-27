@@ -1,4 +1,5 @@
 import { safeIdent } from '../identifier.js';
+import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /**
  * Pure SQL expression builders for `timescaledb_toolkit` hyperfunctions.
@@ -63,7 +64,11 @@ const CANDLESTICK_ACCESSORS: ReadonlySet<string> = new Set([
 export function candlestickAccessorExpr(accessor: CandlestickAccessor, aggExpr: string): string {
   if (!CANDLESTICK_ACCESSORS.has(accessor)) {
     // Defensive: TS already constrains the union, but guard the SQL boundary too.
-    throw new Error(`unknown candlestick accessor: ${String(accessor)}`);
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `unknown candlestick accessor: ${JSON.stringify(accessor)}`,
+      { accessor: String(accessor) },
+    );
   }
   return `${accessor}(${aggExpr})`;
 }

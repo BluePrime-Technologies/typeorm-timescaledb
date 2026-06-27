@@ -10,7 +10,7 @@ import {
   TimescaleError,
   TimescaleErrorCode,
 } from '@blueprime/timescaledb-core';
-import { toDate, toNumber, toBigIntString } from './result-mapper.js';
+import { toDate, toNumber, toNumberOrNull, toBigIntString } from './result-mapper.js';
 
 /**
  * `timescaledb_toolkit`-backed query helpers (candlesticks, approx_count_distinct).
@@ -20,7 +20,9 @@ import { toDate, toNumber, toBigIntString } from './result-mapper.js';
  * documented failure instead of a raw `function ... does not exist` from PostgreSQL.
  */
 
-// Cache the presence check per DataSource (one round-trip, not per query).
+// Cache the presence check per DataSource: a present OR a deterministically-absent
+// toolkit is a stable fact, so resolve/reject it once. Only a TRANSIENT query failure
+// (connection blip) is evicted so it can be retried.
 const toolkitChecked = new WeakMap<DataSource, Promise<void>>();
 
 /** Resolve once per DataSource; throws `TSDB_TOOLKIT_MISSING` when the extension is absent. */
@@ -36,8 +38,15 @@ export function assertToolkit(dataSource: DataSource): Promise<void> {
         );
       }
     });
-    // Don't cache a rejection: a transient query failure shouldn't poison later calls.
-    pending.catch(() => toolkitChecked.delete(dataSource));
+    // Keep the deterministic "missing" verdict cached; evict only a transient failure
+    // (e.g. a dropped connection) so the next call re-checks rather than re-throwing it.
+    pending.catch((err: unknown) => {
+      const deterministic =
+        err instanceof TimescaleError && err.code === TimescaleErrorCode.TOOLKIT_MISSING;
+      if (!deterministic) {
+        toolkitChecked.delete(dataSource);
+      }
+    });
     toolkitChecked.set(dataSource, pending);
   }
   return pending;
@@ -51,7 +60,8 @@ export interface Candle {
   readonly low: number;
   readonly close: number;
   readonly volume: number;
-  readonly vwap: number;
+  /** Volume-weighted average price; `null` when the bucket's total volume is 0. */
+  readonly vwap: number | null;
 }
 
 export interface GetCandlesticksOptions {
@@ -93,26 +103,31 @@ export async function getCandlesticks<T extends ObjectLiteral>(
   );
   const bucketExpr = timeBucketExpr({ interval: options.interval, column: timeColumn });
 
-  const qb = repo
-    .createQueryBuilder('e')
-    .select(bucketExpr, 'bucket')
-    .addSelect(candlestickAccessorExpr('open', cs), 'open')
-    .addSelect(candlestickAccessorExpr('high', cs), 'high')
-    .addSelect(candlestickAccessorExpr('low', cs), 'low')
-    .addSelect(candlestickAccessorExpr('close', cs), 'close')
-    .addSelect(candlestickAccessorExpr('volume', cs), 'volume')
-    .addSelect(candlestickAccessorExpr('vwap', cs), 'vwap')
-    .groupBy(bucketExpr);
-
+  // Compute candlestick_agg ONCE per bucket in an inner query, then apply the
+  // accessors in the outer query — repeating the aggregate in each accessor would
+  // make PostgreSQL evaluate it 6× per bucket. The inner builder handles the table,
+  // WHERE, and parameter binding safely; we only wrap its SQL.
+  const inner = repo.createQueryBuilder('e').select(bucketExpr, 'bucket').addSelect(cs, 'cs');
   if (options.range?.from !== undefined) {
-    qb.andWhere(`${safeIdent(timeColumn)} >= :__tsFrom`, { __tsFrom: options.range.from });
+    inner.andWhere(`${safeIdent(timeColumn)} >= :__tsFrom`, { __tsFrom: options.range.from });
   }
   if (options.range?.to !== undefined) {
-    qb.andWhere(`${safeIdent(timeColumn)} < :__tsTo`, { __tsTo: options.range.to });
+    inner.andWhere(`${safeIdent(timeColumn)} < :__tsTo`, { __tsTo: options.range.to });
   }
-  qb.orderBy(bucketExpr, options.order ?? 'ASC');
+  inner.groupBy(bucketExpr);
+  const [innerSql, params] = inner.getQueryAndParameters();
 
-  const rows = await qb.getRawMany<Record<string, unknown>>();
+  const order = options.order === 'DESC' ? 'DESC' : 'ASC';
+  const outerSql =
+    `SELECT q."bucket" AS "bucket", ${candlestickAccessorExpr('open', 'q."cs"')} AS "open", ` +
+    `${candlestickAccessorExpr('high', 'q."cs"')} AS "high", ` +
+    `${candlestickAccessorExpr('low', 'q."cs"')} AS "low", ` +
+    `${candlestickAccessorExpr('close', 'q."cs"')} AS "close", ` +
+    `${candlestickAccessorExpr('volume', 'q."cs"')} AS "volume", ` +
+    `${candlestickAccessorExpr('vwap', 'q."cs"')} AS "vwap" ` +
+    `FROM (${innerSql}) q ORDER BY q."bucket" ${order}`;
+
+  const rows = (await repo.query(outerSql, params)) as Array<Record<string, unknown>>;
   return rows.map((r) => ({
     bucket: toDate(r.bucket, 'bucket'),
     open: toNumber(r.open, 'open'),
@@ -120,7 +135,8 @@ export async function getCandlesticks<T extends ObjectLiteral>(
     low: toNumber(r.low, 'low'),
     close: toNumber(r.close, 'close'),
     volume: toNumber(r.volume, 'volume'),
-    vwap: toNumber(r.vwap, 'vwap'),
+    // vwap = Σ(price·vol)/Σ(vol) → NULL when a bucket's total volume is 0.
+    vwap: toNumberOrNull(r.vwap, 'vwap'),
   }));
 }
 

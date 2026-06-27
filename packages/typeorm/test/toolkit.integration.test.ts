@@ -12,7 +12,6 @@ import {
   createTimescale,
   createTimescaleMigration,
   generateTimescaleMigration,
-  TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
 
@@ -149,6 +148,17 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
     // 7 distinct prices (10,12,8,11,20,25,22) — HLL is exact at this scale.
     expect(await repo.approxCountDistinct({ column: 'price' })).toBe('7');
   });
+
+  it('approxCountDistinct honours a range filter', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    // bucket 01 window has 3 distinct prices (20, 25, 22).
+    expect(
+      await repo.approxCountDistinct({
+        column: 'price',
+        range: { from: '2024-01-01T01:00:00Z', to: '2024-01-01T02:00:00Z' },
+      }),
+    ).toBe('3');
+  });
 });
 
 describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', () => {
@@ -173,8 +183,8 @@ describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', ()
 
   it('approxCountDistinct throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
     const repo = createTimescale(ds).getRepository(Trade);
-    await expect(repo.approxCountDistinct({ column: 'price' })).rejects.toBeInstanceOf(
-      TimescaleError,
-    );
+    await expect(repo.approxCountDistinct({ column: 'price' })).rejects.toMatchObject({
+      code: TimescaleErrorCode.TOOLKIT_MISSING,
+    });
   });
 });
