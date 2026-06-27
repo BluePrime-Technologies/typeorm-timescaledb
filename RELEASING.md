@@ -21,7 +21,7 @@ Both package names (`typeorm-timescaledb`, `@blueprime/timescaledb-core`) are cu
 
 Before publishing a release, updating npm-facing documentation, or preparing public
 release notes, run the [public claims checklist](docs/public-claims-checklist.md).
-Use [feature status for 0.1.x](docs/feature-status-0.1.x.md) as the source of truth
+Use [feature status](docs/feature-status.md) as the source of truth
 for what is shipped, planned, experimental, or unsupported.
 
 Do not publish release copy that presents planned features as shipped functionality.
