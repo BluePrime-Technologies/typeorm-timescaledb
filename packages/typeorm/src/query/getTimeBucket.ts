@@ -151,6 +151,14 @@ export function getTimeBucket<T extends ObjectLiteral>(
       );
     }
     const { start, finish } = gapfill;
+    // A lone start/finish would be silently dropped below — fail loudly instead.
+    if ((start === undefined) !== (finish === undefined)) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        'gapfill: pass BOTH start and finish, or neither (then range.from+range.to drive the bounds)',
+        {},
+      );
+    }
     const hasExplicit = start !== undefined && finish !== undefined;
     const hasRange = options.range?.from !== undefined && options.range?.to !== undefined;
     if (!hasExplicit && !hasRange) {

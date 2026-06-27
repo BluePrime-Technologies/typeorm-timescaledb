@@ -7,6 +7,8 @@ import {
   locfExpr,
   timeBucketExpr,
   timeBucketGapfillExpr,
+  TimescaleError,
+  TimescaleErrorCode,
   type HistogramExprInput,
   type TimeBucketExprInput,
   type TimeBucketGapfillExprInput,
@@ -36,6 +38,9 @@ export interface TimeBucketSelectOptions {
  * coercion helpers in `./result-mapper`.
  */
 export class TimescaleQueryBuilder<T extends ObjectLiteral> {
+  /** `true` once a gapfill bucket was anchored with an explicit DESC order. */
+  private gapfillDesc = false;
+
   constructor(private readonly qb: SelectQueryBuilder<T>) {}
 
   /** The wrapped TypeORM builder (escape hatch for `where`, params, joins, etc.). */
@@ -104,19 +109,34 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
     }
     // Default to ASC: locf/interpolate fill forward and need chronological buckets,
     // so an unordered gapfill query would silently produce wrong fills. Caller may
-    // override with an explicit `order`.
-    this.qb.addOrderBy(expr, options?.order ?? 'ASC');
+    // override with an explicit `order`, but then locf/interpolate are refused below.
+    const order = options?.order ?? 'ASC';
+    this.gapfillDesc = order === 'DESC';
+    this.qb.addOrderBy(expr, order);
     return this;
+  }
+
+  /** Guard: locf/interpolate fill forward and are wrong under a DESC gapfill bucket. */
+  private assertAscendingForFill(fn: string): void {
+    if (this.gapfillDesc) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `${fn} fills forward and requires ascending bucket order — remove the DESC order from timeBucketGapfill`,
+        {},
+      );
+    }
   }
 
   /** Add `locf(<agg>) AS alias` — carry the last value forward across gapfill gaps. */
   locf(metric: { fn: StandardAggregate; column?: string }, alias: string): this {
+    this.assertAscendingForFill('locf');
     this.qb.addSelect(locfExpr(standardAggregateExpr(metric.fn, metric.column)), alias);
     return this;
   }
 
   /** Add `interpolate(<agg>) AS alias` — linearly interpolate across gapfill gaps. */
   interpolate(metric: { fn: StandardAggregate; column?: string }, alias: string): this {
+    this.assertAscendingForFill('interpolate');
     this.qb.addSelect(interpolateExpr(standardAggregateExpr(metric.fn, metric.column)), alias);
     return this;
   }

@@ -300,5 +300,14 @@ describe.skipIf(!IMAGE)('M2.0 hyperfunctions against real TimescaleDB', () => {
         order: 'DESC',
       }),
     ).toThrowError(TimescaleError);
+    // a lone gapfill.start (without finish) must not be silently dropped
+    expect(() =>
+      repo.getTimeBucket({
+        interval: '1 hour',
+        metrics: [{ alias: 'm', fn: 'avg', column: 'value' }],
+        gapfill: { start: '2024-01-01T00:00:00Z' },
+        range: { from: '2024-01-01T00:00:00Z', to: '2024-01-01T04:00:00Z' },
+      }),
+    ).toThrowError(TimescaleError);
   });
 });

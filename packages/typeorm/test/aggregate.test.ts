@@ -28,3 +28,30 @@ describe('standardAggregateExpr', () => {
     expect(() => standardAggregateExpr('avg')).toThrowError(TimescaleError);
   });
 });
+
+describe('TimescaleQueryBuilder gapfill guards (no DB)', () => {
+  // Minimal SelectQueryBuilder stub — chainable, records nothing; we only exercise
+  // the wrapper's own guard logic, which runs before any SQL is executed.
+  function stubQb() {
+    const qb: Record<string, unknown> = {};
+    for (const m of ['select', 'addSelect', 'addGroupBy', 'addOrderBy']) {
+      qb[m] = () => qb;
+    }
+    return qb;
+  }
+
+  it('refuses locf after a DESC gapfill bucket', async () => {
+    const { TimescaleQueryBuilder } = await import('../src/index.js');
+    const tqb = new TimescaleQueryBuilder(stubQb() as never);
+    tqb.timeBucketGapfill({ interval: '1 hour', column: 'ts' }, 'bucket', { order: 'DESC' });
+    expect(() => tqb.locf({ fn: 'avg', column: 'v' }, 'm')).toThrowError(TimescaleError);
+    expect(() => tqb.interpolate({ fn: 'avg', column: 'v' }, 'm')).toThrowError(TimescaleError);
+  });
+
+  it('allows locf after the default (ASC) gapfill bucket', async () => {
+    const { TimescaleQueryBuilder } = await import('../src/index.js');
+    const tqb = new TimescaleQueryBuilder(stubQb() as never);
+    tqb.timeBucketGapfill({ interval: '1 hour', column: 'ts' }, 'bucket');
+    expect(() => tqb.locf({ fn: 'avg', column: 'v' }, 'm')).not.toThrow();
+  });
+});
