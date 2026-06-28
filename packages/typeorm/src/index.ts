@@ -50,6 +50,9 @@ export type {
   GetMostCommonValuesOptions,
   MostCommonValue,
   GetTopNOptions,
+  HeartbeatWindow,
+  HeartbeatHealth,
+  IsLiveAtOptions,
 } from './query/toolkit.js';
 export {
   toNumber,

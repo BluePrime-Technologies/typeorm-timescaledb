@@ -34,6 +34,11 @@ import {
   mcvTopNExpr,
   mcvMaxFrequencyExpr,
   mcvMinFrequencyExpr,
+  heartbeatAggExpr,
+  heartbeatAccessorExpr,
+  heartbeatLiveAtExpr,
+  heartbeatLiveRangesExpr,
+  heartbeatDeadRangesExpr,
   TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
@@ -466,5 +471,39 @@ describe('mcv_agg builders', () => {
     expect(mcvMaxFrequencyExpr(agg, '$2')).toBe('max_frequency(mcv_agg(10, "status"), $2)');
     expect(mcvMinFrequencyExpr(agg, '$2')).toBe('min_frequency(mcv_agg(10, "status"), $2)');
     expect(() => mcvMaxFrequencyExpr(agg, "'a'")).toThrowError(TimescaleError);
+  });
+});
+
+describe('heartbeat_agg builders', () => {
+  it('heartbeatAggExpr quotes the time column + casts the bound config args', () => {
+    expect(heartbeatAggExpr('ts', ':__hbStart', ':__hbDuration', ':__hbLiveness')).toBe(
+      'heartbeat_agg("ts", :__hbStart::timestamptz, :__hbDuration::interval, :__hbLiveness::interval)',
+    );
+    // positional bind tokens are also accepted
+    expect(heartbeatAggExpr('ts', '$1', '$2', '$3')).toBe(
+      'heartbeat_agg("ts", $1::timestamptz, $2::interval, $3::interval)',
+    );
+  });
+  it('heartbeatAggExpr rejects unsafe columns and raw (non-placeholder) config values', () => {
+    expect(() => heartbeatAggExpr('ts);--', ':a', ':b', ':c')).toThrowError(TimescaleError);
+    expect(() => heartbeatAggExpr('ts', "'2024-01-01'", ':b', ':c')).toThrowError(TimescaleError);
+    expect(() => heartbeatAggExpr('ts', ':a', "'5 min'", ':c')).toThrowError(TimescaleError);
+  });
+  it('scalar accessors are allow-listed', () => {
+    const agg = heartbeatAggExpr('ts', '$1', '$2', '$3');
+    expect(heartbeatAccessorExpr('uptime', agg)).toBe(
+      'uptime(heartbeat_agg("ts", $1::timestamptz, $2::interval, $3::interval))',
+    );
+    expect(heartbeatAccessorExpr('num_gaps', agg)).toContain('num_gaps(heartbeat_agg(');
+    // @ts-expect-error — not in the union
+    expect(() => heartbeatAccessorExpr('mtbf', agg)).toThrowError(TimescaleError);
+  });
+  it('live_at requires a bind token; range table-funcs wrap the agg', () => {
+    const agg = heartbeatAggExpr('ts', '$1', '$2', '$3');
+    expect(heartbeatLiveAtExpr(agg, '$4')).toContain('live_at(heartbeat_agg(');
+    expect(heartbeatLiveAtExpr(agg, '$4')).toMatch(/, \$4\)$/);
+    expect(() => heartbeatLiveAtExpr(agg, 'now()')).toThrowError(TimescaleError);
+    expect(heartbeatLiveRangesExpr(agg)).toContain('live_ranges(heartbeat_agg(');
+    expect(heartbeatDeadRangesExpr(agg)).toContain('dead_ranges(heartbeat_agg(');
   });
 });

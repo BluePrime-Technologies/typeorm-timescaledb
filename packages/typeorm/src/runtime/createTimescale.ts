@@ -19,6 +19,9 @@ import {
   getPercentileRanks,
   getPercentiles,
   getRegression,
+  getDeadRanges,
+  getHeartbeatHealth,
+  getLiveRanges,
   getMostCommonValues,
   getStateAt,
   getStateDurations,
@@ -27,6 +30,7 @@ import {
   getStats,
   getTimeWeight,
   getTopN,
+  isLiveAt,
   type ApproxCountDistinctOptions,
   type Candle,
   type CounterSummary,
@@ -43,6 +47,9 @@ import {
   type GetTimeWeightOptions,
   type GetTopNOptions,
   type GetMostCommonValuesOptions,
+  type HeartbeatHealth,
+  type HeartbeatWindow,
+  type IsLiveAtOptions,
   type MostCommonValue,
   type PercentileResult,
   type Period,
@@ -139,6 +146,20 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * The top `n` most common values (`mcv_agg` + `topn`). Requires `timescaledb_toolkit`.
    */
   getTopN(options: GetTopNOptions): Promise<string[]>;
+  /**
+   * Liveness/uptime summary over a window (`heartbeat_agg`). `null` when there are no
+   * heartbeats in the window. Requires `timescaledb_toolkit`.
+   */
+  getHeartbeatHealth(options: HeartbeatWindow): Promise<HeartbeatHealth | null>;
+  /** The live `[startTime, endTime)` ranges (`heartbeat_agg` + `live_ranges`). */
+  getLiveRanges(options: HeartbeatWindow): Promise<Period[]>;
+  /** The dead `[startTime, endTime)` ranges (`heartbeat_agg` + `dead_ranges`). */
+  getDeadRanges(options: HeartbeatWindow): Promise<Period[]>;
+  /**
+   * Whether the system was live at `at` (`heartbeat_agg` + `live_at`). `null` when there
+   * are no heartbeats in the window. Requires `timescaledb_toolkit`.
+   */
+  isLiveAt(options: IsLiveAtOptions): Promise<boolean | null>;
 }
 
 /** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
@@ -254,6 +275,18 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         },
         getTopN(options: GetTopNOptions): Promise<string[]> {
           return getTopN(repo, timeColumn, options);
+        },
+        getHeartbeatHealth(options: HeartbeatWindow): Promise<HeartbeatHealth | null> {
+          return getHeartbeatHealth(repo, timeColumn, options);
+        },
+        getLiveRanges(options: HeartbeatWindow): Promise<Period[]> {
+          return getLiveRanges(repo, timeColumn, options);
+        },
+        getDeadRanges(options: HeartbeatWindow): Promise<Period[]> {
+          return getDeadRanges(repo, timeColumn, options);
+        },
+        isLiveAt(options: IsLiveAtOptions): Promise<boolean | null> {
+          return isLiveAt(repo, timeColumn, options);
         },
       });
     },
