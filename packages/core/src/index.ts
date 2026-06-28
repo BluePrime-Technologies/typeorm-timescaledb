@@ -41,6 +41,11 @@ export {
   approxPercentileExpr,
   approxPercentileRankExpr,
   percentileSketchAccessorExpr,
+  counterAggExpr,
+  counterAccessorExpr,
+  timeWeightAggExpr,
+  timeWeightAccessorExpr,
+  timeWeightIntegralExpr,
 } from './sql/index.js';
 export type {
   CandlestickAccessor,
@@ -48,6 +53,10 @@ export type {
   Stats1DAccessor,
   Stats2DAccessor,
   PercentileSketchAccessor,
+  CounterAccessor,
+  TimeWeightMethod,
+  TimeWeightAccessor,
+  IntegralUnit,
 } from './sql/index.js';
 export { compareHypertable, formatDrift } from './drift.js';
 export type { ExpectedHypertable, ActualHypertable, DriftItem } from './drift.js';

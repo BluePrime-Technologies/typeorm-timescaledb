@@ -37,6 +37,11 @@ export {
   approxPercentileExpr,
   approxPercentileRankExpr,
   percentileSketchAccessorExpr,
+  counterAggExpr,
+  counterAccessorExpr,
+  timeWeightAggExpr,
+  timeWeightAccessorExpr,
+  timeWeightIntegralExpr,
 } from './toolkit.js';
 export type {
   CandlestickAccessor,
@@ -44,4 +49,8 @@ export type {
   Stats1DAccessor,
   Stats2DAccessor,
   PercentileSketchAccessor,
+  CounterAccessor,
+  TimeWeightMethod,
+  TimeWeightAccessor,
+  IntegralUnit,
 } from './toolkit.js';

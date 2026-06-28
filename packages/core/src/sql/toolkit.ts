@@ -344,3 +344,177 @@ export function percentileSketchAccessorExpr(
   }
   return `${accessor}(${aggExpr})`;
 }
+
+// ---------------------------------------------------------------------------
+// counter_agg — monotonic counters that may reset (delta / rate / …)
+// ---------------------------------------------------------------------------
+
+/**
+ * `counter_agg(ts, value)` — the counter summary intermediate for a monotonically
+ * increasing counter that may reset to zero (e.g. a request counter). The summary
+ * accounts for resets so `delta`/`rate` reflect the true total increase.
+ */
+export function counterAggExpr(timeColumn: string, valueColumn: string): string {
+  return `counter_agg(${safeIdent(timeColumn, 'counter_agg time column')}, ${safeIdent(
+    valueColumn,
+    'counter_agg value column',
+  )})`;
+}
+
+/** Scalar accessors over a `counter_agg` summary. */
+export type CounterAccessor =
+  | 'delta'
+  | 'rate'
+  | 'irate_left'
+  | 'irate_right'
+  | 'slope'
+  | 'intercept'
+  | 'corr'
+  | 'time_delta'
+  | 'first_val'
+  | 'last_val'
+  | 'idelta_left'
+  | 'idelta_right'
+  | 'num_resets'
+  | 'num_changes'
+  | 'num_elements'
+  | 'first_time'
+  | 'last_time'
+  | 'counter_zero_time';
+
+const COUNTER_ACCESSORS: ReadonlySet<string> = new Set([
+  'delta',
+  'rate',
+  'irate_left',
+  'irate_right',
+  'slope',
+  'intercept',
+  'corr',
+  'time_delta',
+  'first_val',
+  'last_val',
+  'idelta_left',
+  'idelta_right',
+  'num_resets',
+  'num_changes',
+  'num_elements',
+  'first_time',
+  'last_time',
+  'counter_zero_time',
+]);
+
+/**
+ * Wrap a `counter_agg` summary in an allow-listed scalar accessor, e.g.
+ * `rate(counter_agg("ts","v"))`. `aggExpr` must already be safe (built via
+ * {@link counterAggExpr}). Note `extrapolated_delta`/`extrapolated_rate` are NOT here:
+ * they require the bounded `counter_agg(ts, value, bounds)` form and a method argument.
+ */
+export function counterAccessorExpr(accessor: CounterAccessor, aggExpr: string): string {
+  if (!COUNTER_ACCESSORS.has(accessor)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `unknown counter_agg accessor: ${JSON.stringify(accessor)}`,
+      { accessor: String(accessor) },
+    );
+  }
+  return `${accessor}(${aggExpr})`;
+}
+
+// ---------------------------------------------------------------------------
+// time_weight — time-weighted average (LOCF / linear)
+// ---------------------------------------------------------------------------
+
+/**
+ * Weighting method for {@link timeWeightAggExpr}. `'Linear'` interpolates linearly
+ * between points; `'LOCF'` carries each value forward until the next point. Matches
+ * the toolkit's `time_weight(method, …)` first argument.
+ */
+export type TimeWeightMethod = 'Linear' | 'LOCF';
+
+const TIME_WEIGHT_METHODS: ReadonlySet<string> = new Set(['Linear', 'LOCF']);
+
+/** Render the allow-listed weighting-method literal (e.g. `'Linear'`). */
+function timeWeightMethodArg(method: TimeWeightMethod): string {
+  if (!TIME_WEIGHT_METHODS.has(method)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `unknown time_weight method: ${JSON.stringify(method)} (expected 'Linear' or 'LOCF')`,
+      { method: String(method) },
+    );
+  }
+  return quoteLiteral(method, 'time_weight method');
+}
+
+/** `time_weight(method, ts, value)` — the time-weighted summary intermediate. */
+export function timeWeightAggExpr(
+  method: TimeWeightMethod,
+  timeColumn: string,
+  valueColumn: string,
+): string {
+  return `time_weight(${timeWeightMethodArg(method)}, ${safeIdent(
+    timeColumn,
+    'time_weight time column',
+  )}, ${safeIdent(valueColumn, 'time_weight value column')})`;
+}
+
+/** Scalar accessors over a `time_weight` summary (excluding `integral`, which takes a unit). */
+export type TimeWeightAccessor = 'average' | 'first_val' | 'last_val' | 'first_time' | 'last_time';
+
+const TIME_WEIGHT_ACCESSORS: ReadonlySet<string> = new Set([
+  'average',
+  'first_val',
+  'last_val',
+  'first_time',
+  'last_time',
+]);
+
+/**
+ * Wrap a `time_weight` summary in an allow-listed scalar accessor, e.g.
+ * `average(time_weight('Linear',"ts","v"))`. `aggExpr` must already be safe.
+ */
+export function timeWeightAccessorExpr(accessor: TimeWeightAccessor, aggExpr: string): string {
+  if (!TIME_WEIGHT_ACCESSORS.has(accessor)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `unknown time_weight accessor: ${JSON.stringify(accessor)}`,
+      { accessor: String(accessor) },
+    );
+  }
+  return `${accessor}(${aggExpr})`;
+}
+
+/** Allowed `integral` time units (the denominator of the integral). */
+export type IntegralUnit =
+  | 'microsecond'
+  | 'millisecond'
+  | 'second'
+  | 'minute'
+  | 'hour'
+  | 'day'
+  | 'week';
+
+const INTEGRAL_UNITS: ReadonlySet<string> = new Set([
+  'microsecond',
+  'millisecond',
+  'second',
+  'minute',
+  'hour',
+  'day',
+  'week',
+]);
+
+/**
+ * `integral(<summary>, unit)` — the time-weighted integral (area under the curve) in
+ * the given `unit` (default `'second'`). `aggExpr` must already be safe (built via
+ * {@link timeWeightAggExpr}).
+ */
+export function timeWeightIntegralExpr(aggExpr: string, unit: IntegralUnit = 'second'): string {
+  if (!INTEGRAL_UNITS.has(unit)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `unknown integral unit: ${JSON.stringify(unit)}`,
+      { unit: String(unit) },
+    );
+  }
+  return `integral(${aggExpr}, ${quoteLiteral(unit, 'integral unit')})`;
+}

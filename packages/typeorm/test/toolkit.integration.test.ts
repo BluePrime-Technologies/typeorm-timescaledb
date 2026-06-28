@@ -59,12 +59,32 @@ HypertablePrimaryKey()(Reading.prototype, 'ts');
 
 // A clean linear set: y = 2x + 1 → slope 2, intercept 1, corr 1, R² 1, x_intercept -0.5.
 // x = [1..5]: sum 15, avg 3, sample variance 2.5 (stddev √2.5), population variance 2.
+// Also used for time_weight (hourly x): Linear avg 3, LOCF avg 2.5.
 const READINGS: Array<[string, number, number]> = [
   ['2024-02-01T00:00:00Z', 1, 3],
   ['2024-02-01T01:00:00Z', 2, 5],
   ['2024-02-01T02:00:00Z', 3, 7],
   ['2024-02-01T03:00:00Z', 4, 9],
   ['2024-02-01T04:00:00Z', 5, 11],
+];
+
+// Metric(ts, requests) hypertable for M2.3b counter_agg — a monotonic counter with one reset.
+class Metric {}
+Entity('metric')(Metric);
+PrimaryColumn({ type: 'timestamptz' })(Metric.prototype, 'ts');
+Column({ type: 'double precision' })(Metric.prototype, 'requests');
+Hypertable({ chunkInterval: '1 day' })(Metric);
+TimeColumn()(Metric.prototype, 'ts');
+HypertablePrimaryKey()(Metric.prototype, 'ts');
+
+// 0,10,20 then reset to 5,15 over 4 minutes (240s) → delta 35, rate 35/240≈0.145833,
+// num_resets 1, num_changes 4, num_elements 5, first_val 0, last_val 15.
+const METRICS: Array<[string, number]> = [
+  ['2024-03-01T00:00:00Z', 0],
+  ['2024-03-01T00:01:00Z', 10],
+  ['2024-03-01T00:02:00Z', 20],
+  ['2024-03-01T00:03:00Z', 5],
+  ['2024-03-01T00:04:00Z', 15],
 ];
 
 async function boot(image: string): Promise<{ container: StartedTestContainer; ds: DataSource }> {
@@ -94,12 +114,13 @@ async function boot(image: string): Promise<{ container: StartedTestContainer; d
     username: 'postgres',
     password: 'test',
     database: 'test',
-    entities: [Trade as EntityClass, Reading as EntityClass],
+    entities: [Trade as EntityClass, Reading as EntityClass, Metric as EntityClass],
     synchronize: false,
   });
   await ds.initialize();
   await ds.query('DROP TABLE IF EXISTS "trade" CASCADE');
   await ds.query('DROP TABLE IF EXISTS "reading" CASCADE');
+  await ds.query('DROP TABLE IF EXISTS "metric" CASCADE');
   await ds.synchronize();
   const qr = ds.createQueryRunner();
   try {
@@ -114,6 +135,9 @@ async function boot(image: string): Promise<{ container: StartedTestContainer; d
   }
   for (const [ts, x, y] of READINGS) {
     await ds.query('INSERT INTO "reading"("ts","x","y") VALUES ($1,$2,$3)', [ts, x, y]);
+  }
+  for (const [ts, requests] of METRICS) {
+    await ds.query('INSERT INTO "metric"("ts","requests") VALUES ($1,$2)', [ts, requests]);
   }
   return { container, ds };
 }
@@ -283,6 +307,85 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
       code: TimescaleErrorCode.INVALID_ARGUMENT,
     });
   });
+
+  // ---- M2.3b: counter_agg / time_weight ----
+
+  it('getCounterAgg returns exact delta/rate/resets for a counter with one reset', async () => {
+    const repo = createTimescale(ds).getRepository(Metric);
+    const c = await repo.getCounterAgg({ valueColumn: 'requests' });
+    expect(c).not.toBeNull();
+    expect(c?.delta).toBeCloseTo(35, 10);
+    expect(c?.numResets).toBe(1);
+    expect(c?.numChanges).toBe(4);
+    expect(c?.numElements).toBe(5);
+    expect(c?.timeDelta).toBeCloseTo(240, 10); // seconds
+    expect(c?.firstVal).toBeCloseTo(0, 10);
+    expect(c?.lastVal).toBeCloseTo(15, 10);
+    expect(c?.rate).toBeCloseTo(35 / 240, 10); // ≈ 0.145833
+    expect(c?.firstTime).toBeInstanceOf(Date);
+    expect(c?.lastTime).toBeInstanceOf(Date);
+  });
+
+  it('getCounterAgg honours a range filter', async () => {
+    const repo = createTimescale(ds).getRepository(Metric);
+    // window [00:00, 00:03) → values 0,10,20 (no reset): delta 20, num_elements 3.
+    const c = await repo.getCounterAgg({
+      valueColumn: 'requests',
+      range: { from: '2024-03-01T00:00:00Z', to: '2024-03-01T00:03:00Z' },
+    });
+    expect(c?.delta).toBeCloseTo(20, 10);
+    expect(c?.numResets).toBe(0);
+    expect(c?.numElements).toBe(3);
+  });
+
+  it('getCounterAgg returns null for an empty set', async () => {
+    const repo = createTimescale(ds).getRepository(Metric);
+    expect(
+      await repo.getCounterAgg({
+        valueColumn: 'requests',
+        range: { from: '2099-01-01T00:00:00Z', to: '2099-01-02T00:00:00Z' },
+      }),
+    ).toBeNull();
+  });
+
+  it('getTimeWeight computes Linear vs LOCF time-weighted averages', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    // hourly x = [1..5]: Linear avg 3, LOCF avg 2.5.
+    const lin = await repo.getTimeWeight({ valueColumn: 'x', method: 'Linear' });
+    expect(lin).not.toBeNull();
+    expect(lin?.average).toBeCloseTo(3, 10);
+    expect(lin?.firstVal).toBeCloseTo(1, 10);
+    expect(lin?.lastVal).toBeCloseTo(5, 10);
+    expect(lin?.integral).toBeGreaterThan(0);
+    const locf = await repo.getTimeWeight({ valueColumn: 'x', method: 'LOCF' });
+    expect(locf?.average).toBeCloseTo(2.5, 10);
+  });
+
+  it('getTimeWeight defaults to Linear and returns null on an empty set', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    const def = await repo.getTimeWeight({ valueColumn: 'x' });
+    expect(def?.average).toBeCloseTo(3, 10); // Linear default
+    expect(
+      await repo.getTimeWeight({
+        valueColumn: 'x',
+        range: { from: '2099-01-01T00:00:00Z', to: '2099-01-02T00:00:00Z' },
+      }),
+    ).toBeNull();
+  });
+
+  it('getTimeWeight returns a summary (not null) for a single sample, with null average', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    // window with exactly one row (x = 1): the time-weighted average is undefined
+    // (zero duration) → average null, but the endpoints are valid and the row is real.
+    const one = await repo.getTimeWeight({
+      valueColumn: 'x',
+      range: { from: '2024-02-01T00:00:00Z', to: '2024-02-01T00:30:00Z' },
+    });
+    expect(one).not.toBeNull();
+    expect(one?.average).toBeNull();
+    expect(one?.firstVal).toBeCloseTo(1, 10);
+    expect(one?.lastVal).toBeCloseTo(1, 10);
+  });
 });
 
 describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', () => {
@@ -331,5 +434,19 @@ describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', ()
     await expect(
       repo.getPercentiles({ valueColumn: 'x', percentiles: [0.5] }),
     ).rejects.toMatchObject({ code: TimescaleErrorCode.TOOLKIT_MISSING });
+  });
+
+  it('getCounterAgg throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
+    const repo = createTimescale(ds).getRepository(Metric);
+    await expect(repo.getCounterAgg({ valueColumn: 'requests' })).rejects.toMatchObject({
+      code: TimescaleErrorCode.TOOLKIT_MISSING,
+    });
+  });
+
+  it('getTimeWeight throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    await expect(repo.getTimeWeight({ valueColumn: 'x' })).rejects.toMatchObject({
+      code: TimescaleErrorCode.TOOLKIT_MISSING,
+    });
   });
 });

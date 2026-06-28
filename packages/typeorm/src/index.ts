@@ -36,6 +36,10 @@ export type {
   GetPercentilesOptions,
   PercentileResult,
   GetPercentileRanksOptions,
+  GetCounterAggOptions,
+  CounterSummary,
+  GetTimeWeightOptions,
+  TimeWeight,
 } from './query/toolkit.js';
 export {
   toNumber,
@@ -76,4 +80,6 @@ export type {
   TimescaleEntityMetadata,
   DriftItem,
   StatsMethod,
+  TimeWeightMethod,
+  IntegralUnit,
 } from '@blueprime/timescaledb-core';
