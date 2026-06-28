@@ -49,6 +49,7 @@ The following features may be described as shipped for the current 0.2.x scope:
 - `timescaledb_toolkit` counters (0.3.0): `getCounterAgg()` (delta/rate/irate/resets and related, for monotonic counters that may reset).
 - `timescaledb_toolkit` time-weighted average (0.3.0): `getTimeWeight()` (`Linear`/`LOCF` time-weighted average + integral).
 - `timescaledb_toolkit` state tracking (0.3.0): `getStateDurations()` / `getStateTimeline()` / `getStateAt()` / `getStatePeriods()` (`state_agg` for text states).
+- `timescaledb_toolkit` most-common-values (0.3.0): `getMostCommonValues()` / `getTopN()` (`mcv_agg` for text values).
 - Toolkit-presence detection with the stable `TSDB_TOOLKIT_MISSING` error.
 - Typed raw-result coercion helpers for hyperfunction outputs.
 
@@ -71,7 +72,7 @@ ranges over shorthand wording.
 The following items are product direction, not shipped 0.2.x functionality:
 
 - Continuous aggregates.
-- The remaining `timescaledb_toolkit` aggregates: `heartbeat_agg` and `mcv_agg`.
+- The remaining `timescaledb_toolkit` aggregate: `heartbeat_agg`.
   `gauge_agg`, `freq_agg`, and `compact_state_agg` are also pending — they currently
   live in the toolkit's `toolkit_experimental` schema, so they are not yet surfaced as
   stable constructs.

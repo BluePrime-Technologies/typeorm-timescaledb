@@ -51,6 +51,11 @@ export {
   stateTimelineExpr,
   statePeriodsExpr,
   stateAtExpr,
+  mcvAggExpr,
+  mcvIntoValuesExpr,
+  mcvTopNExpr,
+  mcvMaxFrequencyExpr,
+  mcvMinFrequencyExpr,
 } from './sql/index.js';
 export type {
   CandlestickAccessor,

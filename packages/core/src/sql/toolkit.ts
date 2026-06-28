@@ -578,3 +578,68 @@ export function statePeriodsExpr(aggExpr: string, stateToken: string): string {
 export function stateAtExpr(aggExpr: string, pointToken: string): string {
   return `state_at(${aggExpr}, ${assertParamPlaceholder(pointToken, 'point')})`;
 }
+
+// ---------------------------------------------------------------------------
+// mcv_agg — most-common-values / top-N (Space-Saving) — TEXT values
+// ---------------------------------------------------------------------------
+
+/** Largest PostgreSQL `int4` (the type `mcv_agg` count / `topn` n accept). */
+const INT4_MAX = 2147483647;
+
+/**
+ * Validate and render a positive `int4` (a config count, never user text) as a literal.
+ * Requires a SAFE integer in `[1, INT4_MAX]` — this rules out values like `1e21` whose
+ * `String()` form would be scientific notation rather than an exact decimal literal, so
+ * the emitted token is always a provably-safe plain integer.
+ */
+function positiveIntLiteral(value: number, role: string): string {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > INT4_MAX) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `${role} must be a positive integer in [1, ${INT4_MAX}], got ${String(value)}`,
+      { role, value: String(value) },
+    );
+  }
+  return String(value);
+}
+
+/**
+ * `mcv_agg(count, value)` — the most-common-values intermediate, tracking the top
+ * `count` values approximately (Space-Saving). `count` is a validated positive integer.
+ */
+export function mcvAggExpr(count: number, valueColumn: string): string {
+  return `mcv_agg(${positiveIntLiteral(count, 'mcv count')}, ${safeIdent(
+    valueColumn,
+    'mcv_agg value column',
+  )})`;
+}
+
+/**
+ * `into_values(<agg>)` — table function returning `(value, min_freq, max_freq)`, one row
+ * per tracked value (frequency-descending). Used in a FROM-clause lateral. `aggExpr`
+ * must already be safe (built via {@link mcvAggExpr}).
+ */
+export function mcvIntoValuesExpr(aggExpr: string): string {
+  return `into_values(${aggExpr})`;
+}
+
+/** `topn(<agg>, <n>)` — set-returning: the top `n` values (frequency-descending). */
+export function mcvTopNExpr(aggExpr: string, n: number): string {
+  return `topn(${aggExpr}, ${positiveIntLiteral(n, 'topn n')})`;
+}
+
+/**
+ * `max_frequency(<agg>, <value>)` — scalar upper bound on a value's frequency.
+ * `valueToken` must be a positional parameter placeholder (`$N`).
+ */
+export function mcvMaxFrequencyExpr(aggExpr: string, valueToken: string): string {
+  return `max_frequency(${aggExpr}, ${assertParamPlaceholder(valueToken, 'value')})`;
+}
+
+/**
+ * `min_frequency(<agg>, <value>)` — scalar lower bound on a value's frequency.
+ * `valueToken` must be a positional parameter placeholder (`$N`).
+ */
+export function mcvMinFrequencyExpr(aggExpr: string, valueToken: string): string {
+  return `min_frequency(${aggExpr}, ${assertParamPlaceholder(valueToken, 'value')})`;
+}

@@ -29,6 +29,11 @@ import {
   stateTimelineExpr,
   statePeriodsExpr,
   stateAtExpr,
+  mcvAggExpr,
+  mcvIntoValuesExpr,
+  mcvTopNExpr,
+  mcvMaxFrequencyExpr,
+  mcvMinFrequencyExpr,
   TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
@@ -432,5 +437,34 @@ describe('state_agg builders', () => {
     expect(() => stateAtExpr(agg, 'now()')).toThrowError(TimescaleError);
     expect(() => stateAtExpr(agg, '$0')).toThrowError(TimescaleError);
     expect(() => statePeriodsExpr(agg, '$01')).toThrowError(TimescaleError);
+  });
+});
+
+describe('mcv_agg builders', () => {
+  it('mcvAggExpr inlines a validated count and quotes the value column', () => {
+    expect(mcvAggExpr(10, 'status')).toBe('mcv_agg(10, "status")');
+  });
+  it('mcvAggExpr rejects a non-positive / non-integer / out-of-int4-range count and unsafe column', () => {
+    expect(() => mcvAggExpr(0, 'v')).toThrowError(TimescaleError);
+    expect(() => mcvAggExpr(2.5, 'v')).toThrowError(TimescaleError);
+    // 1e21 is an "integer" to Number.isInteger but stringifies to scientific notation.
+    expect(() => mcvAggExpr(1e21, 'v')).toThrowError(TimescaleError);
+    expect(() => mcvAggExpr(2147483648, 'v')).toThrowError(TimescaleError); // > int4 max
+    expect(() => mcvAggExpr(10, 'v);--')).toThrowError(TimescaleError);
+  });
+  it('mcvIntoValuesExpr / mcvTopNExpr wrap a (safe) agg fragment', () => {
+    const agg = mcvAggExpr(10, 'status');
+    expect(mcvIntoValuesExpr(agg)).toBe('into_values(mcv_agg(10, "status"))');
+    expect(mcvTopNExpr(agg, 3)).toBe('topn(mcv_agg(10, "status"), 3)');
+  });
+  it('mcvTopNExpr rejects a non-positive n', () => {
+    const agg = mcvAggExpr(10, 'status');
+    expect(() => mcvTopNExpr(agg, 0)).toThrowError(TimescaleError);
+  });
+  it('frequency accessors require a positional parameter placeholder for the value', () => {
+    const agg = mcvAggExpr(10, 'status');
+    expect(mcvMaxFrequencyExpr(agg, '$2')).toBe('max_frequency(mcv_agg(10, "status"), $2)');
+    expect(mcvMinFrequencyExpr(agg, '$2')).toBe('min_frequency(mcv_agg(10, "status"), $2)');
+    expect(() => mcvMaxFrequencyExpr(agg, "'a'")).toThrowError(TimescaleError);
   });
 });

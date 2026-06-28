@@ -19,12 +19,14 @@ import {
   getPercentileRanks,
   getPercentiles,
   getRegression,
+  getMostCommonValues,
   getStateAt,
   getStateDurations,
   getStatePeriods,
   getStateTimeline,
   getStats,
   getTimeWeight,
+  getTopN,
   type ApproxCountDistinctOptions,
   type Candle,
   type CounterSummary,
@@ -39,6 +41,9 @@ import {
   type GetStateTimelineOptions,
   type GetStatsOptions,
   type GetTimeWeightOptions,
+  type GetTopNOptions,
+  type GetMostCommonValuesOptions,
+  type MostCommonValue,
   type PercentileResult,
   type Period,
   type Regression,
@@ -125,6 +130,15 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * `state_periods`). Requires `timescaledb_toolkit`.
    */
   getStatePeriods(options: GetStatePeriodsOptions): Promise<Period[]>;
+  /**
+   * The most common values with estimated frequency bounds (`mcv_agg` + `into_values`).
+   * Requires `timescaledb_toolkit`.
+   */
+  getMostCommonValues(options: GetMostCommonValuesOptions): Promise<MostCommonValue[]>;
+  /**
+   * The top `n` most common values (`mcv_agg` + `topn`). Requires `timescaledb_toolkit`.
+   */
+  getTopN(options: GetTopNOptions): Promise<string[]>;
 }
 
 /** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
@@ -234,6 +248,12 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         },
         getStatePeriods(options: GetStatePeriodsOptions): Promise<Period[]> {
           return getStatePeriods(repo, timeColumn, options);
+        },
+        getMostCommonValues(options: GetMostCommonValuesOptions): Promise<MostCommonValue[]> {
+          return getMostCommonValues(repo, timeColumn, options);
+        },
+        getTopN(options: GetTopNOptions): Promise<string[]> {
+          return getTopN(repo, timeColumn, options);
         },
       });
     },
