@@ -489,6 +489,41 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
     const byState = Object.fromEntries(durs.map((d) => [d.state, d.durationSeconds]));
     expect(byState.up).toBeCloseTo(120, 6);
   });
+
+  // ---- M2.3c.2: mcv_agg (most-common-values / top-N) ----
+  // Device.status = on×3, off×1 over 4 rows → freqs on 0.75, off 0.25.
+
+  it('getMostCommonValues returns values with frequency bounds, freq-descending', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    const mcv = await repo.getMostCommonValues({ valueColumn: 'status' });
+    expect(mcv.map((m) => m.value)).toEqual(['on', 'off']);
+    expect(mcv[0]?.maxFreq).toBeCloseTo(0.75, 6);
+    expect(mcv[1]?.maxFreq).toBeCloseTo(0.25, 6);
+    expect(mcv[0]?.minFreq).toBeLessThanOrEqual(mcv[0]!.maxFreq);
+  });
+
+  it('getTopN returns the top n values', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    expect(await repo.getTopN({ valueColumn: 'status', n: 1 })).toEqual(['on']);
+    expect(await repo.getTopN({ valueColumn: 'status', n: 2 })).toEqual(['on', 'off']);
+  });
+
+  it('getTopN rejects a count smaller than n (insufficient sketch capacity)', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    await expect(repo.getTopN({ valueColumn: 'status', n: 5, count: 2 })).rejects.toMatchObject({
+      code: TimescaleErrorCode.INVALID_ARGUMENT,
+    });
+  });
+
+  it('getMostCommonValues returns [] for an empty set', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    expect(
+      await repo.getMostCommonValues({
+        valueColumn: 'status',
+        range: { from: '2099-01-01T00:00:00Z', to: '2099-01-02T00:00:00Z' },
+      }),
+    ).toEqual([]);
+  });
 });
 
 describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', () => {
@@ -556,6 +591,13 @@ describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', ()
   it('getStateDurations throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
     const repo = createTimescale(ds).getRepository(Device);
     await expect(repo.getStateDurations({ valueColumn: 'status' })).rejects.toMatchObject({
+      code: TimescaleErrorCode.TOOLKIT_MISSING,
+    });
+  });
+
+  it('getMostCommonValues throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    await expect(repo.getMostCommonValues({ valueColumn: 'status' })).rejects.toMatchObject({
       code: TimescaleErrorCode.TOOLKIT_MISSING,
     });
   });

@@ -47,6 +47,9 @@ export type {
   GetStateAtOptions,
   GetStatePeriodsOptions,
   Period,
+  GetMostCommonValuesOptions,
+  MostCommonValue,
+  GetTopNOptions,
 } from './query/toolkit.js';
 export {
   toNumber,

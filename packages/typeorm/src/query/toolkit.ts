@@ -8,6 +8,9 @@ import {
   counterAccessorExpr,
   counterAggExpr,
   distinctCountExpr,
+  mcvAggExpr,
+  mcvIntoValuesExpr,
+  mcvTopNExpr,
   percentileAggExpr,
   percentileSketchAccessorExpr,
   safeIdent,
@@ -859,4 +862,94 @@ export async function getStatePeriods<T extends ObjectLiteral>(
     startTime: toDate(r.start_time, 'start_time'),
     endTime: toDate(r.end_time, 'end_time'),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// mcv_agg — most-common-values / top-N (text values)
+// ---------------------------------------------------------------------------
+
+export interface GetMostCommonValuesOptions {
+  /** Text value **property** name. */
+  readonly valueColumn: string;
+  /** How many top values to track (Space-Saving capacity). Default `10`. */
+  readonly count?: number;
+  readonly range?: TimeRange;
+  readonly timeColumn?: string;
+}
+
+/** A tracked value with its estimated frequency bounds (fraction of rows, 0..1). */
+export interface MostCommonValue {
+  readonly value: string;
+  readonly minFreq: number;
+  readonly maxFreq: number;
+}
+
+/**
+ * The most common values via `mcv_agg` + `into_values`, frequency-descending, with each
+ * value's estimated min/max frequency. Requires `timescaledb_toolkit`. Returns `[]` when
+ * the (filtered) set is empty.
+ */
+export async function getMostCommonValues<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetMostCommonValuesOptions,
+): Promise<MostCommonValue[]> {
+  await assertToolkit(repo.manager.connection);
+  const resolve = columnResolver(repo);
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
+  const agg = mcvAggExpr(options.count ?? 10, resolve(options.valueColumn));
+  const inner = repo.createQueryBuilder('e').select(agg, 'a');
+  applyTimeRange(inner, timeColumn, options.range);
+  const [innerSql, params] = inner.getQueryAndParameters();
+  const sql =
+    `SELECT mv.value AS value, mv.min_freq AS min_freq, mv.max_freq AS max_freq ` +
+    `FROM (${innerSql}) q, ${mcvIntoValuesExpr('q."a"')} AS mv(value, min_freq, max_freq)`;
+  const rows = (await repo.query(sql, params)) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    value: String(r.value),
+    minFreq: toNumber(r.min_freq, 'min_freq'),
+    maxFreq: toNumber(r.max_freq, 'max_freq'),
+  }));
+}
+
+export interface GetTopNOptions {
+  /** Text value **property** name. */
+  readonly valueColumn: string;
+  /** How many top values to return. */
+  readonly n: number;
+  /** Tracking capacity (Space-Saving). Defaults to `n`; raise it for better accuracy. */
+  readonly count?: number;
+  readonly range?: TimeRange;
+  readonly timeColumn?: string;
+}
+
+/**
+ * The top `n` most common values via `mcv_agg` + `topn`, frequency-descending. Requires
+ * `timescaledb_toolkit`. Returns `[]` when the (filtered) set is empty.
+ */
+export async function getTopN<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetTopNOptions,
+): Promise<string[]> {
+  // `count` is the Space-Saving sketch capacity; asking for the top `n` with a smaller
+  // capacity can silently drop real top-N values. Require count >= n (fail fast, no DB).
+  const count = options.count ?? options.n;
+  if (count < options.n) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `getTopN: count (${count}) must be >= n (${options.n}); count is the sketch capacity`,
+      { count, n: options.n },
+    );
+  }
+  await assertToolkit(repo.manager.connection);
+  const resolve = columnResolver(repo);
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
+  const agg = mcvAggExpr(count, resolve(options.valueColumn));
+  const inner = repo.createQueryBuilder('e').select(agg, 'a');
+  applyTimeRange(inner, timeColumn, options.range);
+  const [innerSql, params] = inner.getQueryAndParameters();
+  const sql = `SELECT t.v AS v FROM (${innerSql}) q, ${mcvTopNExpr('q."a"', options.n)} AS t(v)`;
+  const rows = (await repo.query(sql, params)) as Array<Record<string, unknown>>;
+  return rows.map((r) => String(r.v));
 }
