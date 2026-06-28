@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [0.3.0] - 2026-06-28
+
+Minor release: **full `timescaledb_toolkit` aggregate coverage** on top of the 0.2.x
+query layer. Every _stable_ toolkit aggregate is now a typed ORM construct. No breaking
+changes.
+
+### Added
+
+- **Statistics** — `repo.getStats(...)` (1D: average/sum/stddev/variance/skewness/kurtosis,
+  `sample` or `population`) and `repo.getRegression(...)` (2D: slope/intercept/x-intercept/
+  correlation/covariance/R² + per-axis means/sums) via `stats_agg`.
+- **Percentiles** — `repo.getPercentiles(...)` and `repo.getPercentileRanks(...)`
+  (uddsketch `approx_percentile` / `approx_percentile_rank`, with mean/error/count).
+- **Counters** — `repo.getCounterAgg(...)` via `counter_agg` (delta/rate/irate/resets/
+  changes/elements/slope/intercept/corr/time-delta/first·last val+time/idelta).
+- **Time-weighted average** — `repo.getTimeWeight(...)` via `time_weight` (`Linear`/`LOCF`
+  average + integral). `average` is `null` for a single-sample (zero-duration) window.
+- **State tracking** — `repo.getStateDurations(...)` / `getStateTimeline(...)` /
+  `getStateAt(...)` / `getStatePeriods(...)` via `state_agg` (text states).
+- **Most-common values** — `repo.getMostCommonValues(...)` and `repo.getTopN(...)` via
+  `mcv_agg`.
+- **Liveness / uptime** — `repo.getHeartbeatHealth(...)` / `getLiveRanges(...)` /
+  `getDeadRanges(...)` / `isLiveAt(...)` via `heartbeat_agg`; input is auto-windowed to
+  `[start, start+duration)`.
+- All corresponding core SQL builders are exported for the raw escape-hatch tier.
+
+### Fixed
+
+- **Default time-column resolution** — toolkit helpers now resolve the default time
+  column (the `@TimeColumn` property name) to its DB column name in every helper, so
+  entities that map the time column via `@Column({ name })` no longer emit
+  `column "<property>" does not exist` when `timeColumn` is omitted.
+
+### Notes
+
+- All toolkit aggregates require `timescaledb_toolkit`; absence fails fast with
+  `TSDB_TOOLKIT_MISSING`. Signatures and behavior were verified against
+  `timescaledb_toolkit 1.23.0`.
+- Not yet covered (planned): continuous aggregates, the still-`toolkit_experimental`
+  aggregates (`gauge_agg` / `freq_agg` / `compact_state_agg`), and a full entity↔DB diff
+  engine.
+
 ## [0.2.0] - 2026-06-12
 
 Minor release: a backward-compatible **typed query layer (hyperfunctions)** on top of
@@ -69,6 +111,7 @@ Initial public release — the schema foundation (M1).
 - `@blueprime/timescaledb-core` — ORM-agnostic SQL/DDL generation, metadata model, and
   identifier safety.
 
+[0.3.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/releases/tag/v0.1.0
