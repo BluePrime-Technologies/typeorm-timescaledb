@@ -46,6 +46,11 @@ export {
   timeWeightAggExpr,
   timeWeightAccessorExpr,
   timeWeightIntegralExpr,
+  stateAggExpr,
+  stateIntoValuesExpr,
+  stateTimelineExpr,
+  statePeriodsExpr,
+  stateAtExpr,
 } from './sql/index.js';
 export type {
   CandlestickAccessor,

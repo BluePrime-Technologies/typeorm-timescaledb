@@ -42,6 +42,11 @@ export {
   timeWeightAggExpr,
   timeWeightAccessorExpr,
   timeWeightIntegralExpr,
+  stateAggExpr,
+  stateIntoValuesExpr,
+  stateTimelineExpr,
+  statePeriodsExpr,
+  stateAtExpr,
 } from './toolkit.js';
 export type {
   CandlestickAccessor,

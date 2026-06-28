@@ -518,3 +518,63 @@ export function timeWeightIntegralExpr(aggExpr: string, unit: IntegralUnit = 'se
   }
   return `integral(${aggExpr}, ${quoteLiteral(unit, 'integral unit')})`;
 }
+
+// ---------------------------------------------------------------------------
+// state_agg — categorical state over time (durations / timeline) — TEXT states
+// ---------------------------------------------------------------------------
+
+/**
+ * A positional parameter placeholder (`$1`, `$2`, …). The set/scalar `state_agg`
+ * accessors take runtime values (a probe timestamp, a state name) that MUST be bound
+ * as parameters — never inlined. This guards the builder boundary so a caller can't
+ * pass raw text where a placeholder is required.
+ */
+function assertParamPlaceholder(token: string, role: string): string {
+  // PostgreSQL positional parameters are 1-based with no leading zero ($1, $2, …).
+  if (!/^\$[1-9]\d*$/.test(token)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `${role} must be a positional parameter placeholder like "$1", got ${JSON.stringify(token)}`,
+      { role, token: String(token) },
+    );
+  }
+  return token;
+}
+
+/** `state_agg(ts, value)` — the categorical-state summary intermediate (text states). */
+export function stateAggExpr(timeColumn: string, valueColumn: string): string {
+  return `state_agg(${safeIdent(timeColumn, 'state_agg time column')}, ${safeIdent(
+    valueColumn,
+    'state_agg value column',
+  )})`;
+}
+
+/**
+ * `into_values(<agg>)` — table function returning `(state text, duration interval)`,
+ * one row per distinct state. Used in a FROM-clause lateral, not a scalar SELECT.
+ * `aggExpr` must already be safe (built via {@link stateAggExpr}).
+ */
+export function stateIntoValuesExpr(aggExpr: string): string {
+  return `into_values(${aggExpr})`;
+}
+
+/** `state_timeline(<agg>)` — table function returning `(state, start_time, end_time)`. */
+export function stateTimelineExpr(aggExpr: string): string {
+  return `state_timeline(${aggExpr})`;
+}
+
+/**
+ * `state_periods(<agg>, <state>)` — table function returning `(start_time, end_time)`
+ * for one state. `stateToken` must be a positional parameter placeholder (`$N`).
+ */
+export function statePeriodsExpr(aggExpr: string, stateToken: string): string {
+  return `state_periods(${aggExpr}, ${assertParamPlaceholder(stateToken, 'state')})`;
+}
+
+/**
+ * `state_at(<agg>, <point>)` — scalar: the state in effect at `point`. `pointToken`
+ * must be a positional parameter placeholder (`$N`). `aggExpr` must already be safe.
+ */
+export function stateAtExpr(aggExpr: string, pointToken: string): string {
+  return `state_at(${aggExpr}, ${assertParamPlaceholder(pointToken, 'point')})`;
+}

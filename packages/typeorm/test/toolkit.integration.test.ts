@@ -87,6 +87,41 @@ const METRICS: Array<[string, number]> = [
   ['2024-03-01T00:04:00Z', 15],
 ];
 
+// Device(ts, status) hypertable for M2.3c.1 state_agg — a text state over time.
+class Device {}
+Entity('device')(Device);
+PrimaryColumn({ type: 'timestamptz' })(Device.prototype, 'ts');
+Column({ type: 'text' })(Device.prototype, 'status');
+Hypertable({ chunkInterval: '1 day' })(Device);
+TimeColumn()(Device.prototype, 'ts');
+HypertablePrimaryKey()(Device.prototype, 'ts');
+
+// on [00:00,00:02) then off [00:02,00:04) then on at 00:04 → on 120s, off 120s;
+// timeline has 3 segments; state_at(00:03) = 'off'.
+const DEVICE_STATES: Array<[string, string]> = [
+  ['2024-04-01T00:00:00Z', 'on'],
+  ['2024-04-01T00:01:00Z', 'on'],
+  ['2024-04-01T00:02:00Z', 'off'],
+  ['2024-04-01T00:04:00Z', 'on'],
+];
+
+// Mapped: the time/value PROPERTIES (`time`, `status`) differ from their DB column
+// names (`ts_col`, `state_col`). Regression guard: the helpers must resolve the DEFAULT
+// time column (property → DB name), not emit the raw property name into SQL.
+class Mapped {}
+Entity('mapped')(Mapped);
+PrimaryColumn({ type: 'timestamptz', name: 'ts_col' })(Mapped.prototype, 'time');
+Column({ type: 'text', name: 'state_col' })(Mapped.prototype, 'status');
+Hypertable({ chunkInterval: '1 day' })(Mapped);
+TimeColumn()(Mapped.prototype, 'time');
+HypertablePrimaryKey()(Mapped.prototype, 'time');
+
+// 'up' for 120s then 'down'.
+const MAPPED_ROWS: Array<[string, string]> = [
+  ['2024-05-01T00:00:00Z', 'up'],
+  ['2024-05-01T00:02:00Z', 'down'],
+];
+
 async function boot(image: string): Promise<{ container: StartedTestContainer; ds: DataSource }> {
   const container = await new GenericContainer(image)
     .withEnvironment({ POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'test' })
@@ -114,13 +149,21 @@ async function boot(image: string): Promise<{ container: StartedTestContainer; d
     username: 'postgres',
     password: 'test',
     database: 'test',
-    entities: [Trade as EntityClass, Reading as EntityClass, Metric as EntityClass],
+    entities: [
+      Trade as EntityClass,
+      Reading as EntityClass,
+      Metric as EntityClass,
+      Device as EntityClass,
+      Mapped as EntityClass,
+    ],
     synchronize: false,
   });
   await ds.initialize();
   await ds.query('DROP TABLE IF EXISTS "trade" CASCADE');
   await ds.query('DROP TABLE IF EXISTS "reading" CASCADE');
   await ds.query('DROP TABLE IF EXISTS "metric" CASCADE');
+  await ds.query('DROP TABLE IF EXISTS "device" CASCADE');
+  await ds.query('DROP TABLE IF EXISTS "mapped" CASCADE');
   await ds.synchronize();
   const qr = ds.createQueryRunner();
   try {
@@ -138,6 +181,12 @@ async function boot(image: string): Promise<{ container: StartedTestContainer; d
   }
   for (const [ts, requests] of METRICS) {
     await ds.query('INSERT INTO "metric"("ts","requests") VALUES ($1,$2)', [ts, requests]);
+  }
+  for (const [ts, status] of DEVICE_STATES) {
+    await ds.query('INSERT INTO "device"("ts","status") VALUES ($1,$2)', [ts, status]);
+  }
+  for (const [ts, status] of MAPPED_ROWS) {
+    await ds.query('INSERT INTO "mapped"("ts_col","state_col") VALUES ($1,$2)', [ts, status]);
   }
   return { container, ds };
 }
@@ -386,6 +435,60 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
     expect(one?.firstVal).toBeCloseTo(1, 10);
     expect(one?.lastVal).toBeCloseTo(1, 10);
   });
+
+  // ---- M2.3c.1: state_agg ----
+
+  it('getStateDurations returns seconds spent per state', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    const durs = await repo.getStateDurations({ valueColumn: 'status' });
+    const byState = Object.fromEntries(durs.map((d) => [d.state, d.durationSeconds]));
+    expect(byState.on).toBeCloseTo(120, 6);
+    expect(byState.off).toBeCloseTo(120, 6);
+  });
+
+  it('getStateTimeline returns the ordered state intervals', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    const tl = await repo.getStateTimeline({ valueColumn: 'status' });
+    expect(tl.map((t) => t.state)).toEqual(['on', 'off', 'on']);
+    expect(tl[0]?.startTime).toBeInstanceOf(Date);
+    expect(tl[0]?.endTime.getTime()).toBeGreaterThan(tl[0]!.startTime.getTime());
+  });
+
+  it('getStateAt returns the state in effect at an instant', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    expect(await repo.getStateAt({ valueColumn: 'status', at: '2024-04-01T00:03:00Z' })).toBe(
+      'off',
+    );
+    expect(await repo.getStateAt({ valueColumn: 'status', at: '2024-04-01T00:00:30Z' })).toBe('on');
+  });
+
+  it('getStatePeriods returns the periods for a given state', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    const offPeriods = await repo.getStatePeriods({ valueColumn: 'status', state: 'off' });
+    expect(offPeriods).toHaveLength(1);
+    expect(offPeriods[0]?.startTime).toBeInstanceOf(Date);
+    const onPeriods = await repo.getStatePeriods({ valueColumn: 'status', state: 'on' });
+    expect(onPeriods.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('getStateDurations returns [] for an empty set', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    expect(
+      await repo.getStateDurations({
+        valueColumn: 'status',
+        range: { from: '2099-01-01T00:00:00Z', to: '2099-01-02T00:00:00Z' },
+      }),
+    ).toEqual([]);
+  });
+
+  it('resolves the DEFAULT time column when the entity maps property→column names', async () => {
+    // Regression: `time`→`ts_col`, `status`→`state_col`. Before resolving the default
+    // time column this generated `state_agg("time", ...)` → `column "time" does not exist`.
+    const repo = createTimescale(ds).getRepository(Mapped);
+    const durs = await repo.getStateDurations({ valueColumn: 'status' });
+    const byState = Object.fromEntries(durs.map((d) => [d.state, d.durationSeconds]));
+    expect(byState.up).toBeCloseTo(120, 6);
+  });
 });
 
 describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', () => {
@@ -446,6 +549,13 @@ describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', ()
   it('getTimeWeight throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
     const repo = createTimescale(ds).getRepository(Reading);
     await expect(repo.getTimeWeight({ valueColumn: 'x' })).rejects.toMatchObject({
+      code: TimescaleErrorCode.TOOLKIT_MISSING,
+    });
+  });
+
+  it('getStateDurations throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
+    const repo = createTimescale(ds).getRepository(Device);
+    await expect(repo.getStateDurations({ valueColumn: 'status' })).rejects.toMatchObject({
       code: TimescaleErrorCode.TOOLKIT_MISSING,
     });
   });

@@ -11,6 +11,11 @@ import {
   percentileAggExpr,
   percentileSketchAccessorExpr,
   safeIdent,
+  stateAggExpr,
+  stateAtExpr,
+  stateIntoValuesExpr,
+  statePeriodsExpr,
+  stateTimelineExpr,
   statsAccessor1DExpr,
   statsAccessor2DExpr,
   statsAgg1DExpr,
@@ -34,7 +39,13 @@ export interface TimeRange {
   readonly to?: Date | string;
 }
 
-/** Resolve entity property names to DB column names for a repository. */
+/**
+ * Resolve entity property names to DB column names for a repository. Used for every
+ * column that reaches SQL — including the **default time column**, which is the entity
+ * PROPERTY name (recorded by `@TimeColumn`) and differs from the DB column when mapped
+ * via `@Column({ name })`. The lookup is a no-op for a value that is already a DB column
+ * name (no matching property → returned unchanged), so it is safe to apply unconditionally.
+ */
 function columnResolver<T extends ObjectLiteral>(
   repo: Repository<T>,
 ): (property: string) => string {
@@ -137,7 +148,7 @@ export async function getCandlesticks<T extends ObjectLiteral>(
   await assertToolkit(repo.manager.connection);
 
   const resolve = columnResolver(repo);
-  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
   const cs = candlestickAggExpr(
     timeColumn,
     resolve(options.priceColumn),
@@ -202,7 +213,7 @@ export async function approxCountDistinct<T extends ObjectLiteral>(
   const expr = distinctCountExpr(approxCountDistinctAggExpr(resolve(options.column)));
   const qb = repo.createQueryBuilder('e').select(expr, 'n');
 
-  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
   applyTimeRange(qb, timeColumn, options.range);
 
   const row = await qb.getRawOne<{ n: unknown }>();
@@ -254,7 +265,7 @@ export async function getStats<T extends ObjectLiteral>(
 
   const resolve = columnResolver(repo);
   const agg = statsAgg1DExpr(resolve(options.valueColumn));
-  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
 
   const inner = repo.createQueryBuilder('e').select(agg, 's');
   applyTimeRange(inner, timeColumn, options.range);
@@ -343,7 +354,7 @@ export async function getRegression<T extends ObjectLiteral>(
 
   const resolve = columnResolver(repo);
   const agg = statsAgg2DExpr(resolve(options.yColumn), resolve(options.xColumn));
-  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
 
   const inner = repo.createQueryBuilder('e').select(agg, 's');
   applyTimeRange(inner, timeColumn, options.range);
@@ -417,7 +428,7 @@ function percentileInner<T extends ObjectLiteral>(
 ): [sql: string, params: unknown[]] {
   const resolve = columnResolver(repo);
   const agg = percentileAggExpr(resolve(options.valueColumn));
-  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
   const inner = repo.createQueryBuilder('e').select(agg, 's');
   applyTimeRange(inner, timeColumn, options.range);
   return inner.getQueryAndParameters();
@@ -567,7 +578,7 @@ export async function getCounterAgg<T extends ObjectLiteral>(
   await assertToolkit(repo.manager.connection);
 
   const resolve = columnResolver(repo);
-  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
   const agg = counterAggExpr(timeColumn, resolve(options.valueColumn));
 
   const inner = repo.createQueryBuilder('e').select(agg, 'c');
@@ -658,7 +669,7 @@ export async function getTimeWeight<T extends ObjectLiteral>(
   await assertToolkit(repo.manager.connection);
 
   const resolve = columnResolver(repo);
-  const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
   const agg = timeWeightAggExpr(
     options.method ?? 'Linear',
     timeColumn,
@@ -694,4 +705,158 @@ export async function getTimeWeight<T extends ObjectLiteral>(
     firstTime: toDate(row.first_time, 'first_time'),
     lastTime: toDate(row.last_time, 'last_time'),
   };
+}
+
+// ---------------------------------------------------------------------------
+// state_agg — categorical state over time (text states)
+// ---------------------------------------------------------------------------
+
+/** Build the inner `state_agg(ts, value)` query (summary aliased `a`). */
+function stateInner<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: { valueColumn: string; range?: TimeRange; timeColumn?: string },
+): [sql: string, params: unknown[]] {
+  const resolve = columnResolver(repo);
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
+  const agg = stateAggExpr(timeColumn, resolve(options.valueColumn));
+  const inner = repo.createQueryBuilder('e').select(agg, 'a');
+  applyTimeRange(inner, timeColumn, options.range);
+  return inner.getQueryAndParameters();
+}
+
+export interface GetStateDurationsOptions {
+  /** Text state **property** name. */
+  readonly valueColumn: string;
+  readonly range?: TimeRange;
+  readonly timeColumn?: string;
+}
+
+/** Total time spent in a state, in seconds. */
+export interface StateDuration {
+  readonly state: string;
+  readonly durationSeconds: number;
+}
+
+/**
+ * Time spent in each state via `state_agg` + `into_values` — the headline accessor.
+ * Durations are returned in **seconds**. Requires `timescaledb_toolkit`. Returns `[]`
+ * when the (filtered) set is empty.
+ */
+export async function getStateDurations<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetStateDurationsOptions,
+): Promise<StateDuration[]> {
+  await assertToolkit(repo.manager.connection);
+  const [innerSql, params] = stateInner(repo, defaultTimeColumn, options);
+  const sql =
+    `SELECT sv.state AS state, EXTRACT(EPOCH FROM sv.duration) AS duration_seconds ` +
+    `FROM (${innerSql}) q, ${stateIntoValuesExpr('q."a"')} AS sv(state, duration)`;
+  const rows = (await repo.query(sql, params)) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    state: String(r.state),
+    durationSeconds: toNumber(r.duration_seconds, 'duration_seconds'),
+  }));
+}
+
+export interface GetStateTimelineOptions {
+  readonly valueColumn: string;
+  readonly range?: TimeRange;
+  readonly timeColumn?: string;
+}
+
+/** A contiguous period during which a single state was in effect. */
+export interface StateInterval {
+  readonly state: string;
+  readonly startTime: Date;
+  readonly endTime: Date;
+}
+
+/**
+ * The ordered timeline of state intervals via `state_agg` + `state_timeline`.
+ * Requires `timescaledb_toolkit`. Returns `[]` when the (filtered) set is empty.
+ */
+export async function getStateTimeline<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetStateTimelineOptions,
+): Promise<StateInterval[]> {
+  await assertToolkit(repo.manager.connection);
+  const [innerSql, params] = stateInner(repo, defaultTimeColumn, options);
+  const sql =
+    `SELECT tl.state AS state, tl.start_time AS start_time, tl.end_time AS end_time ` +
+    `FROM (${innerSql}) q, ${stateTimelineExpr('q."a"')} AS tl(state, start_time, end_time)`;
+  const rows = (await repo.query(sql, params)) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    state: String(r.state),
+    startTime: toDate(r.start_time, 'start_time'),
+    endTime: toDate(r.end_time, 'end_time'),
+  }));
+}
+
+export interface GetStateAtOptions {
+  readonly valueColumn: string;
+  /** The instant to probe. */
+  readonly at: Date | string;
+  readonly range?: TimeRange;
+  readonly timeColumn?: string;
+}
+
+/**
+ * The state in effect at `at` via `state_agg` + `state_at`. Requires
+ * `timescaledb_toolkit`. Returns `null` when the set is empty or `at` is outside the
+ * covered range.
+ */
+export async function getStateAt<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetStateAtOptions,
+): Promise<string | null> {
+  await assertToolkit(repo.manager.connection);
+  const [innerSql, params] = stateInner(repo, defaultTimeColumn, options);
+  const pointToken = `$${params.length + 1}`;
+  const sql = `SELECT ${stateAtExpr('q."a"', pointToken)} AS state FROM (${innerSql}) q`;
+  const rows = (await repo.query(sql, [...params, options.at])) as Array<Record<string, unknown>>;
+  const v = rows[0]?.state;
+  return v === null || v === undefined ? null : String(v);
+}
+
+export interface GetStatePeriodsOptions {
+  readonly valueColumn: string;
+  /** The state whose periods to return. */
+  readonly state: string;
+  readonly range?: TimeRange;
+  readonly timeColumn?: string;
+}
+
+/** A `[startTime, endTime)` period. */
+export interface Period {
+  readonly startTime: Date;
+  readonly endTime: Date;
+}
+
+/**
+ * The periods during which the entity was in `state` via `state_agg` + `state_periods`.
+ * Requires `timescaledb_toolkit`. Returns `[]` when the set is empty or the state never
+ * occurred.
+ */
+export async function getStatePeriods<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetStatePeriodsOptions,
+): Promise<Period[]> {
+  await assertToolkit(repo.manager.connection);
+  const [innerSql, params] = stateInner(repo, defaultTimeColumn, options);
+  const stateToken = `$${params.length + 1}`;
+  const sql =
+    `SELECT p.start_time AS start_time, p.end_time AS end_time ` +
+    `FROM (${innerSql}) q, ${statePeriodsExpr('q."a"', stateToken)} AS p(start_time, end_time)`;
+  const rows = (await repo.query(sql, [...params, options.state])) as Array<
+    Record<string, unknown>
+  >;
+  return rows.map((r) => ({
+    startTime: toDate(r.start_time, 'start_time'),
+    endTime: toDate(r.end_time, 'end_time'),
+  }));
 }
