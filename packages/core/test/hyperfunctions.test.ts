@@ -11,6 +11,14 @@ import {
   candlestickAccessorExpr,
   approxCountDistinctAggExpr,
   distinctCountExpr,
+  statsAgg1DExpr,
+  statsAgg2DExpr,
+  statsAccessor1DExpr,
+  statsAccessor2DExpr,
+  percentileAggExpr,
+  approxPercentileExpr,
+  approxPercentileRankExpr,
+  percentileSketchAccessorExpr,
   TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
@@ -213,5 +221,116 @@ describe('toolkit builders', () => {
   });
   it('approxCountDistinctAggExpr rejects an unsafe column', () => {
     expect(() => approxCountDistinctAggExpr('p) FROM secrets--')).toThrowError(TimescaleError);
+  });
+});
+
+describe('stats_agg builders', () => {
+  it('statsAgg1DExpr quotes the value column', () => {
+    expect(statsAgg1DExpr('latency')).toBe('stats_agg("latency")');
+  });
+  it('statsAgg2DExpr emits (Y, X) order, both quoted', () => {
+    expect(statsAgg2DExpr('y', 'x')).toBe('stats_agg("y", "x")');
+  });
+  it('statsAgg1DExpr / statsAgg2DExpr reject unsafe columns', () => {
+    expect(() => statsAgg1DExpr('v);--')).toThrowError(TimescaleError);
+    expect(() => statsAgg2DExpr('y', 'x);--')).toThrowError(TimescaleError);
+  });
+
+  it('1D non-moment accessors take no method', () => {
+    const agg = statsAgg1DExpr('v');
+    expect(statsAccessor1DExpr('average', agg)).toBe('average(stats_agg("v"))');
+    expect(statsAccessor1DExpr('sum', agg)).toBe('sum(stats_agg("v"))');
+    expect(statsAccessor1DExpr('num_vals', agg)).toBe('num_vals(stats_agg("v"))');
+  });
+  it('1D moment accessors default to the sample method', () => {
+    const agg = statsAgg1DExpr('v');
+    expect(statsAccessor1DExpr('stddev', agg)).toBe('stddev(stats_agg("v"), \'sample\')');
+    expect(statsAccessor1DExpr('variance', agg)).toBe('variance(stats_agg("v"), \'sample\')');
+  });
+  it('1D moment accessors honour an explicit population method', () => {
+    const agg = statsAgg1DExpr('v');
+    expect(statsAccessor1DExpr('skewness', agg, 'population')).toBe(
+      'skewness(stats_agg("v"), \'population\')',
+    );
+    expect(statsAccessor1DExpr('kurtosis', agg, 'population')).toBe(
+      'kurtosis(stats_agg("v"), \'population\')',
+    );
+  });
+  it('1D accessor rejects an unknown accessor and an unknown method', () => {
+    const agg = statsAgg1DExpr('v');
+    // @ts-expect-error — not in the union
+    expect(() => statsAccessor1DExpr('median', agg)).toThrowError(TimescaleError);
+    // @ts-expect-error — not a StatsMethod
+    expect(() => statsAccessor1DExpr('stddev', agg, 'sneaky')).toThrowError(TimescaleError);
+  });
+
+  it('2D regression accessors take no method', () => {
+    const agg = statsAgg2DExpr('y', 'x');
+    expect(statsAccessor2DExpr('slope', agg)).toBe('slope(stats_agg("y", "x"))');
+    expect(statsAccessor2DExpr('intercept', agg)).toBe('intercept(stats_agg("y", "x"))');
+    expect(statsAccessor2DExpr('corr', agg)).toBe('corr(stats_agg("y", "x"))');
+    expect(statsAccessor2DExpr('determination_coeff', agg)).toBe(
+      'determination_coeff(stats_agg("y", "x"))',
+    );
+  });
+  it('2D covariance/per-axis moment accessors take a method', () => {
+    const agg = statsAgg2DExpr('y', 'x');
+    expect(statsAccessor2DExpr('covariance', agg)).toBe(
+      'covariance(stats_agg("y", "x"), \'sample\')',
+    );
+    expect(statsAccessor2DExpr('stddev_y', agg, 'population')).toBe(
+      'stddev_y(stats_agg("y", "x"), \'population\')',
+    );
+  });
+  it('2D accessor rejects an unknown accessor', () => {
+    const agg = statsAgg2DExpr('y', 'x');
+    // @ts-expect-error — not in the union
+    expect(() => statsAccessor2DExpr('gradient', agg)).toThrowError(TimescaleError);
+  });
+});
+
+describe('percentile_agg builders', () => {
+  it('percentileAggExpr quotes the value column', () => {
+    expect(percentileAggExpr('latency')).toBe('percentile_agg("latency")');
+  });
+  it('percentileAggExpr rejects an unsafe column', () => {
+    expect(() => percentileAggExpr('v) FROM secrets--')).toThrowError(TimescaleError);
+  });
+  it('approxPercentileExpr inlines a validated percentile literal', () => {
+    const agg = percentileAggExpr('v');
+    expect(approxPercentileExpr(0.99, agg)).toBe('approx_percentile(0.99, percentile_agg("v"))');
+    expect(approxPercentileExpr(0, agg)).toBe('approx_percentile(0, percentile_agg("v"))');
+    expect(approxPercentileExpr(1, agg)).toBe('approx_percentile(1, percentile_agg("v"))');
+  });
+  it('approxPercentileExpr rejects an out-of-range or non-finite percentile', () => {
+    const agg = percentileAggExpr('v');
+    expect(() => approxPercentileExpr(1.5, agg)).toThrowError(TimescaleError);
+    expect(() => approxPercentileExpr(-0.1, agg)).toThrowError(TimescaleError);
+    expect(() => approxPercentileExpr(Number.NaN, agg)).toThrowError(TimescaleError);
+    expect(() => approxPercentileExpr(Number.POSITIVE_INFINITY, agg)).toThrowError(TimescaleError);
+  });
+  it('approxPercentileRankExpr inlines a validated value literal', () => {
+    const agg = percentileAggExpr('v');
+    expect(approxPercentileRankExpr(250, agg)).toBe(
+      'approx_percentile_rank(250, percentile_agg("v"))',
+    );
+    expect(approxPercentileRankExpr(-3.5, agg)).toBe(
+      'approx_percentile_rank(-3.5, percentile_agg("v"))',
+    );
+  });
+  it('approxPercentileRankExpr rejects a non-finite value', () => {
+    const agg = percentileAggExpr('v');
+    expect(() => approxPercentileRankExpr(Number.NaN, agg)).toThrowError(TimescaleError);
+  });
+  it('percentileSketchAccessorExpr wraps allow-listed scalar accessors', () => {
+    const agg = percentileAggExpr('v');
+    expect(percentileSketchAccessorExpr('mean', agg)).toBe('mean(percentile_agg("v"))');
+    expect(percentileSketchAccessorExpr('error', agg)).toBe('error(percentile_agg("v"))');
+    expect(percentileSketchAccessorExpr('num_vals', agg)).toBe('num_vals(percentile_agg("v"))');
+  });
+  it('percentileSketchAccessorExpr rejects an unknown accessor', () => {
+    const agg = percentileAggExpr('v');
+    // @ts-expect-error — not in the union
+    expect(() => percentileSketchAccessorExpr('median', agg)).toThrowError(TimescaleError);
   });
 });

@@ -29,5 +29,19 @@ export {
   candlestickAccessorExpr,
   approxCountDistinctAggExpr,
   distinctCountExpr,
+  statsAgg1DExpr,
+  statsAgg2DExpr,
+  statsAccessor1DExpr,
+  statsAccessor2DExpr,
+  percentileAggExpr,
+  approxPercentileExpr,
+  approxPercentileRankExpr,
+  percentileSketchAccessorExpr,
 } from './toolkit.js';
-export type { CandlestickAccessor } from './toolkit.js';
+export type {
+  CandlestickAccessor,
+  StatsMethod,
+  Stats1DAccessor,
+  Stats2DAccessor,
+  PercentileSketchAccessor,
+} from './toolkit.js';
