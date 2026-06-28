@@ -24,6 +24,11 @@ import {
   timeWeightAggExpr,
   timeWeightAccessorExpr,
   timeWeightIntegralExpr,
+  stateAggExpr,
+  stateIntoValuesExpr,
+  stateTimelineExpr,
+  statePeriodsExpr,
+  stateAtExpr,
   TimescaleError,
   TimescaleErrorCode,
 } from '../src/index.js';
@@ -402,5 +407,30 @@ describe('time_weight builders', () => {
     const agg = timeWeightAggExpr('Linear', 'ts', 'v');
     // @ts-expect-error — not an IntegralUnit
     expect(() => timeWeightIntegralExpr(agg, 'fortnight')).toThrowError(TimescaleError);
+  });
+});
+
+describe('state_agg builders', () => {
+  it('stateAggExpr quotes time + value columns', () => {
+    expect(stateAggExpr('ts', 'status')).toBe('state_agg("ts", "status")');
+  });
+  it('stateAggExpr rejects unsafe columns', () => {
+    expect(() => stateAggExpr('ts);--', 'v')).toThrowError(TimescaleError);
+    expect(() => stateAggExpr('ts', 'v);--')).toThrowError(TimescaleError);
+  });
+  it('table-function accessors wrap a (safe) agg fragment', () => {
+    const agg = stateAggExpr('ts', 'status');
+    expect(stateIntoValuesExpr(agg)).toBe('into_values(state_agg("ts", "status"))');
+    expect(stateTimelineExpr(agg)).toBe('state_timeline(state_agg("ts", "status"))');
+  });
+  it('statePeriodsExpr / stateAtExpr require a positional parameter placeholder', () => {
+    const agg = stateAggExpr('ts', 'status');
+    expect(statePeriodsExpr(agg, '$2')).toBe('state_periods(state_agg("ts", "status"), $2)');
+    expect(stateAtExpr(agg, '$2')).toBe('state_at(state_agg("ts", "status"), $2)');
+    // Raw values must never be inlined — only valid 1-based $N placeholders are accepted.
+    expect(() => statePeriodsExpr(agg, "'on'")).toThrowError(TimescaleError);
+    expect(() => stateAtExpr(agg, 'now()')).toThrowError(TimescaleError);
+    expect(() => stateAtExpr(agg, '$0')).toThrowError(TimescaleError);
+    expect(() => statePeriodsExpr(agg, '$01')).toThrowError(TimescaleError);
   });
 });

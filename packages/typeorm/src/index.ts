@@ -40,6 +40,13 @@ export type {
   CounterSummary,
   GetTimeWeightOptions,
   TimeWeight,
+  GetStateDurationsOptions,
+  StateDuration,
+  GetStateTimelineOptions,
+  StateInterval,
+  GetStateAtOptions,
+  GetStatePeriodsOptions,
+  Period,
 } from './query/toolkit.js';
 export {
   toNumber,

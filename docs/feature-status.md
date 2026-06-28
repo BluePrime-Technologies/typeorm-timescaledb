@@ -48,6 +48,7 @@ The following features may be described as shipped for the current 0.2.x scope:
 - `timescaledb_toolkit` percentiles (0.3.0): `getPercentiles()` and `getPercentileRanks()` (uddsketch `approx_percentile` / `approx_percentile_rank`, with mean/error/count).
 - `timescaledb_toolkit` counters (0.3.0): `getCounterAgg()` (delta/rate/irate/resets and related, for monotonic counters that may reset).
 - `timescaledb_toolkit` time-weighted average (0.3.0): `getTimeWeight()` (`Linear`/`LOCF` time-weighted average + integral).
+- `timescaledb_toolkit` state tracking (0.3.0): `getStateDurations()` / `getStateTimeline()` / `getStateAt()` / `getStatePeriods()` (`state_agg` for text states).
 - Toolkit-presence detection with the stable `TSDB_TOOLKIT_MISSING` error.
 - Typed raw-result coercion helpers for hyperfunction outputs.
 
@@ -70,9 +71,10 @@ ranges over shorthand wording.
 The following items are product direction, not shipped 0.2.x functionality:
 
 - Continuous aggregates.
-- The remaining `timescaledb_toolkit` aggregates: state, freq, and heartbeat.
-  `gauge_agg` is also pending — it currently lives in the toolkit's
-  `toolkit_experimental` schema, so it is not yet surfaced as a stable construct.
+- The remaining `timescaledb_toolkit` aggregates: `heartbeat_agg` and `mcv_agg`.
+  `gauge_agg`, `freq_agg`, and `compact_state_agg` are also pending — they currently
+  live in the toolkit's `toolkit_experimental` schema, so they are not yet surfaced as
+  stable constructs.
 - Full entity-to-database diff engine.
 - Validated cross-store references.
 - Complete coverage of every TimescaleDB feature.

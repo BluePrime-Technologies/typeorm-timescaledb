@@ -19,6 +19,10 @@ import {
   getPercentileRanks,
   getPercentiles,
   getRegression,
+  getStateAt,
+  getStateDurations,
+  getStatePeriods,
+  getStateTimeline,
   getStats,
   getTimeWeight,
   type ApproxCountDistinctOptions,
@@ -29,10 +33,17 @@ import {
   type GetPercentileRanksOptions,
   type GetPercentilesOptions,
   type GetRegressionOptions,
+  type GetStateAtOptions,
+  type GetStateDurationsOptions,
+  type GetStatePeriodsOptions,
+  type GetStateTimelineOptions,
   type GetStatsOptions,
   type GetTimeWeightOptions,
   type PercentileResult,
+  type Period,
   type Regression,
+  type StateDuration,
+  type StateInterval,
   type StatsSummary,
   type TimeWeight,
 } from '../query/toolkit.js';
@@ -94,6 +105,26 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * set is empty. Requires `timescaledb_toolkit`.
    */
   getTimeWeight(options: GetTimeWeightOptions): Promise<TimeWeight | null>;
+  /**
+   * Time spent in each state (`state_agg` + `into_values`), in seconds. Requires
+   * `timescaledb_toolkit`.
+   */
+  getStateDurations(options: GetStateDurationsOptions): Promise<StateDuration[]>;
+  /**
+   * Ordered timeline of state intervals (`state_agg` + `state_timeline`). Requires
+   * `timescaledb_toolkit`.
+   */
+  getStateTimeline(options: GetStateTimelineOptions): Promise<StateInterval[]>;
+  /**
+   * The state in effect at a given instant (`state_agg` + `state_at`). `null` when out
+   * of range / empty. Requires `timescaledb_toolkit`.
+   */
+  getStateAt(options: GetStateAtOptions): Promise<string | null>;
+  /**
+   * The periods during which a given state was in effect (`state_agg` +
+   * `state_periods`). Requires `timescaledb_toolkit`.
+   */
+  getStatePeriods(options: GetStatePeriodsOptions): Promise<Period[]>;
 }
 
 /** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
@@ -191,6 +222,18 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         },
         getTimeWeight(options: GetTimeWeightOptions): Promise<TimeWeight | null> {
           return getTimeWeight(repo, timeColumn, options);
+        },
+        getStateDurations(options: GetStateDurationsOptions): Promise<StateDuration[]> {
+          return getStateDurations(repo, timeColumn, options);
+        },
+        getStateTimeline(options: GetStateTimelineOptions): Promise<StateInterval[]> {
+          return getStateTimeline(repo, timeColumn, options);
+        },
+        getStateAt(options: GetStateAtOptions): Promise<string | null> {
+          return getStateAt(repo, timeColumn, options);
+        },
+        getStatePeriods(options: GetStatePeriodsOptions): Promise<Period[]> {
+          return getStatePeriods(repo, timeColumn, options);
         },
       });
     },
