@@ -52,6 +52,11 @@ export {
   mcvTopNExpr,
   mcvMaxFrequencyExpr,
   mcvMinFrequencyExpr,
+  heartbeatAggExpr,
+  heartbeatAccessorExpr,
+  heartbeatLiveAtExpr,
+  heartbeatLiveRangesExpr,
+  heartbeatDeadRangesExpr,
 } from './toolkit.js';
 export type {
   CandlestickAccessor,
@@ -63,4 +68,5 @@ export type {
   TimeWeightMethod,
   TimeWeightAccessor,
   IntegralUnit,
+  HeartbeatAccessor,
 } from './toolkit.js';

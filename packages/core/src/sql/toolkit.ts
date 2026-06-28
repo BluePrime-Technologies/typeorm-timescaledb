@@ -643,3 +643,82 @@ export function mcvMaxFrequencyExpr(aggExpr: string, valueToken: string): string
 export function mcvMinFrequencyExpr(aggExpr: string, valueToken: string): string {
   return `min_frequency(${aggExpr}, ${assertParamPlaceholder(valueToken, 'value')})`;
 }
+
+// ---------------------------------------------------------------------------
+// heartbeat_agg — liveness / uptime over a window
+// ---------------------------------------------------------------------------
+
+/**
+ * A bind token: either a positional placeholder (`$1`) or a TypeORM named placeholder
+ * (`:name`). `heartbeat_agg`'s window config (start/duration/liveness) binds inside the
+ * inner query via TypeORM named parameters, so those tokens are `:name`; the outer
+ * `live_at` probe binds positionally. Guards the boundary either way — never raw values.
+ */
+function assertBindToken(token: string, role: string): string {
+  if (!/^\$[1-9]\d*$/.test(token) && !/^:[A-Za-z_][A-Za-z0-9_]*$/.test(token)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `${role} must be a parameter placeholder ("$1" or ":name"), got ${JSON.stringify(token)}`,
+      { role, token: String(token) },
+    );
+  }
+  return token;
+}
+
+/**
+ * `heartbeat_agg(heartbeat, agg_start, agg_duration, heartbeat_liveness)` — the liveness
+ * summary over the window `[agg_start, agg_start + agg_duration)`, where each heartbeat
+ * keeps the system live for `heartbeat_liveness`. The three config args are bind tokens
+ * (bound + cast to `timestamptz`/`interval`); `aggExpr` consumers must already be safe.
+ */
+export function heartbeatAggExpr(
+  timeColumn: string,
+  startToken: string,
+  durationToken: string,
+  livenessToken: string,
+): string {
+  return `heartbeat_agg(${safeIdent(timeColumn, 'heartbeat_agg time column')}, ${assertBindToken(
+    startToken,
+    'agg_start',
+  )}::timestamptz, ${assertBindToken(durationToken, 'agg_duration')}::interval, ${assertBindToken(
+    livenessToken,
+    'heartbeat_liveness',
+  )}::interval)`;
+}
+
+/** Scalar `heartbeat_agg` accessors. `uptime`/`downtime` return an interval; the others a bigint. */
+export type HeartbeatAccessor = 'uptime' | 'downtime' | 'num_gaps' | 'num_live_ranges';
+
+const HEARTBEAT_ACCESSORS: ReadonlySet<string> = new Set([
+  'uptime',
+  'downtime',
+  'num_gaps',
+  'num_live_ranges',
+]);
+
+/** Wrap a `heartbeat_agg` summary in an allow-listed scalar accessor. `aggExpr` must be safe. */
+export function heartbeatAccessorExpr(accessor: HeartbeatAccessor, aggExpr: string): string {
+  if (!HEARTBEAT_ACCESSORS.has(accessor)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `unknown heartbeat_agg accessor: ${JSON.stringify(accessor)}`,
+      { accessor: String(accessor) },
+    );
+  }
+  return `${accessor}(${aggExpr})`;
+}
+
+/** `live_at(<agg>, <point>)` — boolean: was the system live at `point`. `pointToken` is a bind token. */
+export function heartbeatLiveAtExpr(aggExpr: string, pointToken: string): string {
+  return `live_at(${aggExpr}, ${assertBindToken(pointToken, 'point')})`;
+}
+
+/** `live_ranges(<agg>)` — table function returning the live `(start, end)` intervals. */
+export function heartbeatLiveRangesExpr(aggExpr: string): string {
+  return `live_ranges(${aggExpr})`;
+}
+
+/** `dead_ranges(<agg>)` — table function returning the dead `(start, end)` intervals. */
+export function heartbeatDeadRangesExpr(aggExpr: string): string {
+  return `dead_ranges(${aggExpr})`;
+}

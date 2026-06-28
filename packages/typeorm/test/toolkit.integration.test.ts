@@ -122,6 +122,18 @@ const MAPPED_ROWS: Array<[string, string]> = [
   ['2024-05-01T00:02:00Z', 'down'],
 ];
 
+// Pulse(ts) hypertable for M2.3c.3 heartbeat_agg — heartbeats are bare timestamps.
+class Pulse {}
+Entity('pulse')(Pulse);
+PrimaryColumn({ type: 'timestamptz' })(Pulse.prototype, 'ts');
+Hypertable({ chunkInterval: '1 day' })(Pulse);
+TimeColumn()(Pulse.prototype, 'ts');
+HypertablePrimaryKey()(Pulse.prototype, 'ts');
+
+// heartbeats every 60s; with liveness 90s over a 5-min window from 00:00 → live
+// 00:00..03:30 (uptime 210s), downtime 90s, 1 gap, 1 live range; live_at(00:03)=true.
+const PULSES: string[] = ['2024-06-01T00:00:00Z', '2024-06-01T00:01:00Z', '2024-06-01T00:02:00Z'];
+
 async function boot(image: string): Promise<{ container: StartedTestContainer; ds: DataSource }> {
   const container = await new GenericContainer(image)
     .withEnvironment({ POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'test' })
@@ -155,6 +167,7 @@ async function boot(image: string): Promise<{ container: StartedTestContainer; d
       Metric as EntityClass,
       Device as EntityClass,
       Mapped as EntityClass,
+      Pulse as EntityClass,
     ],
     synchronize: false,
   });
@@ -164,6 +177,7 @@ async function boot(image: string): Promise<{ container: StartedTestContainer; d
   await ds.query('DROP TABLE IF EXISTS "metric" CASCADE');
   await ds.query('DROP TABLE IF EXISTS "device" CASCADE');
   await ds.query('DROP TABLE IF EXISTS "mapped" CASCADE');
+  await ds.query('DROP TABLE IF EXISTS "pulse" CASCADE');
   await ds.synchronize();
   const qr = ds.createQueryRunner();
   try {
@@ -187,6 +201,9 @@ async function boot(image: string): Promise<{ container: StartedTestContainer; d
   }
   for (const [ts, status] of MAPPED_ROWS) {
     await ds.query('INSERT INTO "mapped"("ts_col","state_col") VALUES ($1,$2)', [ts, status]);
+  }
+  for (const ts of PULSES) {
+    await ds.query('INSERT INTO "pulse"("ts") VALUES ($1)', [ts]);
   }
   return { container, ds };
 }
@@ -524,6 +541,56 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
       }),
     ).toEqual([]);
   });
+
+  // ---- M2.3c.3: heartbeat_agg ----
+  // hb every 60s over a 5-min window from 00:00, liveness 90s → up 00:00..03:30.
+  const HB = {
+    start: '2024-06-01T00:00:00Z',
+    duration: '5 minutes',
+    liveness: '90 seconds',
+  } as const;
+
+  it('getHeartbeatHealth returns uptime/downtime/gaps', async () => {
+    const repo = createTimescale(ds).getRepository(Pulse);
+    const h = await repo.getHeartbeatHealth(HB);
+    expect(h).not.toBeNull();
+    expect(h?.uptimeSeconds).toBeCloseTo(210, 6);
+    expect(h?.downtimeSeconds).toBeCloseTo(90, 6);
+    expect(h?.numGaps).toBe(1);
+    expect(h?.numLiveRanges).toBe(1);
+  });
+
+  it('getLiveRanges returns the live intervals (one range 00:00..03:30)', async () => {
+    const repo = createTimescale(ds).getRepository(Pulse);
+    const live = await repo.getLiveRanges(HB);
+    expect(live).toHaveLength(1);
+    expect(live[0]?.startTime.toISOString()).toBe('2024-06-01T00:00:00.000Z');
+    expect(live[0]?.endTime.toISOString()).toBe('2024-06-01T00:03:30.000Z');
+  });
+
+  it('getDeadRanges returns the dead intervals', async () => {
+    const repo = createTimescale(ds).getRepository(Pulse);
+    const dead = await repo.getDeadRanges(HB);
+    expect(dead.length).toBeGreaterThanOrEqual(1);
+    expect(dead[0]?.startTime).toBeInstanceOf(Date);
+  });
+
+  it('isLiveAt reflects liveness at an instant', async () => {
+    const repo = createTimescale(ds).getRepository(Pulse);
+    expect(await repo.isLiveAt({ ...HB, at: '2024-06-01T00:03:00Z' })).toBe(true);
+    expect(await repo.isLiveAt({ ...HB, at: '2024-06-01T00:04:00Z' })).toBe(false);
+  });
+
+  it('getHeartbeatHealth returns null when there are no heartbeats in the window', async () => {
+    const repo = createTimescale(ds).getRepository(Pulse);
+    expect(
+      await repo.getHeartbeatHealth({
+        start: '2099-01-01T00:00:00Z',
+        duration: '5 minutes',
+        liveness: '90 seconds',
+      }),
+    ).toBeNull();
+  });
 });
 
 describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', () => {
@@ -600,5 +667,16 @@ describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', ()
     await expect(repo.getMostCommonValues({ valueColumn: 'status' })).rejects.toMatchObject({
       code: TimescaleErrorCode.TOOLKIT_MISSING,
     });
+  });
+
+  it('getHeartbeatHealth throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
+    const repo = createTimescale(ds).getRepository(Pulse);
+    await expect(
+      repo.getHeartbeatHealth({
+        start: '2024-06-01T00:00:00Z',
+        duration: '5 minutes',
+        liveness: '90 seconds',
+      }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.TOOLKIT_MISSING });
   });
 });

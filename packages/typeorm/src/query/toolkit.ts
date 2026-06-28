@@ -8,6 +8,11 @@ import {
   counterAccessorExpr,
   counterAggExpr,
   distinctCountExpr,
+  heartbeatAccessorExpr,
+  heartbeatAggExpr,
+  heartbeatDeadRangesExpr,
+  heartbeatLiveAtExpr,
+  heartbeatLiveRangesExpr,
   mcvAggExpr,
   mcvIntoValuesExpr,
   mcvTopNExpr,
@@ -952,4 +957,164 @@ export async function getTopN<T extends ObjectLiteral>(
   const sql = `SELECT t.v AS v FROM (${innerSql}) q, ${mcvTopNExpr('q."a"', options.n)} AS t(v)`;
   const rows = (await repo.query(sql, params)) as Array<Record<string, unknown>>;
   return rows.map((r) => String(r.v));
+}
+
+// ---------------------------------------------------------------------------
+// heartbeat_agg — liveness / uptime over a window
+// ---------------------------------------------------------------------------
+
+/** The window + liveness config for the `heartbeat_agg` helpers. */
+export interface HeartbeatWindow {
+  /** Window start (`agg_start`). */
+  readonly start: Date | string;
+  /** Window length as an interval string (`agg_duration`), e.g. `'1 day'`. */
+  readonly duration: string;
+  /** How long each heartbeat keeps the system live, as an interval string, e.g. `'10 minutes'`. */
+  readonly liveness: string;
+  /** Optional extra `[from, to)` filter on the input heartbeats. */
+  readonly range?: TimeRange;
+  /** Time **property**; defaults to the entity's `@TimeColumn`. */
+  readonly timeColumn?: string;
+}
+
+/** A `heartbeat_agg` health summary over the window. Durations are in **seconds**. */
+export interface HeartbeatHealth {
+  readonly uptimeSeconds: number;
+  readonly downtimeSeconds: number;
+  readonly numGaps: number;
+  readonly numLiveRanges: number;
+}
+
+/**
+ * Build the inner `heartbeat_agg(...)` query (summary aliased `a`). The window config
+ * and the range bounds are ALL bound in a single `setParameters` call (the config args
+ * live inside the aggregate, so they cannot be appended at the outer query).
+ */
+function heartbeatInner<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: HeartbeatWindow,
+): [sql: string, params: unknown[]] {
+  const resolve = columnResolver(repo);
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
+  const agg = heartbeatAggExpr(timeColumn, ':__hbStart', ':__hbDuration', ':__hbLiveness');
+  const inner = repo.createQueryBuilder('e').select(agg, 'a');
+  const params: Record<string, unknown> = {
+    __hbStart: options.start,
+    __hbDuration: options.duration,
+    __hbLiveness: options.liveness,
+  };
+  // heartbeat_agg ERRORS if any input point falls outside [start, start+duration), so
+  // always bound the input to the window. A genuinely empty window then aggregates zero
+  // rows → NULL summary → the helpers return null/[] rather than throwing.
+  const col = safeIdent(timeColumn);
+  inner.andWhere(`${col} >= :__hbStart`);
+  inner.andWhere(`${col} < :__hbStart + :__hbDuration::interval`);
+  if (options.range?.from !== undefined) {
+    inner.andWhere(`${safeIdent(timeColumn)} >= :__hbFrom`);
+    params.__hbFrom = options.range.from;
+  }
+  if (options.range?.to !== undefined) {
+    inner.andWhere(`${safeIdent(timeColumn)} < :__hbTo`);
+    params.__hbTo = options.range.to;
+  }
+  inner.setParameters(params);
+  return inner.getQueryAndParameters();
+}
+
+/**
+ * Liveness/uptime summary via `heartbeat_agg` — uptime/downtime (seconds), gap count and
+ * live-range count over `[start, start+duration)`. Requires `timescaledb_toolkit`. Returns
+ * `null` when there are no heartbeats in the window (the aggregate is empty).
+ */
+export async function getHeartbeatHealth<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: HeartbeatWindow,
+): Promise<HeartbeatHealth | null> {
+  await assertToolkit(repo.manager.connection);
+  const [innerSql, params] = heartbeatInner(repo, defaultTimeColumn, options);
+  const sql =
+    `SELECT EXTRACT(EPOCH FROM ${heartbeatAccessorExpr('uptime', 'q."a"')}) AS uptime_s, ` +
+    `EXTRACT(EPOCH FROM ${heartbeatAccessorExpr('downtime', 'q."a"')}) AS downtime_s, ` +
+    `${heartbeatAccessorExpr('num_gaps', 'q."a"')} AS num_gaps, ` +
+    `${heartbeatAccessorExpr('num_live_ranges', 'q."a"')} AS num_live_ranges ` +
+    `FROM (${innerSql}) q`;
+  const rows = (await repo.query(sql, params)) as Array<Record<string, unknown>>;
+  const row = rows[0];
+  if (!row || row.uptime_s === null || row.uptime_s === undefined) {
+    return null;
+  }
+  return {
+    uptimeSeconds: toNumber(row.uptime_s, 'uptime_s'),
+    downtimeSeconds: toNumber(row.downtime_s, 'downtime_s'),
+    numGaps: toNumber(row.num_gaps, 'num_gaps'),
+    numLiveRanges: toNumber(row.num_live_ranges, 'num_live_ranges'),
+  };
+}
+
+/**
+ * The live `[startTime, endTime)` ranges via `heartbeat_agg` + `live_ranges`. Requires
+ * `timescaledb_toolkit`. Returns `[]` when there are no heartbeats in the window.
+ */
+export async function getLiveRanges<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: HeartbeatWindow,
+): Promise<Period[]> {
+  await assertToolkit(repo.manager.connection);
+  const [innerSql, params] = heartbeatInner(repo, defaultTimeColumn, options);
+  const sql =
+    `SELECT lr.range_start AS start_time, lr.range_end AS end_time ` +
+    `FROM (${innerSql}) q, ${heartbeatLiveRangesExpr('q."a"')} AS lr(range_start, range_end)`;
+  const rows = (await repo.query(sql, params)) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    startTime: toDate(r.start_time, 'start_time'),
+    endTime: toDate(r.end_time, 'end_time'),
+  }));
+}
+
+/**
+ * The dead `[startTime, endTime)` ranges via `heartbeat_agg` + `dead_ranges`. Requires
+ * `timescaledb_toolkit`. Returns `[]` when there are no heartbeats in the window.
+ */
+export async function getDeadRanges<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: HeartbeatWindow,
+): Promise<Period[]> {
+  await assertToolkit(repo.manager.connection);
+  const [innerSql, params] = heartbeatInner(repo, defaultTimeColumn, options);
+  const sql =
+    `SELECT dr.range_start AS start_time, dr.range_end AS end_time ` +
+    `FROM (${innerSql}) q, ${heartbeatDeadRangesExpr('q."a"')} AS dr(range_start, range_end)`;
+  const rows = (await repo.query(sql, params)) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    startTime: toDate(r.start_time, 'start_time'),
+    endTime: toDate(r.end_time, 'end_time'),
+  }));
+}
+
+/** Options for {@link isLiveAt}: a heartbeat window plus the instant to probe. */
+export interface IsLiveAtOptions extends HeartbeatWindow {
+  /** The instant to probe liveness at. */
+  readonly at: Date | string;
+}
+
+/**
+ * Whether the system was live at `at` via `heartbeat_agg` + `live_at`. Requires
+ * `timescaledb_toolkit`. Returns `null` when there are no heartbeats in the window.
+ */
+export async function isLiveAt<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: IsLiveAtOptions,
+): Promise<boolean | null> {
+  await assertToolkit(repo.manager.connection);
+  const [innerSql, params] = heartbeatInner(repo, defaultTimeColumn, options);
+  const pointToken = `$${params.length + 1}`;
+  const sql = `SELECT ${heartbeatLiveAtExpr('q."a"', pointToken)} AS live FROM (${innerSql}) q`;
+  const rows = (await repo.query(sql, [...params, options.at])) as Array<Record<string, unknown>>;
+  const v = rows[0]?.live;
+  return v === null || v === undefined ? null : Boolean(v);
 }
