@@ -21,8 +21,15 @@ the 0.1.x schema foundation. No breaking changes.
 - **Gap-filling** — `time_bucket_gapfill` with `locf` (last-observation-carried-forward)
   and `interpolate`, with validation (forward-fill requires ascending buckets; bounds
   required; incompatible with timezone/origin/offset).
-- **`timescaledb_toolkit` features** — `repo.getCandlesticks(...)` returning typed OHLCV
-  (open/high/low/close/volume/vwap), and `repo.approxCountDistinct(...)`.
+- **`timescaledb_toolkit` features** — typed helpers for stable toolkit aggregates:
+  `repo.getCandlesticks(...)` (OHLCV), `repo.approxCountDistinct(...)`,
+  `repo.getStats(...)`, `repo.getRegression(...)`, `repo.getPercentiles(...)`,
+  `repo.getPercentileRanks(...)`, `repo.getCounterAgg(...)`,
+  `repo.getTimeWeight(...)`, `repo.getStateDurations(...)`,
+  `repo.getStateTimeline(...)`, `repo.getStateAt(...)`,
+  `repo.getStatePeriods(...)`, `repo.getMostCommonValues(...)`, `repo.getTopN(...)`,
+  `repo.getHeartbeatHealth(...)`, `repo.getLiveRanges(...)`,
+  `repo.getDeadRanges(...)`, and `repo.isLiveAt(...)`.
 - **Toolkit-presence detection** — toolkit-backed methods fail fast with the stable
   `TSDB_TOOLKIT_MISSING` error when the extension is not installed.
 - **Typed raw-result coercion helpers** for hyperfunction outputs (`toNumber`,
@@ -40,8 +47,8 @@ the 0.1.x schema foundation. No breaking changes.
 
 - `candlestick_agg` is computed once per bucket (the OHLCV accessors are applied over a
   single aggregate), and `vwap` is `null` when a bucket's total volume is 0.
-- Requires `timescaledb_toolkit` for candlesticks and `approxCountDistinct`; all other
-  features run on base TimescaleDB ≥ 2.18.
+- Requires `timescaledb_toolkit` for toolkit-backed helpers; base hyperfunctions run
+  on TimescaleDB ≥ 2.18.
 
 ## [0.1.1] - 2026-06-11
 

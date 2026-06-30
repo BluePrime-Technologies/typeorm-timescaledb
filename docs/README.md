@@ -22,6 +22,7 @@ quickstart when you already have a TypeORM project and TimescaleDB database.
 ## Core guides
 
 - [Migration guide](migration-guide.md)
+- [Query layer guide](query-layer.md)
 - [NestJS guide](nestjs-guide.md)
 - [Production guide](production-guide.md)
 - [API reference](api-reference.md)
@@ -37,11 +38,12 @@ quickstart when you already have a TypeORM project and TimescaleDB database.
 `typeorm-timescaledb` is a pre-1.0 foundation release. It currently focuses on
 typed TimescaleDB hypertables, columnstore, retention, space partitioning,
 migration generation, CLI commands, per-DataSource runtime access, schema drift
-detection, NestJS support, and dual ESM/CJS packaging.
+detection, NestJS support, dual ESM/CJS packaging, and the 0.2.x typed query
+layer for TimescaleDB hyperfunctions.
 
-Continuous aggregates, hyperfunction query expressions, safer diff improvements,
-validated cross-store references, and complete TimescaleDB feature coverage are
-planned or future scope, not shipped 0.1.x functionality.
+Continuous aggregates, validated cross-store references, safer diff improvements,
+and complete TimescaleDB feature coverage are planned or future scope, not
+shipped 0.2.x functionality.
 
 Automatic changes to existing TimescaleDB configuration are not a promised
 package capability. Changes such as changing chunk intervals, replacing existing
