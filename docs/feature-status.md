@@ -1,7 +1,7 @@
 # Feature status
 
 This page is the public source of truth for what `typeorm-timescaledb` ships in
-the current release line (0.2.x), what is planned next, and what is explicitly
+the current release line (0.3.x), what is planned next, and what is explicitly
 not supported yet.
 
 Use this page when updating README copy, npm-facing descriptions, release notes,
@@ -20,7 +20,7 @@ issue templates, launch copy, and public examples.
 
 ## Shipped
 
-The following features may be described as shipped for the current 0.2.x scope:
+The following features may be described as shipped for the current 0.3.x scope:
 
 - TypeORM-first TimescaleDB integration.
 - Unified import surface for TypeORM symbols and TimescaleDB extensions.
@@ -40,31 +40,25 @@ The following features may be described as shipped for the current 0.2.x scope:
 - Real TimescaleDB integration coverage in CI.
 - Identifier validation and quoting for package-managed dynamic identifiers.
 - Non-destructive generated `down()` behavior for TimescaleDB policies.
-- Typed hyperfunction query layer: `time_bucket` (timezone/origin/offset),
+- 0.2.x typed hyperfunction query layer: `time_bucket` (timezone/origin/offset),
   `first`/`last`, and `histogram`, via `getTimeBucket()` and the
   `timescaleQueryBuilder()` fluent API.
-- Gap-filling: `time_bucket_gapfill` with `locf` and `interpolate`.
-- `timescaledb_toolkit` candlesticks: `getCandlesticks()` (typed OHLCV).
-- `timescaledb_toolkit` `approx_count_distinct` via `approxCountDistinct()`.
-- `timescaledb_toolkit` statistics: `getStats()` (1D — average/sum/stddev/
-  variance/skewness/kurtosis, sample or population) and `getRegression()` (2D
-  linear regression — slope/intercept/correlation/R²).
-- `timescaledb_toolkit` percentiles: `getPercentiles()` and
-  `getPercentileRanks()` (uddsketch `approx_percentile` /
-  `approx_percentile_rank`, with mean/error/count).
-- `timescaledb_toolkit` counters: `getCounterAgg()` (delta/rate/irate/resets and
-  related, for monotonic counters that may reset).
-- `timescaledb_toolkit` time-weighted average: `getTimeWeight()`
-  (`Linear`/`LOCF` time-weighted average + integral).
-- `timescaledb_toolkit` state tracking: `getStateDurations()` /
-  `getStateTimeline()` / `getStateAt()` / `getStatePeriods()` (`state_agg` for
-  text states).
-- `timescaledb_toolkit` most-common-values: `getMostCommonValues()` /
-  `getTopN()` (`mcv_agg` for text values).
-- `timescaledb_toolkit` liveness/uptime: `getHeartbeatHealth()` /
-  `getLiveRanges()` / `getDeadRanges()` / `isLiveAt()` (`heartbeat_agg`).
+- 0.2.x gap-filling: `time_bucket_gapfill` with `locf` and `interpolate`.
+- 0.2.x initial toolkit helpers: `getCandlesticks()` and `approxCountDistinct()`.
+- 0.3.x full stable `timescaledb_toolkit` aggregate helper coverage:
+  - statistics: `getStats()` and `getRegression()`;
+  - percentiles: `getPercentiles()` and `getPercentileRanks()`;
+  - counters: `getCounterAgg()`;
+  - time-weighted average/integral: `getTimeWeight()`;
+  - state tracking: `getStateDurations()`, `getStateTimeline()`, `getStateAt()`,
+    and `getStatePeriods()`;
+  - most-common-values: `getMostCommonValues()` and `getTopN()`;
+  - liveness/uptime: `getHeartbeatHealth()`, `getLiveRanges()`,
+    `getDeadRanges()`, and `isLiveAt()`.
 - Toolkit-presence detection with the stable `TSDB_TOOLKIT_MISSING` error.
 - Typed raw-result coercion helpers for hyperfunction outputs.
+- Default time-column resolution across toolkit helpers, including entities whose
+  `@TimeColumn` property is mapped with `@Column({ name })`.
 
 ## Supported platform claims
 
@@ -82,13 +76,12 @@ ranges over shorthand wording.
 
 ## Planned, not shipped yet
 
-The following items are product direction, not shipped 0.2.x functionality:
+The following items are product direction, not shipped 0.3.x functionality:
 
 - Continuous aggregates.
 - `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
-  constructs. All stable `timescaledb_toolkit` aggregates currently covered by
-  the package may be described as shipped.
+  constructs.
 - Full entity-to-database diff engine.
 - Validated cross-store references.
 - Complete coverage of every TimescaleDB feature.
@@ -125,7 +118,7 @@ ability to generate destructive migrations automatically.
 
 Use wording like:
 
-- `0.2.x ships typed hypertables, columnstore, retention, hash partitioning, migration generation, CLI commands, repositories, drift checks, NestJS wiring, and a typed hyperfunction query layer covering time bucketing, gap-filling, and stable toolkit aggregates.`
+- `0.3.x ships typed hypertables, columnstore, retention, hash partitioning, migration generation, CLI commands, repositories, drift checks, NestJS wiring, time bucketing, gap-filling, and full stable timescaledb_toolkit aggregate helper coverage.`
 - `Continuous aggregates, experimental toolkit aggregates, validated cross-store references, and a full safe diff engine are planned but not shipped yet.`
 
 Avoid wording like:
@@ -134,6 +127,7 @@ Avoid wording like:
 - `The package automatically diffs and reconciles all entity and database changes.`
 - `Continuous aggregates are available.`
 - `Generated down migrations drop or rewrite live data.`
+- `Stable toolkit aggregate coverage shipped in 0.2.0.`
 - `Hyperfunction query expressions are future scope.`
 
 ## Review rule
