@@ -27,6 +27,12 @@ NestJS helpers are exported from the NestJS subpath:
 import { TimescaleModule } from 'typeorm-timescaledb/nestjs';
 ```
 
+Low-level SQL builder functions are exported by the core package:
+
+```ts
+import { statsAgg1DExpr } from '@blueprime/timescaledb-core';
+```
+
 ## TypeORM re-exports
 
 `typeorm-timescaledb` re-exports TypeORM's modeling surface so users can keep one
@@ -96,7 +102,8 @@ Important properties and methods include:
 
 0.2.x introduced the base query layer: time buckets, `first`/`last`, `histogram`,
 gap-filling, candlesticks, approximate distinct count, and raw-result coercion.
-0.3.x completes the stable `timescaledb_toolkit` aggregate helper surface.
+The 0.3.0 release scope expands repository helpers for the stable Toolkit
+aggregate families implemented in this package.
 
 ### `repo.getTimeBucket(options)`
 
@@ -211,11 +218,19 @@ Key option fields by family:
 
 ### Core SQL builder exports
 
-The root package also re-exports selected low-level core SQL builders from
-`@blueprime/timescaledb-core` for raw escape-hatch use. The 0.3.x surface includes
-builders/accessors for stats, regression, percentiles, counters, time-weight,
-state tracking, most-common-values, and heartbeat helpers, plus the option types
-`StatsMethod`, `TimeWeightMethod`, and `IntegralUnit`.
+Low-level SQL builders are exported from `@blueprime/timescaledb-core`, not from
+`typeorm-timescaledb`. Use this tier when you need raw SQL expression builders
+outside the TypeORM repository helpers:
+
+```ts
+import { statsAgg1DExpr, statsAccessor1DExpr } from '@blueprime/timescaledb-core';
+```
+
+The 0.3.0 release scope includes core builders/accessors for the same implemented
+Toolkit families: stats/regression, UddSketch percentiles, counters, time-weight,
+state tracking, most-common-values, and heartbeat helpers. The TypeORM package
+root re-exports the related option types `StatsMethod`, `TimeWeightMethod`, and
+`IntegralUnit`, but not the SQL builder functions themselves.
 
 ## Schema assertion
 
@@ -326,8 +341,8 @@ The root package re-exports the main metadata/config types from
 
 The current public API does not include automatic destructive migrations,
 automatic live configuration rewrites, continuous aggregates, validated
-cross-store references, experimental toolkit aggregates, or complete TimescaleDB
-feature coverage.
+cross-store references, experimental toolkit aggregates, stable Toolkit
+aggregates that are not listed above, or complete TimescaleDB feature coverage.
 
 For unsupported live schema changes, write explicit TypeORM migrations and review
 the generated SQL before applying it.
