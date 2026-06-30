@@ -9,6 +9,9 @@ The query layer follows the same safety rule as the rest of the package: no
 prototype mutation and no global TypeORM patching. Query helpers are attached to
 the repository wrapper returned by `createTimescale(dataSource).getRepository()`.
 
+Upgrading from 0.1.x to 0.2.x is additive: existing hypertable metadata and
+migrations do not need to change just to use the new query helpers.
+
 ## Start from a Timescale repository
 
 ```ts
@@ -121,6 +124,30 @@ This is the raw-identifier tier: column arguments are treated as database column
 identifiers and are allow-list validated/quoted. Prefer `getTimeBucket()` when
 you want entity property names resolved for you.
 
+### Histogram buckets
+
+`histogram` is exposed on the fluent builder, not as a `getTimeBucket()` metric.
+Use it when you want TimescaleDB's `histogram(value, min, max, nbuckets)` array
+inside a grouped query.
+
+```ts
+import { toNumberArray } from 'typeorm-timescaledb';
+
+const rows = await readings
+  .timescaleQueryBuilder('r')
+  .timeBucket({ interval: '1 day', column: 'time' })
+  .histogram({ column: 'value', min: 0, max: 100, nbuckets: 10 }, 'valueBuckets')
+  .queryBuilder.where('r."time" >= :from AND r."time" < :to', {
+    from: new Date('2026-01-01T00:00:00Z'),
+    to: new Date('2026-02-01T00:00:00Z'),
+  })
+  .getRawMany();
+
+const bucketCounts = toNumberArray(rows[0]?.valueBuckets, 'valueBuckets');
+```
+
+Use `toNumberArray()` for the `int[]` result returned by `histogram`.
+
 When using `timeBucketGapfill()` on the fluent builder, add a matching `WHERE`
 range yourself. `start` and `finish` define the output gap range, but do not
 filter input rows on their own. The typed `getTimeBucket({ gapfill })` helper
@@ -154,8 +181,9 @@ values do not lose precision in JavaScript.
 ## Toolkit-backed helpers
 
 Some methods require the `timescaledb_toolkit` extension. Each toolkit-backed
-method checks extension presence once per DataSource and throws the stable
-`TSDB_TOOLKIT_MISSING` error if the extension is absent.
+method checks extension presence once per DataSource and throws
+`TimescaleErrorCode.TOOLKIT_MISSING`; the public error string is
+`TSDB_TOOLKIT_MISSING`.
 
 Toolkit-backed methods on `TimescaleRepository` include:
 
@@ -174,7 +202,7 @@ Toolkit-backed methods on `TimescaleRepository` include:
 - `getHeartbeatHealth()`, `getLiveRanges()`, `getDeadRanges()`, and `isLiveAt()`
   — liveness/uptime via `heartbeat_agg`.
 
-Example candlestick query:
+### Candlesticks
 
 ```ts
 const candles = await readings.getCandlesticks({
@@ -188,8 +216,72 @@ const candles = await readings.getCandlesticks({
 });
 ```
 
-`vwap` is `number | null` because TimescaleDB returns `NULL` when a bucket's total
-volume is zero.
+Key options are `interval`, `priceColumn`, `volumeColumn`, optional `timeColumn`,
+optional `range`, and optional `order`. `vwap` is `number | null` because
+TimescaleDB returns `NULL` when a bucket's total volume is zero.
+
+### Statistics and regression
+
+```ts
+const stats = await readings.getStats({
+  valueColumn: 'value',
+  method: 'sample',
+  range: {
+    from: new Date('2026-01-01T00:00:00Z'),
+    to: new Date('2026-02-01T00:00:00Z'),
+  },
+});
+
+const regression = await readings.getRegression({
+  yColumn: 'value',
+  xColumn: 'temperature',
+  method: 'population',
+});
+```
+
+`getStats()` uses `valueColumn`, optional `method`, optional `range`, and optional
+`timeColumn`. `getRegression()` uses `yColumn`, `xColumn`, optional `method`,
+optional `range`, and optional `timeColumn`. Both return `null` when the input set
+is empty.
+
+### Percentiles
+
+```ts
+const percentiles = await readings.getPercentiles({
+  valueColumn: 'value',
+  percentiles: [0.5, 0.95, 0.99],
+  range: {
+    from: new Date('2026-01-01T00:00:00Z'),
+    to: new Date('2026-02-01T00:00:00Z'),
+  },
+});
+```
+
+Key options are `valueColumn`, `percentiles`, optional `range`, and optional
+`timeColumn`. Percentile values must be finite numbers between `0` and `1`.
+Use `getPercentileRanks()` when you need ranks for specific values instead of
+percentile values.
+
+### State tracking
+
+```ts
+const durations = await readings.getStateDurations({
+  stateColumn: 'status',
+  range: {
+    from: new Date('2026-01-01T00:00:00Z'),
+    to: new Date('2026-01-02T00:00:00Z'),
+  },
+});
+
+const currentState = await readings.getStateAt({
+  stateColumn: 'status',
+  at: new Date('2026-01-01T12:00:00Z'),
+});
+```
+
+State-tracking helpers use a text `stateColumn`, optional `range`, and optional
+`timeColumn`. `getStateAt()` also accepts `at`; `getStatePeriods()` accepts a
+specific `state` to filter periods.
 
 ## What remains future scope
 

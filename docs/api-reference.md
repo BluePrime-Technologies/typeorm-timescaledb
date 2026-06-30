@@ -207,6 +207,10 @@ const rows = await readings
   .timescaleQueryBuilder('r')
   .timeBucket({ interval: '1 hour', column: 'time' })
   .last('value', 'time', 'lastValue')
+  .queryBuilder.where('r."time" >= :from AND r."time" < :to', {
+    from: new Date('2026-01-01T00:00:00Z'),
+    to: new Date('2026-01-02T00:00:00Z'),
+  })
   .getRawMany();
 ```
 
@@ -219,6 +223,13 @@ Related exports:
 - `TimescaleQueryBuilder`
 - `TimeBucketSelectOptions`
 - `StandardAggregate`
+
+The fluent builder exposes `timeBucket()`, `timeBucketGapfill()`, `first()`,
+`last()`, `histogram()`, `locf()`, `interpolate()`, `getRawMany()`, `getRawOne()`,
+and `getSql()`.
+
+`histogram()` emits TimescaleDB's `histogram(value, min, max, nbuckets)` and
+returns an `int[]` raw value; use `toNumberArray()` to coerce it.
 
 ### Result coercion helpers
 
@@ -233,13 +244,15 @@ stable JavaScript coercion:
 - `mapRawRows`
 
 Use `toBigIntString()` for potentially large integer-like values to avoid
-JavaScript precision loss.
+JavaScript precision loss. Use `toNumberArray()` for array outputs such as
+`histogram()`.
 
 ### `assertToolkit(dataSource)`
 
 Checks whether `timescaledb_toolkit` is installed for a DataSource. Toolkit-backed
 repository methods call this before emitting toolkit SQL and throw
-`TimescaleErrorCode.TOOLKIT_MISSING` when the extension is absent.
+`TimescaleErrorCode.TOOLKIT_MISSING`; the public error string is
+`TSDB_TOOLKIT_MISSING`.
 
 ### Toolkit-backed repository methods
 
@@ -273,6 +286,23 @@ Related exported option/result types include `Candle`, `GetCandlesticksOptions`,
 `GetStatePeriodsOptions`, `Period`, `GetMostCommonValuesOptions`,
 `MostCommonValue`, `GetTopNOptions`, `HeartbeatWindow`, `HeartbeatHealth`, and
 `IsLiveAtOptions`.
+
+Key option fields by family:
+
+- Candlesticks: `interval`, `priceColumn`, `volumeColumn`, optional `timeColumn`,
+  optional `range`, optional `order`.
+- Approximate distinct count: `column`, optional `range`, optional `timeColumn`.
+- Statistics: `valueColumn`, optional `method`, optional `range`, optional
+  `timeColumn`.
+- Regression: `yColumn`, `xColumn`, optional `method`, optional `range`, optional
+  `timeColumn`.
+- Percentiles: `valueColumn`, percentile values or rank values, optional `range`,
+  optional `timeColumn`.
+- Counter/time-weight: value columns plus optional `range` and `timeColumn`.
+- State tracking: `stateColumn`, optional `range`, optional `timeColumn`; some
+  methods also take `at` or `state`.
+- Most-common-values: text value column plus sketch/top-N sizing options.
+- Heartbeat/liveness: heartbeat/window options and optional `at` for `isLiveAt()`.
 
 ## Schema assertion
 
