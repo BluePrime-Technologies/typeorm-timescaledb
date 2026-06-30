@@ -266,7 +266,7 @@ percentile values.
 
 ```ts
 const durations = await readings.getStateDurations({
-  stateColumn: 'status',
+  valueColumn: 'status',
   range: {
     from: new Date('2026-01-01T00:00:00Z'),
     to: new Date('2026-01-02T00:00:00Z'),
@@ -274,12 +274,12 @@ const durations = await readings.getStateDurations({
 });
 
 const currentState = await readings.getStateAt({
-  stateColumn: 'status',
+  valueColumn: 'status',
   at: new Date('2026-01-01T12:00:00Z'),
 });
 ```
 
-State-tracking helpers use a text `stateColumn`, optional `range`, and optional
+State-tracking helpers use a text `valueColumn`, optional `range`, and optional
 `timeColumn`. `getStateAt()` also accepts `at`; `getStatePeriods()` accepts a
 specific `state` to filter periods.
 
