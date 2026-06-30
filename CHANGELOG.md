@@ -9,45 +9,46 @@ and released in lockstep.
 
 ## [0.3.0] - 2026-06-28
 
-Minor release: **full `timescaledb_toolkit` aggregate coverage** on top of the 0.2.x
-query layer. Every _stable_ toolkit aggregate is now a typed ORM construct. No breaking
-changes.
+Minor release: **full stable `timescaledb_toolkit` aggregate coverage** on top of
+the 0.2.x query layer. Every stable toolkit aggregate is now available through a
+typed ORM repository helper. No breaking changes.
 
 ### Added
 
 - **Statistics** — `repo.getStats(...)` (1D: average/sum/stddev/variance/skewness/kurtosis,
   `sample` or `population`) and `repo.getRegression(...)` (2D: slope/intercept/x-intercept/
-  correlation/covariance/R² + per-axis means/sums) via `stats_agg`.
+  correlation/covariance/R² plus per-axis means/sums) via `stats_agg`.
 - **Percentiles** — `repo.getPercentiles(...)` and `repo.getPercentileRanks(...)`
-  (uddsketch `approx_percentile` / `approx_percentile_rank`, with mean/error/count).
-- **Counters** — `repo.getCounterAgg(...)` via `counter_agg` (delta/rate/irate/resets/
-  changes/elements/slope/intercept/corr/time-delta/first·last val+time/idelta).
-- **Time-weighted average** — `repo.getTimeWeight(...)` via `time_weight` (`Linear`/`LOCF`
-  average + integral). `average` is `null` for a single-sample (zero-duration) window.
-- **State tracking** — `repo.getStateDurations(...)` / `getStateTimeline(...)` /
-  `getStateAt(...)` / `getStatePeriods(...)` via `state_agg` (text states).
-- **Most-common values** — `repo.getMostCommonValues(...)` and `repo.getTopN(...)` via
-  `mcv_agg`.
-- **Liveness / uptime** — `repo.getHeartbeatHealth(...)` / `getLiveRanges(...)` /
-  `getDeadRanges(...)` / `isLiveAt(...)` via `heartbeat_agg`; input is auto-windowed to
-  `[start, start+duration)`.
-- All corresponding core SQL builders are exported for the raw escape-hatch tier.
+  via `percentile_agg` / uddsketch, including mean/error/count metadata.
+- **Counters** — `repo.getCounterAgg(...)` via `counter_agg` for monotonic counters
+  that may reset.
+- **Time-weighted average** — `repo.getTimeWeight(...)` via `time_weight`
+  (`Linear`/`LOCF` average plus integral). `average` is `null` for a single-sample
+  zero-duration window.
+- **State tracking** — `repo.getStateDurations(...)`, `repo.getStateTimeline(...)`,
+  `repo.getStateAt(...)`, and `repo.getStatePeriods(...)` via `state_agg`.
+- **Most-common values** — `repo.getMostCommonValues(...)` and `repo.getTopN(...)`
+  via `mcv_agg`.
+- **Liveness / uptime** — `repo.getHeartbeatHealth(...)`, `repo.getLiveRanges(...)`,
+  `repo.getDeadRanges(...)`, and `repo.isLiveAt(...)` via `heartbeat_agg`; input is
+  auto-windowed to `[start, start + duration)`.
+- Corresponding core SQL builders are exported for the raw escape-hatch tier.
 
 ### Fixed
 
 - **Default time-column resolution** — toolkit helpers now resolve the default time
-  column (the `@TimeColumn` property name) to its DB column name in every helper, so
-  entities that map the time column via `@Column({ name })` no longer emit
-  `column "<property>" does not exist` when `timeColumn` is omitted.
+  column (`@TimeColumn` property name) to its database column name in every helper,
+  so entities that map time through `@Column({ name })` no longer emit SQL for a
+  nonexistent property-name column when `timeColumn` is omitted.
 
 ### Notes
 
 - All toolkit aggregates require `timescaledb_toolkit`; absence fails fast with
   `TSDB_TOOLKIT_MISSING`. Signatures and behavior were verified against
   `timescaledb_toolkit 1.23.0`.
-- Not yet covered (planned): continuous aggregates, the still-`toolkit_experimental`
-  aggregates (`gauge_agg` / `freq_agg` / `compact_state_agg`), and a full entity↔DB diff
-  engine.
+- Not yet covered: continuous aggregates, the still-`toolkit_experimental`
+  aggregates (`gauge_agg`, `freq_agg`, `compact_state_agg`), and a full safe
+  entity-to-database diff engine.
 
 ## [0.2.0] - 2026-06-12
 
@@ -63,8 +64,8 @@ the 0.1.x schema foundation. No breaking changes.
 - **Gap-filling** — `time_bucket_gapfill` with `locf` (last-observation-carried-forward)
   and `interpolate`, with validation (forward-fill requires ascending buckets; bounds
   required; incompatible with timezone/origin/offset).
-- **`timescaledb_toolkit` features** — `repo.getCandlesticks(...)` returning typed OHLCV
-  (open/high/low/close/volume/vwap), and `repo.approxCountDistinct(...)`.
+- **Initial `timescaledb_toolkit` helpers** — `repo.getCandlesticks(...)` returning
+  typed OHLCV (open/high/low/close/volume/vwap) and `repo.approxCountDistinct(...)`.
 - **Toolkit-presence detection** — toolkit-backed methods fail fast with the stable
   `TSDB_TOOLKIT_MISSING` error when the extension is not installed.
 - **Typed raw-result coercion helpers** for hyperfunction outputs (`toNumber`,
@@ -82,8 +83,8 @@ the 0.1.x schema foundation. No breaking changes.
 
 - `candlestick_agg` is computed once per bucket (the OHLCV accessors are applied over a
   single aggregate), and `vwap` is `null` when a bucket's total volume is 0.
-- Requires `timescaledb_toolkit` for candlesticks and `approxCountDistinct`; all other
-  features run on base TimescaleDB ≥ 2.18.
+- Requires `timescaledb_toolkit` for candlesticks and `approxCountDistinct`; base
+  hyperfunctions run on TimescaleDB ≥ 2.18.
 
 ## [0.1.1] - 2026-06-11
 
