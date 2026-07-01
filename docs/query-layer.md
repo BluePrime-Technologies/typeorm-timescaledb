@@ -1,16 +1,18 @@
 # Query layer guide
 
-`typeorm-timescaledb` 0.2.x adds a typed query layer on top of the schema
-foundation. The schema decorators and migrations still define the TimescaleDB
-objects; the query layer helps run common TimescaleDB hyperfunctions through
-DataSource-scoped repositories.
+`typeorm-timescaledb` 0.2.x introduced the typed query layer on top of the schema
+foundation. The 0.3.0 release scope extends that layer with typed helpers for the
+stable `timescaledb_toolkit` aggregate families implemented in this package. The
+schema decorators and migrations still define the TimescaleDB objects; the query
+layer helps run common TimescaleDB hyperfunctions through DataSource-scoped
+repositories.
 
 The query layer follows the same safety rule as the rest of the package: no
 prototype mutation and no global TypeORM patching. Query helpers are attached to
 the repository wrapper returned by `createTimescale(dataSource).getRepository()`.
 
-Upgrading from 0.1.x to 0.2.x is additive: existing hypertable metadata and
-migrations do not need to change just to use the new query helpers.
+Upgrading from 0.2.x to 0.3.0 is additive: existing hypertable metadata and
+migrations do not need to change just to use the new toolkit helpers.
 
 ## Start from a Timescale repository
 
@@ -49,18 +51,8 @@ const rows = await readings.getTimeBucket({
 });
 ```
 
-Supported metric functions are:
-
-- `avg`
-- `sum`
-- `min`
-- `max`
-- `count`
-- `first`
-- `last`
-
-The default bucket alias is `bucket`. Use `bucketAlias` when you need a different
-raw result key.
+Supported metric functions are `avg`, `sum`, `min`, `max`, `count`, `first`, and
+`last`. The default bucket alias is `bucket`.
 
 ## Timezone, origin, and offset
 
@@ -166,17 +158,10 @@ const avgValue = toNumber(row.avgValue, 'avgValue');
 const distinctSensors = toBigIntString(row.distinctSensors, 'distinctSensors');
 ```
 
-Available helpers include:
-
-- `toNumber`
-- `toNumberOrNull`
-- `toBigIntString`
-- `toDate`
-- `toNumberArray`
-- `mapRawRows`
-
-`toBigIntString()` deliberately returns a string so large integer-like database
-values do not lose precision in JavaScript.
+Available helpers include `toNumber`, `toNumberOrNull`, `toBigIntString`,
+`toDate`, `toNumberArray`, and `mapRawRows`. `toBigIntString()` deliberately
+returns a string so large integer-like database values do not lose precision in
+JavaScript.
 
 ## Toolkit-backed helpers
 
@@ -185,7 +170,9 @@ method checks extension presence once per DataSource and throws
 `TimescaleErrorCode.TOOLKIT_MISSING`; the public error string is
 `TSDB_TOOLKIT_MISSING`.
 
-Toolkit-backed methods on `TimescaleRepository` include:
+0.2.x introduced the first toolkit helpers (`getCandlesticks()` and
+`approxCountDistinct()`). 0.3.0 expands coverage of the stable toolkit aggregate
+families implemented in this package:
 
 - `getCandlesticks()` — typed OHLCV buckets from `candlestick_agg`.
 - `approxCountDistinct()` — approximate distinct count via HyperLogLog, returned
@@ -193,7 +180,7 @@ Toolkit-backed methods on `TimescaleRepository` include:
 - `getStats()` and `getRegression()` — `stats_agg` summaries and linear
   regression.
 - `getPercentiles()` and `getPercentileRanks()` — approximate percentiles via
-  `percentile_agg` / uddsketch.
+  `percentile_agg` / UddSketch.
 - `getCounterAgg()` — monotonic counter summaries.
 - `getTimeWeight()` — time-weighted average and integral.
 - `getStateDurations()`, `getStateTimeline()`, `getStateAt()`, and
@@ -287,5 +274,6 @@ specific `state` to filter periods.
 
 The query layer does not make this package a complete TimescaleDB abstraction.
 Continuous aggregates, validated cross-store references, a full safe diff engine,
-and experimental toolkit aggregates such as `gauge_agg`, `freq_agg`, and
-`compact_state_agg` remain future scope.
+experimental toolkit aggregates such as `gauge_agg`, `freq_agg`, and
+`compact_state_agg`, and stable Toolkit aggregates not listed above remain future
+scope.

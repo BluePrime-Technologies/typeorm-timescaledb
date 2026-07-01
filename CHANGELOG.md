@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [Unreleased]
+
+### Added
+
+- **0.3.0 release scope** — expanded typed `timescaledb_toolkit` helper coverage
+  for the stable aggregate families implemented in this package:
+  - statistics and regression via `stats_agg`;
+  - UddSketch percentiles and percentile ranks via `percentile_agg`;
+  - monotonic counters via `counter_agg`;
+  - time-weighted average/integral via `time_weight`;
+  - state tracking via `state_agg`;
+  - most-common-values/top-N via `mcv_agg`;
+  - liveness/uptime via `heartbeat_agg`.
+- Corresponding low-level SQL builder exports in `@blueprime/timescaledb-core`
+  for the raw escape-hatch tier.
+
+### Fixed
+
+- **Default time-column resolution** — toolkit helpers resolve the default time
+  column (`@TimeColumn` property name) to its database column name, including
+  entities whose time property is mapped with `@Column({ name })`.
+
 ## [0.2.0] - 2026-06-12
 
 Minor release: a backward-compatible **typed query layer (hyperfunctions)** on top of
@@ -21,15 +43,8 @@ the 0.1.x schema foundation. No breaking changes.
 - **Gap-filling** — `time_bucket_gapfill` with `locf` (last-observation-carried-forward)
   and `interpolate`, with validation (forward-fill requires ascending buckets; bounds
   required; incompatible with timezone/origin/offset).
-- **`timescaledb_toolkit` features** — typed helpers for stable toolkit aggregates:
-  `repo.getCandlesticks(...)` (OHLCV), `repo.approxCountDistinct(...)`,
-  `repo.getStats(...)`, `repo.getRegression(...)`, `repo.getPercentiles(...)`,
-  `repo.getPercentileRanks(...)`, `repo.getCounterAgg(...)`,
-  `repo.getTimeWeight(...)`, `repo.getStateDurations(...)`,
-  `repo.getStateTimeline(...)`, `repo.getStateAt(...)`,
-  `repo.getStatePeriods(...)`, `repo.getMostCommonValues(...)`, `repo.getTopN(...)`,
-  `repo.getHeartbeatHealth(...)`, `repo.getLiveRanges(...)`,
-  `repo.getDeadRanges(...)`, and `repo.isLiveAt(...)`.
+- **Initial `timescaledb_toolkit` helpers** — `repo.getCandlesticks(...)` returning
+  typed OHLCV (open/high/low/close/volume/vwap) and `repo.approxCountDistinct(...)`.
 - **Toolkit-presence detection** — toolkit-backed methods fail fast with the stable
   `TSDB_TOOLKIT_MISSING` error when the extension is not installed.
 - **Typed raw-result coercion helpers** for hyperfunction outputs (`toNumber`,
@@ -47,8 +62,8 @@ the 0.1.x schema foundation. No breaking changes.
 
 - `candlestick_agg` is computed once per bucket (the OHLCV accessors are applied over a
   single aggregate), and `vwap` is `null` when a bucket's total volume is 0.
-- Requires `timescaledb_toolkit` for toolkit-backed helpers; base hyperfunctions run
-  on TimescaleDB ≥ 2.18.
+- Requires `timescaledb_toolkit` for candlesticks and `approxCountDistinct`; base
+  hyperfunctions run on TimescaleDB ≥ 2.18.
 
 ## [0.1.1] - 2026-06-11
 
@@ -76,6 +91,7 @@ Initial public release — the schema foundation (M1).
 - `@blueprime/timescaledb-core` — ORM-agnostic SQL/DDL generation, metadata model, and
   identifier safety.
 
+[Unreleased]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/releases/tag/v0.1.0
