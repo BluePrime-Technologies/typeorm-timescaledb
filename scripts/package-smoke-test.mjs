@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -7,28 +7,28 @@ import {
   rmSync,
   statSync,
   writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const tmp = mkdtempSync(join(tmpdir(), 'typeorm-timescaledb-package-smoke-'));
-const packDir = join(tmp, 'packs');
-const projectDir = join(tmp, 'project');
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const tmp = mkdtempSync(join(tmpdir(), "typeorm-timescaledb-package-smoke-"));
+const packDir = join(tmp, "packs");
+const projectDir = join(tmp, "project");
 
 function run(command, args, options = {}) {
-  console.log(`$ ${[command, ...args].join(' ')}`);
+  console.log(`$ ${[command, ...args].join(" ")}`);
   execFileSync(command, args, {
     cwd: root,
-    encoding: 'utf8',
-    stdio: 'inherit',
+    encoding: "utf8",
+    stdio: "inherit",
     ...options,
   });
 }
 
 function readJson(path) {
-  return JSON.parse(readFileSync(path, 'utf8'));
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
 function assert(condition, message) {
@@ -37,17 +37,17 @@ function assert(condition, message) {
 
 function packageTarballName(packageJsonPath) {
   const packageJson = readJson(packageJsonPath);
-  const normalizedName = packageJson.name.replace(/^@/, '').replace('/', '-');
+  const normalizedName = packageJson.name.replace(/^@/, "").replace("/", "-");
   return `${normalizedName}-${packageJson.version}.tgz`;
 }
 
 function listTarball(tarballPath) {
-  const output = execFileSync('tar', ['-tzf', tarballPath], {
-    encoding: 'utf8',
+  const output = execFileSync("tar", ["-tzf", tarballPath], {
+    encoding: "utf8",
   });
 
   return output
-    .split('\n')
+    .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
 }
@@ -60,12 +60,12 @@ function assertTarballShape(label, tarballPath, requiredEntries) {
   }
 
   const forbiddenEntries = entries.filter(
-    (entry) => entry.startsWith('package/src/') || entry.includes('/src/'),
+    (entry) => entry.startsWith("package/src/") || entry.includes("/src/"),
   );
 
   assert(
     forbiddenEntries.length === 0,
-    `${label} tarball contains source files: ${forbiddenEntries.join(', ')}`,
+    `${label} tarball contains source files: ${forbiddenEntries.join(", ")}`,
   );
 }
 
@@ -79,25 +79,25 @@ mkdirSync(projectDir, { recursive: true });
 try {
   const coreTarball = join(
     packDir,
-    packageTarballName(join(root, 'packages/core/package.json')),
+    packageTarballName(join(root, "packages/core/package.json")),
   );
   const typeormTarball = join(
     packDir,
-    packageTarballName(join(root, 'packages/typeorm/package.json')),
+    packageTarballName(join(root, "packages/typeorm/package.json")),
   );
 
-  run('pnpm', [
-    '--dir',
-    join(root, 'packages/core'),
-    'pack',
-    '--pack-destination',
+  run("pnpm", [
+    "--dir",
+    join(root, "packages/core"),
+    "pack",
+    "--pack-destination",
     packDir,
   ]);
-  run('pnpm', [
-    '--dir',
-    join(root, 'packages/typeorm'),
-    'pack',
-    '--pack-destination',
+  run("pnpm", [
+    "--dir",
+    join(root, "packages/typeorm"),
+    "pack",
+    "--pack-destination",
     packDir,
   ]);
 
@@ -107,34 +107,34 @@ try {
     `Expected TypeORM tarball at ${typeormTarball}`,
   );
 
-  assertTarballShape('core', coreTarball, [
-    'package/package.json',
-    'package/dist/index.js',
-    'package/dist/index.d.ts',
-    'package/dist/cjs/index.js',
-    'package/dist/cjs/index.d.ts',
+  assertTarballShape("core", coreTarball, [
+    "package/package.json",
+    "package/dist/index.js",
+    "package/dist/index.d.ts",
+    "package/dist/cjs/index.js",
+    "package/dist/cjs/index.d.ts",
   ]);
 
-  assertTarballShape('typeorm', typeormTarball, [
-    'package/package.json',
-    'package/dist/index.js',
-    'package/dist/index.d.ts',
-    'package/dist/cjs/index.js',
-    'package/dist/cjs/index.d.ts',
-    'package/dist/nestjs/index.js',
-    'package/dist/nestjs/index.d.ts',
-    'package/dist/cjs/nestjs/index.js',
-    'package/dist/cjs/nestjs/index.d.ts',
-    'package/dist/cli/main.js',
+  assertTarballShape("typeorm", typeormTarball, [
+    "package/package.json",
+    "package/dist/index.js",
+    "package/dist/index.d.ts",
+    "package/dist/cjs/index.js",
+    "package/dist/cjs/index.d.ts",
+    "package/dist/nestjs/index.js",
+    "package/dist/nestjs/index.d.ts",
+    "package/dist/cjs/nestjs/index.js",
+    "package/dist/cjs/nestjs/index.d.ts",
+    "package/dist/cli/main.js",
   ]);
 
   writeFileSync(
-    join(projectDir, 'package.json'),
+    join(projectDir, "package.json"),
     JSON.stringify(
       {
-        name: 'typeorm-timescaledb-package-smoke',
+        name: "typeorm-timescaledb-package-smoke",
         private: true,
-        type: 'module',
+        type: "module",
       },
       null,
       2,
@@ -142,26 +142,26 @@ try {
   );
 
   run(
-    'npm',
+    "npm",
     [
-      'install',
-      '--silent',
-      '--no-audit',
-      '--no-fund',
+      "install",
+      "--silent",
+      "--no-audit",
+      "--no-fund",
       coreTarball,
       typeormTarball,
-      'typeorm@0.3.20',
-      'pg@8',
-      'reflect-metadata@0.2.2',
-      '@nestjs/common@11',
-      '@nestjs/core@11',
-      'rxjs@7',
+      "typeorm@0.3.20",
+      "pg@8",
+      "reflect-metadata@0.2.2",
+      "@nestjs/common@11",
+      "@nestjs/core@11",
+      "rxjs@7",
     ],
     { cwd: projectDir },
   );
 
   writeSmokeFile(
-    join(projectDir, 'esm-smoke.mjs'),
+    join(projectDir, "esm-smoke.mjs"),
     `
       import * as pkg from 'typeorm-timescaledb';
       import * as nest from 'typeorm-timescaledb/nestjs';
@@ -178,7 +178,7 @@ try {
   );
 
   writeSmokeFile(
-    join(projectDir, 'cjs-smoke.cjs'),
+    join(projectDir, "cjs-smoke.cjs"),
     `
       const pkg = require('typeorm-timescaledb');
       const nest = require('typeorm-timescaledb/nestjs');
@@ -194,28 +194,28 @@ try {
     `,
   );
 
-  run('node', ['esm-smoke.mjs'], { cwd: projectDir });
-  run('node', ['cjs-smoke.cjs'], { cwd: projectDir });
+  run("node", ["esm-smoke.mjs"], { cwd: projectDir });
+  run("node", ["cjs-smoke.cjs"], { cwd: projectDir });
 
   const binPath = join(
     projectDir,
-    'node_modules',
-    '.bin',
-    process.platform === 'win32'
-      ? 'typeorm-timescaledb.cmd'
-      : 'typeorm-timescaledb',
+    "node_modules",
+    ".bin",
+    process.platform === "win32"
+      ? "typeorm-timescaledb.cmd"
+      : "typeorm-timescaledb",
   );
 
   assert(existsSync(binPath), `Expected CLI bin at ${binPath}`);
   assert(
     statSync(binPath).isFile() || statSync(binPath).isSymbolicLink(),
-    'CLI bin is not executable',
+    "CLI bin is not executable",
   );
-  run(binPath, ['--help'], { cwd: projectDir });
+  run(binPath, ["--help"], { cwd: projectDir });
 
-  console.log('Package smoke test passed.');
+  console.log("Package smoke test passed.");
 } finally {
-  if (process.env.KEEP_PACKAGE_SMOKE_TMP !== '1') {
+  if (process.env.KEEP_PACKAGE_SMOKE_TMP !== "1") {
     rmSync(tmp, { recursive: true, force: true });
   } else {
     console.log(`Kept package smoke temp directory: ${tmp}`);
