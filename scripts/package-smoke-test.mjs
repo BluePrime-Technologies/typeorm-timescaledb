@@ -4,7 +4,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -78,17 +77,35 @@ mkdirSync(packDir, { recursive: true });
 mkdirSync(projectDir, { recursive: true });
 
 try {
-  const coreTarball = join(packDir, packageTarballName(join(root, 'packages/core/package.json')));
+  const coreTarball = join(
+    packDir,
+    packageTarballName(join(root, 'packages/core/package.json')),
+  );
   const typeormTarball = join(
     packDir,
     packageTarballName(join(root, 'packages/typeorm/package.json')),
   );
 
-  run('pnpm', ['--dir', join(root, 'packages/core'), 'pack', '--pack-destination', packDir]);
-  run('pnpm', ['--dir', join(root, 'packages/typeorm'), 'pack', '--pack-destination', packDir]);
+  run('pnpm', [
+    '--dir',
+    join(root, 'packages/core'),
+    'pack',
+    '--pack-destination',
+    packDir,
+  ]);
+  run('pnpm', [
+    '--dir',
+    join(root, 'packages/typeorm'),
+    'pack',
+    '--pack-destination',
+    packDir,
+  ]);
 
   assert(existsSync(coreTarball), `Expected core tarball at ${coreTarball}`);
-  assert(existsSync(typeormTarball), `Expected TypeORM tarball at ${typeormTarball}`);
+  assert(
+    existsSync(typeormTarball),
+    `Expected TypeORM tarball at ${typeormTarball}`,
+  );
 
   assertTarballShape('core', coreTarball, [
     'package/package.json',
@@ -184,11 +201,16 @@ try {
     projectDir,
     'node_modules',
     '.bin',
-    process.platform === 'win32' ? 'typeorm-timescaledb.cmd' : 'typeorm-timescaledb',
+    process.platform === 'win32'
+      ? 'typeorm-timescaledb.cmd'
+      : 'typeorm-timescaledb',
   );
 
   assert(existsSync(binPath), `Expected CLI bin at ${binPath}`);
-  assert(statSync(binPath).isFile() || statSync(binPath).isSymbolicLink(), 'CLI bin is not executable');
+  assert(
+    statSync(binPath).isFile() || statSync(binPath).isSymbolicLink(),
+    'CLI bin is not executable',
+  );
   run(binPath, ['--help'], { cwd: projectDir });
 
   console.log('Package smoke test passed.');
