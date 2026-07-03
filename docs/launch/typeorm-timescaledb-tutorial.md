@@ -40,23 +40,23 @@ and TimescaleDB versions.
 This example stores sensor readings.
 
 ```ts
-import { Column, Entity, PrimaryColumn } from 'typeorm-timescaledb';
-import { Hypertable, TimeColumn } from 'typeorm-timescaledb';
+import { Column, Entity, PrimaryColumn } from "typeorm-timescaledb";
+import { Hypertable, TimeColumn } from "typeorm-timescaledb";
 
 @Entity()
 @Hypertable({
-  timeColumn: 'time',
-  chunkTimeInterval: '1 day',
+  timeColumn: "time",
+  chunkTimeInterval: "1 day",
 })
 export class Reading {
-  @PrimaryColumn('timestamptz')
+  @PrimaryColumn("timestamptz")
   @TimeColumn()
   time!: Date;
 
-  @PrimaryColumn('text')
+  @PrimaryColumn("text")
   sensorId!: string;
 
-  @Column('double precision')
+  @Column("double precision")
   value!: number;
 }
 ```
@@ -70,19 +70,19 @@ The important design point is the split of responsibility:
 ## 3. Register the entity in your DataSource
 
 ```ts
-import 'reflect-metadata';
-import { DataSource } from 'typeorm-timescaledb';
-import { Reading } from './entities/Reading.js';
+import "reflect-metadata";
+import { DataSource } from "typeorm-timescaledb";
+import { Reading } from "./entities/Reading.js";
 
 export const AppDataSource = new DataSource({
-  type: 'postgres',
-  host: process.env.POSTGRES_HOST ?? 'localhost',
-  port: Number(process.env.POSTGRES_PORT ?? '5432'),
-  username: process.env.POSTGRES_USER ?? 'timescale',
-  password: process.env.POSTGRES_PASSWORD ?? 'timescale',
-  database: process.env.POSTGRES_DB ?? 'app',
+  type: "postgres",
+  host: process.env.POSTGRES_HOST ?? "localhost",
+  port: Number(process.env.POSTGRES_PORT ?? "5432"),
+  username: process.env.POSTGRES_USER ?? "timescale",
+  password: process.env.POSTGRES_PASSWORD ?? "timescale",
+  database: process.env.POSTGRES_DB ?? "app",
   entities: [Reading],
-  migrations: ['src/migrations/*.{ts,js}'],
+  migrations: ["src/migrations/*.{ts,js}"],
   synchronize: false,
 });
 ```
@@ -132,17 +132,17 @@ Use `assertSchema()` to catch supported drift between entity metadata and the
 live TimescaleDB state.
 
 ```ts
-import { assertSchema } from 'typeorm-timescaledb';
+import { assertSchema } from "typeorm-timescaledb";
 
 await AppDataSource.initialize();
-await assertSchema(AppDataSource, { mode: 'assert' });
+await assertSchema(AppDataSource, { mode: "assert" });
 ```
 
 For softer rollout, use warn mode:
 
 ```ts
 await assertSchema(AppDataSource, {
-  mode: 'warn',
+  mode: "warn",
   logger: console.warn,
 });
 ```
@@ -156,24 +156,24 @@ The query layer gives typed helpers for common TimescaleDB expressions and raw
 result coercion.
 
 ```ts
-import { createTimescale, toDate, toNumber } from 'typeorm-timescaledb';
+import { createTimescale, toDate, toNumber } from "typeorm-timescaledb";
 
 const ts = createTimescale(AppDataSource);
 
 const rows = await ts
   .getRepository(Reading)
   .timeBucket({
-    timeColumn: 'time',
-    interval: '1 hour',
+    timeColumn: "time",
+    interval: "1 hour",
     metrics: {
-      avgValue: { column: 'value', aggregate: 'avg' },
+      avgValue: { column: "value", aggregate: "avg" },
     },
   })
   .getRawMany();
 
 const first = rows[0];
-const bucket = toDate(first.bucket, 'bucket');
-const avgValue = toNumber(first.avgValue, 'avgValue');
+const bucket = toDate(first.bucket, "bucket");
+const avgValue = toNumber(first.avgValue, "avgValue");
 ```
 
 Raw database results may need coercion because PostgreSQL drivers can return
