@@ -93,17 +93,17 @@ TimescaleDB state.
 It can be used at boot time:
 
 ```ts
-import { assertSchema } from 'typeorm-timescaledb';
+import { assertSchema } from "typeorm-timescaledb";
 
 await AppDataSource.initialize();
-await assertSchema(AppDataSource, { mode: 'assert' });
+await assertSchema(AppDataSource, { mode: "assert" });
 ```
 
 Or in warn mode:
 
 ```ts
 await assertSchema(AppDataSource, {
-  mode: 'warn',
+  mode: "warn",
   logger: console.warn,
 });
 ```
