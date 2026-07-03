@@ -32,6 +32,7 @@ quickstart when you already have a TypeORM project and TimescaleDB database.
 - [Troubleshooting](troubleshooting.md)
 - [Compatibility](compatibility.md)
 - [Limitations](limitations.md)
+- [Supply-chain security](supply-chain-security.md)
 
 ## Current scope
 
