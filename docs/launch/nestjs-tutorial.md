@@ -22,23 +22,23 @@ npm install typeorm-timescaledb typeorm pg reflect-metadata
 ## 1. Define an entity
 
 ```ts
-import { Column, Entity, PrimaryColumn } from 'typeorm-timescaledb';
-import { Hypertable, TimeColumn } from 'typeorm-timescaledb';
+import { Column, Entity, PrimaryColumn } from "typeorm-timescaledb";
+import { Hypertable, TimeColumn } from "typeorm-timescaledb";
 
 @Entity()
 @Hypertable({
-  timeColumn: 'time',
-  chunkTimeInterval: '1 day',
+  timeColumn: "time",
+  chunkTimeInterval: "1 day",
 })
 export class Reading {
-  @PrimaryColumn('timestamptz')
+  @PrimaryColumn("timestamptz")
   @TimeColumn()
   time!: Date;
 
-  @PrimaryColumn('text')
+  @PrimaryColumn("text")
   sensorId!: string;
 
-  @Column('double precision')
+  @Column("double precision")
   value!: number;
 }
 ```
@@ -52,11 +52,11 @@ helpers.
 For the default context:
 
 ```ts
-import { Module } from '@nestjs/common';
-import { TimescaleModule } from 'typeorm-timescaledb/nestjs';
-import { AppDataSource } from './data-source.js';
-import { Reading } from './reading.entity.js';
-import { ReadingService } from './reading.service.js';
+import { Module } from "@nestjs/common";
+import { TimescaleModule } from "typeorm-timescaledb/nestjs";
+import { AppDataSource } from "./data-source.js";
+import { Reading } from "./reading.entity.js";
+import { ReadingService } from "./reading.service.js";
 
 @Module({
   imports: [
@@ -72,22 +72,22 @@ For a named context, use the same name in every registration and injection point
 
 ```ts
 TimescaleModule.forRoot({
-  name: 'analytics',
+  name: "analytics",
   dataSource: AnalyticsDataSource,
 });
 
-TimescaleModule.forFeature([Reading], 'analytics');
+TimescaleModule.forFeature([Reading], "analytics");
 ```
 
 ## 3. Inject the repository
 
 ```ts
-import { Injectable } from '@nestjs/common';
+import { Injectable } from "@nestjs/common";
 import {
   InjectTimescaleRepository,
   TimescaleRepository,
-} from 'typeorm-timescaledb/nestjs';
-import { Reading } from './reading.entity.js';
+} from "typeorm-timescaledb/nestjs";
+import { Reading } from "./reading.entity.js";
 
 @Injectable()
 export class ReadingService {
@@ -99,7 +99,7 @@ export class ReadingService {
   async recentReadings(sensorId: string) {
     return this.readings.find({
       where: { sensorId },
-      order: { time: 'DESC' },
+      order: { time: "DESC" },
       take: 100,
     });
   }
