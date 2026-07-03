@@ -75,20 +75,20 @@ manual migration.
 A TypeORM entity can declare TimescaleDB intent with decorators:
 
 ```ts
-import { Column, Entity, PrimaryColumn } from 'typeorm-timescaledb';
-import { Hypertable, TimeColumn } from 'typeorm-timescaledb';
+import { Column, Entity, PrimaryColumn } from "typeorm-timescaledb";
+import { Hypertable, TimeColumn } from "typeorm-timescaledb";
 
 @Entity()
-@Hypertable({ timeColumn: 'time', chunkTimeInterval: '1 day' })
+@Hypertable({ timeColumn: "time", chunkTimeInterval: "1 day" })
 export class Reading {
-  @PrimaryColumn('timestamptz')
+  @PrimaryColumn("timestamptz")
   @TimeColumn()
   time!: Date;
 
-  @PrimaryColumn('text')
+  @PrimaryColumn("text")
   sensorId!: string;
 
-  @Column('double precision')
+  @Column("double precision")
   value!: number;
 }
 ```
