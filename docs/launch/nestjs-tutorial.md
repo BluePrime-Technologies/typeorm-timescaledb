@@ -28,7 +28,7 @@ import { Hypertable, TimeColumn } from "typeorm-timescaledb";
 @Entity()
 @Hypertable({
   timeColumn: "time",
-  chunkTimeInterval: "1 day",
+  chunkInterval: "1 day",
 })
 export class Reading {
   @PrimaryColumn("timestamptz")
@@ -49,20 +49,37 @@ helpers.
 
 ## 2. Register the Timescale module
 
-For the default context:
+Register the root Timescale module in an application-level module, then import
+feature registrations from modules that need repositories. Setting `global: true`
+makes the Timescale context provider visible to feature modules without
+re-importing the root registration.
 
 ```ts
 import { Module } from "@nestjs/common";
 import { TimescaleModule } from "typeorm-timescaledb/nestjs";
 import { AppDataSource } from "./data-source.js";
+
+@Module({
+  imports: [
+    TimescaleModule.forRoot({
+      dataSource: AppDataSource,
+      global: true,
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+Then register the entity in the feature module:
+
+```ts
+import { Module } from "@nestjs/common";
+import { TimescaleModule } from "typeorm-timescaledb/nestjs";
 import { Reading } from "./reading.entity.js";
 import { ReadingService } from "./reading.service.js";
 
 @Module({
-  imports: [
-    TimescaleModule.forRoot({ dataSource: AppDataSource }),
-    TimescaleModule.forFeature([Reading]),
-  ],
+  imports: [TimescaleModule.forFeature([Reading])],
   providers: [ReadingService],
 })
 export class ReadingModule {}
@@ -74,6 +91,7 @@ For a named context, use the same name in every registration and injection point
 TimescaleModule.forRoot({
   name: "analytics",
   dataSource: AnalyticsDataSource,
+  global: true,
 });
 
 TimescaleModule.forFeature([Reading], "analytics");
@@ -83,10 +101,8 @@ TimescaleModule.forFeature([Reading], "analytics");
 
 ```ts
 import { Injectable } from "@nestjs/common";
-import {
-  InjectTimescaleRepository,
-  TimescaleRepository,
-} from "typeorm-timescaledb/nestjs";
+import { TimescaleRepository } from "typeorm-timescaledb";
+import { InjectTimescaleRepository } from "typeorm-timescaledb/nestjs";
 import { Reading } from "./reading.entity.js";
 
 @Injectable()
@@ -110,7 +126,7 @@ For named contexts:
 
 ```ts
 constructor(
-  @InjectTimescaleRepository(Reading, 'analytics')
+  @InjectTimescaleRepository(Reading, "analytics")
   private readonly readings: TimescaleRepository<Reading>,
 ) {}
 ```
@@ -120,15 +136,10 @@ constructor(
 ```ts
 async hourlyAverages(sensorId: string) {
   return this.readings
-    .timeBucket({
-      timeColumn: 'time',
-      interval: '1 hour',
-      metrics: {
-        avgValue: { column: 'value', aggregate: 'avg' },
-      },
-    })
-    .queryBuilder
-    .where('reading.sensorId = :sensorId', { sensorId })
+    .timescaleQueryBuilder("reading")
+    .timeBucket({ interval: "1 hour", column: "time" })
+    .avg("value", "avgValue")
+    .queryBuilder.where("reading.sensorId = :sensorId", { sensorId })
     .getRawMany();
 }
 ```
@@ -146,7 +157,8 @@ For TypeScript DataSource files:
 ```sh
 npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate \
   -d src/data-source.ts \
-  -o src/migrations
+  -o src/migrations \
+  -n AddReadingHypertable
 ```
 
 Then review and run the generated migration through your normal process.
@@ -155,7 +167,7 @@ Then review and run the generated migration through your normal process.
 
 ### Mismatched context names
 
-If `forRoot({ name: 'analytics' })` uses a name, then `forFeature(...)` and
+If `forRoot({ name: "analytics" })` uses a name, then `forFeature(...)` and
 `@InjectTimescaleRepository(...)` must use the same name.
 
 ### Registering entities in the wrong DataSource
