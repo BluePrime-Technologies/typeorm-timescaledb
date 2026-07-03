@@ -46,7 +46,7 @@ import { Hypertable, TimeColumn } from "typeorm-timescaledb";
 @Entity()
 @Hypertable({
   timeColumn: "time",
-  chunkTimeInterval: "1 day",
+  chunkInterval: "1 day",
 })
 export class Reading {
   @PrimaryColumn("timestamptz")
@@ -106,7 +106,7 @@ as `tsx`:
 npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate \
   -d src/data-source.ts \
   -o src/migrations \
-  -n add-reading-hypertable
+  -n AddReadingHypertable
 ```
 
 If you compile first, point the CLI at compiled JavaScript:
@@ -159,17 +159,16 @@ result coercion.
 import { createTimescale, toDate, toNumber } from "typeorm-timescaledb";
 
 const ts = createTimescale(AppDataSource);
+const readings = ts.getRepository(Reading);
 
-const rows = await ts
-  .getRepository(Reading)
-  .timeBucket({
-    timeColumn: "time",
-    interval: "1 hour",
-    metrics: {
-      avgValue: { column: "value", aggregate: "avg" },
-    },
-  })
-  .getRawMany();
+const rows = await readings.getTimeBucket({
+  interval: "1 hour",
+  range: {
+    from: new Date("2026-01-01T00:00:00Z"),
+    to: new Date("2026-01-02T00:00:00Z"),
+  },
+  metrics: [{ alias: "avgValue", fn: "avg", column: "value" }],
+});
 
 const first = rows[0];
 const bucket = toDate(first.bucket, "bucket");
