@@ -25,6 +25,20 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test:unit
 
+  package-smoke:
+    name: package smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:package-smoke
+
   integration:
     name: integration (node ${{ matrix.node }}, typeorm ${{ matrix.typeorm }}, tsdb ${{ matrix.timescaledb }})
     runs-on: ubuntu-latest
