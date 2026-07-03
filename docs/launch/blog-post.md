@@ -79,7 +79,7 @@ import { Column, Entity, PrimaryColumn } from "typeorm-timescaledb";
 import { Hypertable, TimeColumn } from "typeorm-timescaledb";
 
 @Entity()
-@Hypertable({ timeColumn: "time", chunkTimeInterval: "1 day" })
+@Hypertable({ timeColumn: "time", chunkInterval: "1 day" })
 export class Reading {
   @PrimaryColumn("timestamptz")
   @TimeColumn()
