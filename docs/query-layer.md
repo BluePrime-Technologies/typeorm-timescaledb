@@ -1,17 +1,18 @@
 # Query layer guide
 
 `typeorm-timescaledb` 0.2.x introduced the typed query layer on top of the schema
-foundation. Version 0.3.0 extends that layer with typed helpers for every stable
-`timescaledb_toolkit` aggregate. The schema decorators and migrations still
-define the TimescaleDB objects; the query layer helps run common TimescaleDB
-hyperfunctions through DataSource-scoped repositories.
+foundation. The 0.3.0 release scope extends that layer with typed helpers for the
+stable `timescaledb_toolkit` aggregate families implemented in this package. The
+schema decorators and migrations still define the TimescaleDB objects; the query
+layer helps run common TimescaleDB hyperfunctions through DataSource-scoped
+repositories.
 
 The query layer follows the same safety rule as the rest of the package: no
 prototype mutation and no global TypeORM patching. Query helpers are attached to
 the repository wrapper returned by `createTimescale(dataSource).getRepository()`.
 
-Upgrading from 0.2.x to 0.3.x is additive: existing hypertable metadata and
-migrations do not need to change just to use the new stable toolkit helpers.
+Upgrading from 0.2.x to 0.3.0 is additive: existing hypertable metadata and
+migrations do not need to change just to use the new toolkit helpers.
 
 ## Start from a Timescale repository
 
@@ -170,8 +171,8 @@ method checks extension presence once per DataSource and throws
 `TSDB_TOOLKIT_MISSING`.
 
 0.2.x introduced the first toolkit helpers (`getCandlesticks()` and
-`approxCountDistinct()`). 0.3.x completes coverage of the stable toolkit
-aggregate families:
+`approxCountDistinct()`). 0.3.0 expands coverage of the stable toolkit aggregate
+families implemented in this package:
 
 - `getCandlesticks()` — typed OHLCV buckets from `candlestick_agg`.
 - `approxCountDistinct()` — approximate distinct count via HyperLogLog, returned
@@ -179,7 +180,7 @@ aggregate families:
 - `getStats()` and `getRegression()` — `stats_agg` summaries and linear
   regression.
 - `getPercentiles()` and `getPercentileRanks()` — approximate percentiles via
-  `percentile_agg` / uddsketch.
+  `percentile_agg` / UddSketch.
 - `getCounterAgg()` — monotonic counter summaries.
 - `getTimeWeight()` — time-weighted average and integral.
 - `getStateDurations()`, `getStateTimeline()`, `getStateAt()`, and
@@ -273,5 +274,6 @@ specific `state` to filter periods.
 
 The query layer does not make this package a complete TimescaleDB abstraction.
 Continuous aggregates, validated cross-store references, a full safe diff engine,
-and experimental toolkit aggregates such as `gauge_agg`, `freq_agg`, and
-`compact_state_agg` remain future scope.
+experimental toolkit aggregates such as `gauge_agg`, `freq_agg`, and
+`compact_state_agg`, and stable Toolkit aggregates not listed above remain future
+scope.

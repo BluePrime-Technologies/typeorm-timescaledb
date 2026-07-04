@@ -32,6 +32,18 @@ quickstart when you already have a TypeORM project and TimescaleDB database.
 - [Troubleshooting](troubleshooting.md)
 - [Compatibility](compatibility.md)
 - [Limitations](limitations.md)
+- [Supply-chain security](supply-chain-security.md)
+
+## Launch materials
+
+- [Launch materials index](launch/README.md)
+- [Launch blog post draft](launch/blog-post.md)
+- [TimescaleDB + TypeORM tutorial](launch/typeorm-timescaledb-tutorial.md)
+- [NestJS tutorial](launch/nestjs-tutorial.md)
+- [Migration safety article](launch/migration-safety-article.md)
+- [Short demo script](launch/demo-script.md)
+- [Social posts](launch/social-posts.md)
+- [Community sharing checklist](launch/community-sharing-checklist.md)
 
 ## Current scope
 

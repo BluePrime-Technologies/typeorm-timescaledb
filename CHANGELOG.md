@@ -9,9 +9,9 @@ and released in lockstep.
 
 ## [0.3.0] - 2026-06-28
 
-Minor release: **full stable `timescaledb_toolkit` aggregate coverage** on top of
-the 0.2.x query layer. Every stable toolkit aggregate is now available through a
-typed ORM repository helper. No breaking changes.
+Minor release: expanded typed `timescaledb_toolkit` aggregate coverage for the
+stable aggregate families implemented in this package, on top of the 0.2.x query
+layer. No breaking changes.
 
 ### Added
 
@@ -47,7 +47,8 @@ typed ORM repository helper. No breaking changes.
   `TSDB_TOOLKIT_MISSING`. Signatures and behavior were verified against
   `timescaledb_toolkit 1.23.0`.
 - Not yet covered: continuous aggregates, the still-`toolkit_experimental`
-  aggregates (`gauge_agg`, `freq_agg`, `compact_state_agg`), and a full safe
+  aggregates (`gauge_agg`, `freq_agg`, `compact_state_agg`), stable Toolkit
+  aggregates not listed above (including T-Digest), and a full safe
   entity-to-database diff engine.
 
 ## [0.2.0] - 2026-06-12
