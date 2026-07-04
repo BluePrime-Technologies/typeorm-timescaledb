@@ -342,7 +342,8 @@ The root package re-exports the main metadata/config types from
 The current public API does not include automatic destructive migrations,
 automatic live configuration rewrites, continuous aggregates, validated
 cross-store references, experimental toolkit aggregates, stable Toolkit
-aggregates that are not listed above, or complete TimescaleDB feature coverage.
+aggregates not listed above (including T-Digest), or complete TimescaleDB
+feature coverage.
 
 For unsupported live schema changes, write explicit TypeORM migrations and review
 the generated SQL before applying it.

@@ -6,9 +6,9 @@
 
 ## Status and scope
 
-`typeorm-timescaledb` is an actively maintained **pre-1.0** package for TypeORM users who want typed TimescaleDB hypertables, columnstore, retention, reviewable migrations, DataSource-scoped repositories, drift detection, NestJS integration, and a typed hyperfunction query layer.
+`typeorm-timescaledb` is an actively maintained **pre-1.0** package for TypeORM users who want typed TimescaleDB hypertables, columnstore, retention, reviewable migrations, DataSource-scoped repositories, drift detection, NestJS integration, a typed hyperfunction query layer, and stable toolkit aggregate helpers.
 
-It is **not** a complete TimescaleDB abstraction yet. Continuous aggregates, validated cross-store references, experimental toolkit aggregates, and a full entity-to-database diff engine are planned but not shipped. Removing or altering existing TimescaleDB configuration still requires a hand-written migration. The base `CREATE TABLE` remains TypeORM's responsibility; this package adds the TimescaleDB layer on top.
+It is **not** a complete TimescaleDB abstraction yet. Continuous aggregates, validated cross-store references, experimental toolkit aggregates, stable Toolkit aggregates not yet implemented (including T-Digest), and a full entity-to-database diff engine are planned but not shipped. Removing or altering existing TimescaleDB configuration still requires a hand-written migration. The base `CREATE TABLE` remains TypeORM's responsibility; this package adds the TimescaleDB layer on top.
 
 ## Why this exists
 
@@ -102,7 +102,7 @@ export class AppModule {}
 
 Multiple TimescaleDB DataSources? Pass a `name` to `forRoot` / `forFeature` / `@InjectTimescaleRepository`.
 
-## What's in 0.2.x
+## What's in 0.3.x
 
 **Works today in the current published 0.2.x line:**
 
@@ -110,7 +110,7 @@ Multiple TimescaleDB DataSources? Pass a `name` to `forRoot` / `forFeature` / `@
 - **Migration generation + CLI** (`generate | run | revert | status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
 - **Per-DataSource repositories** (`createTimescale`) and **boot-time drift detection** (`assertSchema`).
 - **Base typed query layer** — `repo.getTimeBucket(...)` and a fluent `repo.timescaleQueryBuilder()` covering `time_bucket` (timezone/origin/offset), `first`/`last`, `histogram`, and the gap-filling family (`time_bucket_gapfill` + `locf` / `interpolate`). Results come back through typed coercion helpers.
-- **Initial `timescaledb_toolkit` helpers** — `repo.getCandlesticks(...)` and `repo.approxCountDistinct(...)`, with a presence check that fails fast (`TSDB_TOOLKIT_MISSING`) when the extension is not installed.
+- **Stable `timescaledb_toolkit` aggregate helpers** — `repo.getCandlesticks(...)`, `repo.approxCountDistinct(...)`, `repo.getStats(...)`, `repo.getRegression(...)`, `repo.getPercentiles(...)`, `repo.getPercentileRanks(...)`, `repo.getCounterAgg(...)`, `repo.getTimeWeight(...)`, `repo.getStateDurations(...)`, `repo.getStateTimeline(...)`, `repo.getStateAt(...)`, `repo.getStatePeriods(...)`, `repo.getMostCommonValues(...)`, `repo.getTopN(...)`, `repo.getHeartbeatHealth(...)`, `repo.getLiveRanges(...)`, `repo.getDeadRanges(...)`, and `repo.isLiveAt(...)`, all with a presence check that fails fast (`TSDB_TOOLKIT_MISSING`) when the extension is not installed.
 - **NestJS module** with optional-peer wiring and named multi-DataSource contexts.
 - Unified import surface (one package, never raw `typeorm`); dual ESM + CJS.
 
@@ -129,7 +129,7 @@ aggregate families implemented in this package:
 
 **Migration model (important):** generated migrations are **additive / desired-state** — they emit the full hypertable setup idempotently (`if_not_exists`). Adding supported configuration (a new entity, a new policy) propagates on the next `generate` + `run`. **Removing or altering** existing config (e.g. dropping a retention policy, changing a chunk interval) is **not** auto-diffed yet — do those in a hand-written migration for now. A full entity↔DB diff engine is planned. (The base `CREATE TABLE` is TypeORM's job — via `synchronize` or its own migration; this package adds the TimescaleDB layer on top.)
 
-**Not yet (planned):** continuous aggregates, the still-`toolkit_experimental` aggregates (`gauge_agg`/`freq_agg`/`compact_state_agg`), stable Toolkit aggregates that are not listed above, the full diff engine, and validated cross-store references. **Unsupported by design:** automatic destructive/altering migrations.
+**Not yet (planned):** continuous aggregates, the still-`toolkit_experimental` aggregates (`gauge_agg`/`freq_agg`/`compact_state_agg`), stable Toolkit aggregates not listed above (including T-Digest), the full diff engine, and validated cross-store references. **Unsupported by design:** automatic destructive/altering migrations.
 
 ## Design principles
 

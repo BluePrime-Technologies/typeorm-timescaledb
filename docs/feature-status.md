@@ -22,7 +22,7 @@ issue templates, launch copy, and public examples.
 
 ## Shipped in 0.2.x
 
-The following features may be described as shipped for the current 0.2.x scope:
+The following features may be described as shipped for the current 0.3.x scope:
 
 - TypeORM-first TimescaleDB integration.
 - Unified import surface for TypeORM symbols and TimescaleDB extensions.
@@ -42,13 +42,15 @@ The following features may be described as shipped for the current 0.2.x scope:
 - Real TimescaleDB integration coverage in CI.
 - Identifier validation and quoting for package-managed dynamic identifiers.
 - Non-destructive generated `down()` behavior for TimescaleDB policies.
-- Typed hyperfunction query layer: `time_bucket` (timezone/origin/offset),
+- 0.2.x typed hyperfunction query layer: `time_bucket` (timezone/origin/offset),
   `first`/`last`, and `histogram`, via `getTimeBucket()` and the
   `timescaleQueryBuilder()` fluent API.
 - Gap-filling: `time_bucket_gapfill` with `locf` and `interpolate`.
 - Initial toolkit helpers: `getCandlesticks()` and `approxCountDistinct()`.
 - Toolkit-presence detection with the stable `TSDB_TOOLKIT_MISSING` error.
 - Typed raw-result coercion helpers for hyperfunction outputs.
+- Default time-column resolution across toolkit helpers, including entities whose
+  `@TimeColumn` property is mapped with `@Column({ name })`.
 
 ## 0.3.0 release scope
 
