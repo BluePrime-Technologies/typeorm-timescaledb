@@ -2,6 +2,7 @@ import type { DataSource } from 'typeorm';
 import {
   compareHypertable,
   formatDrift,
+  TIMESCALEDB_PRESENCE_SQL,
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
@@ -68,6 +69,12 @@ async function readActual(
  * On drift: `mode: 'assert'` (default) throws `TimescaleError(SCHEMA_DRIFT)` with a
  * human diff; `mode: 'warn'` logs it and returns the drift list. Returns `[]` when
  * the schema is in sync. The DataSource must be initialized.
+ *
+ * If any `@Hypertable` entities are registered, this first checks that the
+ * `timescaledb` extension itself is installed and fails fast with the stable
+ * `TSDB_TIMESCALEDB_MISSING` error if not — otherwise a plain-PostgreSQL target
+ * would fail later with a raw `relation "timescaledb_information.hypertables"
+ * does not exist` error instead.
  */
 export async function assertSchema(
   dataSource: DataSource,
@@ -84,6 +91,17 @@ export async function assertSchema(
   const hypertables = dataSource.entityMetadatas.filter(
     (em) => typeof em.target === 'function' && hasTimescaleMetadata(em.target as Ctor),
   );
+
+  if (hypertables.length > 0) {
+    const presence: unknown[] = await dataSource.query(TIMESCALEDB_PRESENCE_SQL);
+    if (!Array.isArray(presence) || presence.length === 0) {
+      throw new TimescaleError(
+        TimescaleErrorCode.TIMESCALEDB_MISSING,
+        'timescaledb is not installed on this database — run `CREATE EXTENSION timescaledb;` ' +
+          '(or connect to a TimescaleDB-enabled database) before calling assertSchema()',
+      );
+    }
+  }
 
   for (const em of hypertables) {
     const meta = getTimescaleMetadata(em.target as Ctor);
