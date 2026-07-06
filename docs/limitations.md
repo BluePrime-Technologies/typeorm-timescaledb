@@ -3,13 +3,17 @@
 `typeorm-timescaledb` is a pre-1.0 foundation release. It is useful today for the
 supported scope, but it is not a complete TimescaleDB abstraction yet.
 
-## Not shipped in 0.1.x
+See [Feature status](feature-status.md) for the authoritative, versioned
+breakdown of what is shipped, what is in the current release scope, and what is
+planned. This page covers structural limitations that are expected to hold
+across releases rather than a version-pinned feature list.
+
+## Not yet shipped
 
 The following features are planned or future scope, not shipped functionality:
 
 - Continuous aggregates.
-- Hyperfunction query expressions.
-- Safer entity-to-database diff improvements.
+- Full entity-to-database diff engine.
 - Validated cross-store references.
 - Complete TimescaleDB feature coverage.
 
