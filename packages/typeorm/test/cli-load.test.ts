@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
-import { loadDataSource, isDataSource, initializeForCli, CliError } from '../src/cli/index.js';
+import {
+  loadDataSource,
+  isDataSource,
+  initializeForCli,
+  classifyLoadError,
+  CliError,
+} from '../src/cli/index.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'tsdb-cli-load-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -45,6 +51,44 @@ describe('loadDataSource', () => {
   it('throws CliError when the module exports no DataSource', async () => {
     const path = writeModule('ds-none.mjs', `export const config = { foo: 1 };`);
     await expect(loadDataSource(path)).rejects.toBeInstanceOf(CliError);
+  });
+});
+
+describe('classifyLoadError', () => {
+  it('gives a TS-loader hint for ERR_UNKNOWN_FILE_EXTENSION', () => {
+    const error = Object.assign(new Error('boom'), { code: 'ERR_UNKNOWN_FILE_EXTENSION' });
+    const cliError = classifyLoadError(error, 'src/data-source.ts');
+    expect(cliError).toBeInstanceOf(CliError);
+    expect(cliError?.message).toContain('no TypeScript loader active');
+  });
+
+  // Node ≥ 22.18 imports .ts files directly (native type stripping) but does not remap
+  // ".js" import specifiers to their sibling ".ts" files, which surfaces as
+  // ERR_MODULE_NOT_FOUND. Verified against real Node behavior (see PR description); this
+  // test only checks classification, since exercising the real import() failure inside
+  // Vitest goes through Vite's own module resolution, not Node's.
+  it("gives a native-type-stripping hint for ERR_MODULE_NOT_FOUND on a '.ts' DataSource", () => {
+    const error = Object.assign(
+      new Error(
+        "Cannot find module '/proj/src/entities/Reading.js' imported from /proj/src/data-source.ts",
+      ),
+      { code: 'ERR_MODULE_NOT_FOUND' },
+    );
+    const cliError = classifyLoadError(error, 'src/data-source.ts');
+    expect(cliError).toBeInstanceOf(CliError);
+    expect(cliError?.message).toContain('native type stripping');
+    expect(cliError?.message).toContain('tsx');
+  });
+
+  it('does not classify ERR_MODULE_NOT_FOUND for a compiled .js DataSource (genuinely missing module)', () => {
+    const error = Object.assign(new Error('Cannot find module'), { code: 'ERR_MODULE_NOT_FOUND' });
+    expect(classifyLoadError(error, 'dist/data-source.js')).toBeUndefined();
+  });
+
+  it('does not classify unrelated errors', () => {
+    expect(
+      classifyLoadError(new Error('some other failure'), 'src/data-source.ts'),
+    ).toBeUndefined();
   });
 });
 
