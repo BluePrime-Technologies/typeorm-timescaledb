@@ -383,7 +383,11 @@ Remove the demo project directory when finished.
 
 ## Next
 
+- Read the [Query layer](query-layer.md) guide to run typed hyperfunction
+  queries and toolkit aggregates against the hypertable you just created.
+- Read the [API reference](api-reference.md) for the full repository and query
+  builder surface.
 - Read the [Migration guide](migration-guide.md) before using this in a real app.
 - Read the [Production guide](production-guide.md) before relying on generated
   migrations in production.
-- Read [Limitations](limitations.md) to understand what is not shipped in 0.1.x.
+- Read [Limitations](limitations.md) to understand what is not yet shipped.
