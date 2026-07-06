@@ -6,6 +6,7 @@ export {
   createHypertableSQL,
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
+  TIMESCALEDB_PRESENCE_SQL,
 } from './sql/index.js';
 export type {
   MigrationStatement,
