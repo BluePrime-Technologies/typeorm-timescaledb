@@ -88,7 +88,7 @@ shows up two different ways:
 
 - Node with no TypeScript support at all reports that it does not understand
   TypeScript syntax (`ERR_UNKNOWN_FILE_EXTENSION`).
-- Node `≥ 22.18` / `23`+, where native type stripping is enabled by default,
+- Node `≥ 22.18` / `≥ 23.6`, where native type stripping is enabled by default,
   _does_ load the `.ts` file directly, but then fails resolving one of its own
   imports:
   ```txt
