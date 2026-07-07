@@ -383,7 +383,10 @@ Remove the demo project directory when finished.
 
 ## Next
 
+- Read the [Query layer guide](query-layer.md) and [API reference](api-reference.md)
+  to query your hypertable with typed time-bucket, gap-fill, and toolkit-aggregate
+  helpers.
 - Read the [Migration guide](migration-guide.md) before using this in a real app.
 - Read the [Production guide](production-guide.md) before relying on generated
   migrations in production.
-- Read [Limitations](limitations.md) to understand what is not shipped in 0.1.x.
+- Read [Limitations](limitations.md) to understand what is not shipped yet.
