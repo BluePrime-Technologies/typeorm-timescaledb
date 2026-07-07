@@ -62,19 +62,20 @@ describe('classifyLoadError', () => {
     expect(cliError?.message).toContain('no TypeScript loader active');
   });
 
-  // Node ≥ 22.18 imports .ts files directly (native type stripping) but does not remap
-  // ".js" import specifiers to their sibling ".ts" files, which surfaces as
+  // Node 22.18+ / 23.6+ imports .ts files directly (native type stripping) but does
+  // not remap ".js" import specifiers to their sibling ".ts" files, which surfaces as
   // ERR_MODULE_NOT_FOUND. Verified against real Node behavior (see PR description); this
   // test only checks classification, since exercising the real import() failure inside
   // Vitest goes through Vite's own module resolution, not Node's.
   it("gives a native-type-stripping hint for ERR_MODULE_NOT_FOUND on a '.ts' DataSource", () => {
+    // The classifier checks that the DataSource file itself exists, so it needs a real
+    // file on disk — the failure being classified is one of its *sibling* imports.
+    const path = writeModule('ds-native-strip.ts', `export default ${DS_LITERAL};`);
     const error = Object.assign(
-      new Error(
-        "Cannot find module '/proj/src/entities/Reading.js' imported from /proj/src/data-source.ts",
-      ),
+      new Error(`Cannot find module '/proj/src/entities/Reading.js' imported from '${path}'`),
       { code: 'ERR_MODULE_NOT_FOUND' },
     );
-    const cliError = classifyLoadError(error, 'src/data-source.ts');
+    const cliError = classifyLoadError(error, path);
     expect(cliError).toBeInstanceOf(CliError);
     expect(cliError?.message).toContain('native type stripping');
     expect(cliError?.message).toContain('tsx');
@@ -83,6 +84,30 @@ describe('classifyLoadError', () => {
   it('does not classify ERR_MODULE_NOT_FOUND for a compiled .js DataSource (genuinely missing module)', () => {
     const error = Object.assign(new Error('Cannot find module'), { code: 'ERR_MODULE_NOT_FOUND' });
     expect(classifyLoadError(error, 'dist/data-source.js')).toBeUndefined();
+  });
+
+  it("reports \"DataSource file not found\" instead of a native-type-stripping hint for a typo'd/missing -d path", () => {
+    // Node throws the same ERR_MODULE_NOT_FOUND when the -d path itself doesn't exist —
+    // that must not be misclassified as a native-type-stripping sibling-import failure.
+    const missingPath = join(dir, 'does-not-exist.ts');
+    const error = Object.assign(new Error(`Cannot find module '${missingPath}'`), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+    const cliError = classifyLoadError(error, missingPath);
+    expect(cliError).toBeInstanceOf(CliError);
+    expect(cliError?.message).toContain('DataSource file not found');
+    expect(cliError?.message).not.toContain('native type stripping');
+  });
+
+  it('does not classify ERR_MODULE_NOT_FOUND from a genuinely missing npm dependency', () => {
+    // The DataSource file exists, but its own ERR_MODULE_NOT_FOUND is for a missing
+    // package (no relative ".js" specifier) — this must rethrow the raw error, not
+    // claim a native-type-stripping remap gap.
+    const path = writeModule('ds-missing-dep.ts', `export default ${DS_LITERAL};`);
+    const error = Object.assign(new Error(`Cannot find package 'pg' imported from '${path}'`), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+    expect(classifyLoadError(error, path)).toBeUndefined();
   });
 
   it('does not classify unrelated errors', () => {
