@@ -344,7 +344,7 @@ JavaScript only after your build emits compiled DataSource and migration files.
 ### `Cannot find module '.../entities/Reading.js'` for `src/data-source.ts`
 
 On Node versions with native type stripping enabled by default (currently `≥
-22.18` and `23`+), running the CLI directly with `node` (no `tsx`) against a
+22.18` and `≥ 23.6`), running the CLI directly with `node` (no `tsx`) against a
 `.ts` DataSource _does_ import the file — but native type stripping does not
 remap `.js`-suffixed import specifiers back to their sibling `.ts` files the way
 `tsx` does, so an import like `./entities/Reading.js` fails to resolve even
