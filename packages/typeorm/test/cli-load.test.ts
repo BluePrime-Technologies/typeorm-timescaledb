@@ -86,7 +86,7 @@ describe('classifyLoadError', () => {
     expect(classifyLoadError(error, 'dist/data-source.js')).toBeUndefined();
   });
 
-  it("reports \"DataSource file not found\" instead of a native-type-stripping hint for a typo'd/missing -d path", () => {
+  it('reports "DataSource file not found" instead of a native-type-stripping hint for a typo\'d/missing -d path', () => {
     // Node throws the same ERR_MODULE_NOT_FOUND when the -d path itself doesn't exist —
     // that must not be misclassified as a native-type-stripping sibling-import failure.
     const missingPath = join(dir, 'does-not-exist.ts');
