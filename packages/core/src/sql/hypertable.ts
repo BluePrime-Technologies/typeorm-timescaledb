@@ -43,7 +43,7 @@ export interface MigrationStatement {
   readonly inspect: string;
 }
 
-interface ParsedTable {
+export interface ParsedTable {
   /** Schema name; defaults to `public` when the table is unqualified. */
   readonly schema: string;
   /** Bare table name. */
@@ -59,7 +59,7 @@ interface ParsedTable {
  * deterministic, so an unqualified name is pinned to the `public` schema rather
  * than left to `search_path`.
  */
-function parseTable(table: string): ParsedTable {
+export function parseTable(table: string): ParsedTable {
   if (typeof table !== 'string' || table.length === 0) {
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,

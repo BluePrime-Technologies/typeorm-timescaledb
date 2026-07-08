@@ -6,12 +6,17 @@ export {
   createHypertableSQL,
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
+  createContinuousAggregateSQL,
+  refreshContinuousAggregateSQL,
 } from './sql/index.js';
 export type {
   MigrationStatement,
   CreateHypertableInput,
   ColumnstorePolicyInput,
   RetentionPolicyInput,
+  CreateContinuousAggregateInput,
+  ContinuousAggregateColumn,
+  ContinuousAggregateFn,
 } from './sql/index.js';
 export {
   timeBucketExpr,

@@ -82,6 +82,8 @@ export type { GeneratedMigration, GenerateMigrationOptions } from './migrations/
 export {
   validateHypertableMetadata,
   parseHypertableOptions,
+  createContinuousAggregateSQL,
+  refreshContinuousAggregateSQL,
   TimescaleError,
   TimescaleErrorCode,
 } from '@blueprime/timescaledb-core';
@@ -95,4 +97,7 @@ export type {
   StatsMethod,
   TimeWeightMethod,
   IntegralUnit,
+  CreateContinuousAggregateInput,
+  ContinuousAggregateColumn,
+  ContinuousAggregateFn,
 } from '@blueprime/timescaledb-core';

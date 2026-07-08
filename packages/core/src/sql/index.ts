@@ -3,6 +3,15 @@ export {
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
 } from './hypertable.js';
+export {
+  createContinuousAggregateSQL,
+  refreshContinuousAggregateSQL,
+} from './continuous-aggregate.js';
+export type {
+  CreateContinuousAggregateInput,
+  ContinuousAggregateColumn,
+  ContinuousAggregateFn,
+} from './continuous-aggregate.js';
 export type {
   MigrationStatement,
   CreateHypertableInput,

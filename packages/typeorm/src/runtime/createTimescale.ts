@@ -1,5 +1,6 @@
 import type { DataSource, EntityTarget, ObjectLiteral, Repository } from 'typeorm';
 import {
+  refreshContinuousAggregateSQL,
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
@@ -173,6 +174,16 @@ export interface TimescaleContext {
    * logs and returns it (`mode: 'warn'`). Returns `[]` when in sync.
    */
   assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]>;
+  /**
+   * Refresh a continuous aggregate over `[start, end)` (both optional → open bound /
+   * full refresh) via `refresh_continuous_aggregate`. Runs **standalone** (this
+   * procedure cannot run inside a transaction block). `view` is the CAGG name,
+   * optionally `schema.view`.
+   */
+  refreshContinuousAggregate(
+    view: string,
+    options?: { readonly start?: Date | string; readonly end?: Date | string },
+  ): Promise<void>;
 }
 
 /**
@@ -292,6 +303,18 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
     },
     assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]> {
       return assertSchema(dataSource, options);
+    },
+    async refreshContinuousAggregate(
+      view: string,
+      options?: { readonly start?: Date | string; readonly end?: Date | string },
+    ): Promise<void> {
+      // Bind start/end positionally only when provided; an omitted bound is NULL (open).
+      const params: unknown[] = [];
+      const startToken = options?.start !== undefined ? `$${params.push(options.start)}` : 'NULL';
+      const endToken = options?.end !== undefined ? `$${params.push(options.end)}` : 'NULL';
+      // Plain query() runs on a pooled connection in autocommit (no BEGIN/COMMIT), which
+      // is required — refresh_continuous_aggregate() cannot run inside a transaction block.
+      await dataSource.query(refreshContinuousAggregateSQL(view, startToken, endToken), params);
     },
   };
 }
