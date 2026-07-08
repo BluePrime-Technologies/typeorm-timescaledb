@@ -13,6 +13,10 @@ import {
   createContinuousAggregateSQL,
   createTimescaleMigration,
   generateTimescaleMigration,
+  ContinuousAggregate,
+  BucketColumn,
+  GroupColumn,
+  AggregateColumn,
 } from '../src/index.js';
 
 type EntityClass = new (...args: never[]) => object;
@@ -40,6 +44,16 @@ const ROWS: Array<[string, string, number]> = [
   ['2024-01-01T01:05:00Z', 's1', 30],
   ['2024-01-01T01:35:00Z', 's1', 50],
 ];
+
+// M2.5b — the decorator-driven CAGG over Reading (a pure metadata class, NOT an @Entity).
+class ReadingHourlyCagg {}
+ContinuousAggregate({ name: 'reading_hourly_cagg', source: Reading, bucket: '1 hour' })(
+  ReadingHourlyCagg,
+);
+BucketColumn()(ReadingHourlyCagg.prototype, 'bucket');
+GroupColumn()(ReadingHourlyCagg.prototype, 'sensor');
+AggregateColumn({ fn: 'avg', column: 'value' })(ReadingHourlyCagg.prototype, 'avg_v');
+AggregateColumn({ fn: 'count' })(ReadingHourlyCagg.prototype, 'n');
 
 async function boot(image: string): Promise<{ container: StartedTestContainer; ds: DataSource }> {
   const container = await new GenericContainer(image)
@@ -182,5 +196,44 @@ describe.skipIf(!IMAGE)('M2.5a continuous aggregates', () => {
       "SELECT view_name FROM timescaledb_information.continuous_aggregates WHERE view_name = 'reading_hourly'",
     )) as unknown[];
     expect(rows).toHaveLength(0);
+  });
+
+  // ---- M2.5b: decorator-driven CAGG through the migration generator ----
+
+  it('generates a CAGG migration from @ContinuousAggregate, runs it, refreshes, queries', async () => {
+    // The generator emits the hypertable (idempotent, already applied in boot) + the CAGG.
+    const gen = generateTimescaleMigration(ds, {
+      timestamp: 1700000000001,
+      continuousAggregates: [ReadingHourlyCagg],
+    });
+    const caggUp = gen.up.filter((s) => s.includes('reading_hourly_cagg'));
+    expect(caggUp).toHaveLength(1);
+    expect(caggUp[0]).toContain('CREATE MATERIALIZED VIEW "public"."reading_hourly_cagg"');
+    expect(gen.down).toContain('DROP MATERIALIZED VIEW IF EXISTS "public"."reading_hourly_cagg";');
+
+    // Run the generated CAGG DDL inside a transaction (the migration model).
+    const qr = ds.createQueryRunner();
+    await qr.startTransaction();
+    try {
+      for (const sql of caggUp) await qr.query(sql);
+      await qr.commitTransaction();
+    } catch (e) {
+      await qr.rollbackTransaction();
+      throw e;
+    } finally {
+      await qr.release();
+    }
+
+    await createTimescale(ds).refreshContinuousAggregate('reading_hourly_cagg');
+    const rows = (await ds.query(
+      'SELECT bucket, sensor, avg_v, n FROM reading_hourly_cagg ORDER BY bucket',
+    )) as Array<{ sensor: string; avg_v: number; n: string }>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.sensor).toBe('s1');
+    expect(Number(rows[0]?.avg_v)).toBeCloseTo(15, 10);
+    expect(Number(rows[0]?.n)).toBe(2);
+    expect(Number(rows[1]?.avg_v)).toBeCloseTo(40, 10);
+
+    await ds.query('DROP MATERIALIZED VIEW IF EXISTS reading_hourly_cagg');
   });
 });

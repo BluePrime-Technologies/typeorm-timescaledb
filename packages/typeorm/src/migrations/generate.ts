@@ -2,13 +2,19 @@ import type { DataSource, MigrationInterface, QueryRunner } from 'typeorm';
 import {
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
+  createContinuousAggregateSQL,
   createHypertableSQL,
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
+  type ContinuousAggregateFn,
   type MigrationStatement,
 } from '@blueprime/timescaledb-core';
-import { getTimescaleMetadata, hasTimescaleMetadata } from '../decorators/index.js';
+import {
+  getContinuousAggregateMeta,
+  getTimescaleMetadata,
+  hasTimescaleMetadata,
+} from '../decorators/index.js';
 
 type Ctor = abstract new (...args: never[]) => unknown;
 
@@ -29,6 +35,13 @@ export interface GenerateMigrationOptions {
   readonly name?: string;
   /** Override the timestamp (for reproducible output / tests). Default `Date.now()`. */
   readonly timestamp?: number;
+  /**
+   * `@ContinuousAggregate` classes to emit CAGG DDL for, after the hypertables. They are
+   * NOT TypeORM entities (a CAGG is a view, not a table), so they can't be discovered
+   * from `entityMetadatas` — pass them explicitly. Each CAGG's `source` must be a
+   * `@Hypertable` entity registered on the DataSource.
+   */
+  readonly continuousAggregates?: ReadonlyArray<Ctor>;
 }
 
 const VALID_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -170,6 +183,103 @@ export function generateTimescaleMigration(
     // Reverse builder order so the most-recently-applied change is undone first.
     for (const s of [...statements].reverse()) down.push(...s.down);
   }
+
+  // Continuous aggregates, after the hypertables (a CAGG needs its source to exist).
+  // Sorted by view name for deterministic output. Their `up` is appended after the
+  // hypertable `up`, and their `down` (DROP MATERIALIZED VIEW) is prepended before the
+  // hypertable `down` — dependents are dropped before what they depend on.
+  const caggUp: string[] = [];
+  const caggDown: string[] = [];
+  const caggs = [...(options.continuousAggregates ?? [])].sort((a, b) => {
+    const av = getContinuousAggregateMeta(a)?.viewName ?? '';
+    const bv = getContinuousAggregateMeta(b)?.viewName ?? '';
+    return av.localeCompare(bv);
+  });
+  for (const caggCtor of caggs) {
+    const meta = getContinuousAggregateMeta(caggCtor);
+    if (!meta) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `${(caggCtor as { name?: string }).name ?? 'class'} was passed as a continuous aggregate but is not decorated with @ContinuousAggregate`,
+      );
+    }
+    const sourceEm = dataSource.entityMetadatas.find((e) => e.target === meta.source);
+    const sourceName = (meta.source as { name?: string }).name ?? 'source';
+    if (!sourceEm) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `@ContinuousAggregate ${meta.viewName}: source ${sourceName} is not a registered entity on this DataSource`,
+        { view: meta.viewName },
+      );
+    }
+    const sourceHt = getTimescaleMetadata(meta.source as Ctor);
+    if (!sourceHt) {
+      throw new TimescaleError(
+        TimescaleErrorCode.NOT_A_HYPERTABLE,
+        `@ContinuousAggregate ${meta.viewName}: source ${sourceEm.tableName} is not a @Hypertable`,
+        { view: meta.viewName, source: sourceEm.tableName },
+      );
+    }
+    // Group/aggregate columns + the time column reference SOURCE columns — resolve
+    // property -> databaseName via the source entity (honours @Column({ name })).
+    const srcDb = new Map<string, string>(
+      (sourceEm.columns ?? []).map((c) => [c.propertyName, c.databaseName]),
+    );
+    const srcToDb = (property: string): string => srcDb.get(property) ?? property;
+
+    const srcTimeProp = meta.timeColumn ?? sourceHt.timeColumn ?? sourceHt.options.timeColumn;
+    if (srcTimeProp === undefined) {
+      throw new TimescaleError(
+        TimescaleErrorCode.NO_TIME_COLUMN,
+        `@ContinuousAggregate ${meta.viewName}: source ${sourceEm.tableName} has no resolvable time column`,
+        { view: meta.viewName },
+      );
+    }
+
+    // Guard: the view's output columns must be mutually distinct, else Postgres
+    // rejects the view with "column specified more than once". Surface it at codegen
+    // with a clear message instead of a raw driver error at migration-run time. The
+    // output names are the bucket alias (verbatim property), each group column
+    // (projected unaliased → its source db name), and each aggregate alias (verbatim
+    // property). See continuous-aggregate.ts for how these become SELECT aliases.
+    const groupOutputs = meta.groupProperties.map(srcToDb);
+    const outputNames = [
+      meta.bucketProperty,
+      ...groupOutputs,
+      ...meta.aggregates.map((a) => a.property),
+    ];
+    const seenOutputs = new Set<string>();
+    for (const name of outputNames) {
+      if (seenOutputs.has(name)) {
+        throw new TimescaleError(
+          TimescaleErrorCode.INVALID_ARGUMENT,
+          `@ContinuousAggregate ${meta.viewName}: duplicate output column "${name}" — the time bucket, group columns, and aggregate columns must all have distinct names`,
+          { view: meta.viewName },
+        );
+      }
+      seenOutputs.add(name);
+    }
+
+    const stmt = createContinuousAggregateSQL({
+      view: meta.viewName,
+      source: sourceEm.schema ? `${sourceEm.schema}.${sourceEm.tableName}` : sourceEm.tableName,
+      timeColumn: srcToDb(srcTimeProp),
+      bucketInterval: meta.bucketInterval,
+      // Output-column names come from the CAGG property names (verbatim).
+      bucketAlias: meta.bucketProperty,
+      ...(meta.materializedOnly !== undefined && { materializedOnly: meta.materializedOnly }),
+      groupBy: groupOutputs,
+      aggregates: meta.aggregates.map((a) => ({
+        fn: a.fn as ContinuousAggregateFn,
+        ...(a.column !== undefined && { column: srcToDb(a.column) }),
+        as: a.property,
+      })),
+    });
+    caggUp.push(...stmt.up);
+    caggDown.push(...stmt.down);
+  }
+  up.push(...caggUp);
+  down.unshift(...caggDown);
 
   return { name: `${base}${timestamp}`, timestamp, up, down };
 }
