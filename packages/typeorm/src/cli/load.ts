@@ -16,13 +16,17 @@ export function isDataSource(value: unknown): value is DataSource {
 }
 
 /**
- * Matches a `.js`-suffixed path inside single quotes in a Node "Cannot find
- * module" message — the signature of a resolved-but-missing sibling import (Node
- * shows the *resolved* absolute path, not the original relative specifier). A
- * genuinely missing npm dependency instead produces "Cannot find package '<name>'"
- * with no filesystem path, so it won't match this.
+ * Node's own wording is the reliable discriminator between the two
+ * `ERR_MODULE_NOT_FOUND` causes: a bare-specifier miss (a genuinely missing npm
+ * dependency) says "Cannot find package '<name>'", while a relative/resolved-path
+ * miss (native type stripping's ".js"->".ts" remap gap) says "Cannot find module
+ * '<path>'". A ".js"-suffixed check alone is not enough — an npm package can
+ * itself be named with a ".js" suffix (`chart.js`, `p5.js`, `fabric.js`, ...), so
+ * "Cannot find package 'chart.js'" would otherwise false-match a ".js"-path regex.
  */
-const MISSING_JS_MODULE_PATH = /'[^']*\.js'/;
+const CANNOT_FIND_MODULE = /^Cannot find module\b/;
+/** Matches a `.js`-suffixed path inside single quotes, e.g. `'/proj/src/x.js'`. */
+const JS_MODULE_PATH = /'[^']*\.js'/;
 
 /**
  * Classify a caught module-import error into an actionable {@link CliError}, or
@@ -48,17 +52,19 @@ export function classifyLoadError(error: unknown, modulePath: string): CliError 
     // wrong (typo'd/missing file) or when the DataSource imports a genuinely
     // missing npm dependency — neither of those is native-type-stripping's ".js"
     // remap gap, and misclassifying them as one sends the user chasing `tsx`
-    // instead of fixing the real problem. Only classify when both are true: the
-    // DataSource file itself exists, and the unresolved specifier is a relative
-    // ".js" import (the signature of the remap gap, not a missing dependency).
+    // instead of fixing the real problem. Only classify when all of these hold:
+    // the DataSource file itself exists, the message is a "Cannot find module"
+    // (relative/resolved-path) miss rather than a "Cannot find package"
+    // (bare-specifier) miss, and the unresolved path is ".js"-suffixed — the
+    // signature of the remap gap.
     if (!existsSync(resolve(modulePath))) {
       return new CliError(
         `DataSource file not found: "${modulePath}" — check the path passed to -d/--dataSource.`,
       );
     }
     const message = (error as Error).message ?? '';
-    if (!MISSING_JS_MODULE_PATH.test(message)) {
-      return undefined; // e.g. a genuinely missing npm dependency — rethrow the raw error
+    if (!CANNOT_FIND_MODULE.test(message) || !JS_MODULE_PATH.test(message)) {
+      return undefined; // e.g. a genuinely missing npm dependency ("Cannot find package ...") — rethrow the raw error
     }
     return new CliError(
       `Cannot import the TypeScript DataSource "${modulePath}" — Node loaded the .ts file directly ` +
