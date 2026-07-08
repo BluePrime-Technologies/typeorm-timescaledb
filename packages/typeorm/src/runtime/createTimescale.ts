@@ -179,6 +179,11 @@ export interface TimescaleContext {
    * full refresh) via `refresh_continuous_aggregate`. Runs **standalone** (this
    * procedure cannot run inside a transaction block). `view` is the CAGG name,
    * optionally `schema.view`.
+   *
+   * Note: it executes on its own pooled connection via `dataSource.query()`, so it is
+   * NOT enrolled in any surrounding `dataSource.transaction(...)` callback — the refresh
+   * commits independently and is not undone if that outer transaction later rolls back
+   * (by necessity: the refresh cannot run inside a transaction). Call it outside a txn.
    */
   refreshContinuousAggregate(
     view: string,
@@ -310,8 +315,8 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
     ): Promise<void> {
       // Bind start/end positionally only when provided; an omitted bound is NULL (open).
       const params: unknown[] = [];
-      const startToken = options?.start !== undefined ? `$${params.push(options.start)}` : 'NULL';
-      const endToken = options?.end !== undefined ? `$${params.push(options.end)}` : 'NULL';
+      const startToken = options?.start != null ? `$${params.push(options.start)}` : 'NULL';
+      const endToken = options?.end != null ? `$${params.push(options.end)}` : 'NULL';
       // Plain query() runs on a pooled connection in autocommit (no BEGIN/COMMIT), which
       // is required — refresh_continuous_aggregate() cannot run inside a transaction block.
       await dataSource.query(refreshContinuousAggregateSQL(view, startToken, endToken), params);

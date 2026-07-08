@@ -43,6 +43,7 @@ export interface MigrationStatement {
   readonly inspect: string;
 }
 
+/** @internal — shared across core SQL builders; not part of the public API surface. */
 export interface ParsedTable {
   /** Schema name; defaults to `public` when the table is unqualified. */
   readonly schema: string;
@@ -59,6 +60,7 @@ export interface ParsedTable {
  * deterministic, so an unqualified name is pinned to the `public` schema rather
  * than left to `search_path`.
  */
+/** @internal — shared across core SQL builders; not part of the public API surface. */
 export function parseTable(table: string): ParsedTable {
   if (typeof table !== 'string' || table.length === 0) {
     throw new TimescaleError(
