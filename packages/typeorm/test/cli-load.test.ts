@@ -110,6 +110,19 @@ describe('classifyLoadError', () => {
     expect(classifyLoadError(error, path)).toBeUndefined();
   });
 
+  it('does not classify a missing npm dependency whose package name itself ends in ".js"', () => {
+    // Regression: "Cannot find package 'chart.js'" matches a bare .js-suffix regex,
+    // so a .js-suffix check alone would wrongly classify this as the native-type-
+    // stripping remap gap. Node's "Cannot find package" (bare specifier) vs "Cannot
+    // find module" (resolved path) wording is what must discriminate the two.
+    const path = writeModule('ds-missing-js-dep.ts', `export default ${DS_LITERAL};`);
+    const error = Object.assign(
+      new Error(`Cannot find package 'chart.js' imported from '${path}'`),
+      { code: 'ERR_MODULE_NOT_FOUND' },
+    );
+    expect(classifyLoadError(error, path)).toBeUndefined();
+  });
+
   it('does not classify unrelated errors', () => {
     expect(
       classifyLoadError(new Error('some other failure'), 'src/data-source.ts'),
