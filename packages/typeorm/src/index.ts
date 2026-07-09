@@ -36,6 +36,8 @@ export type {
   JobStats,
   ListChunksOptions,
   ListJobsOptions,
+  AddJobOptions,
+  AlterJobChanges,
 } from './runtime/info.js';
 
 // Query layer (M2): hyperfunctions via a per-instance QueryBuilder wrapper + typed

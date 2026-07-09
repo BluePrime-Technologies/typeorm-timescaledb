@@ -193,4 +193,65 @@ describe.skipIf(!IMAGE)('M2.6 informational views + jobs', () => {
       code: TimescaleErrorCode.INVALID_ARGUMENT,
     });
   });
+
+  // ---- user-defined action jobs: add / alter / delete ----
+
+  it('addJob registers an action job; alterJob changes fields (config survives an omitted-field alter); deleteJob removes it', async () => {
+    const ts = createTimescale(ds);
+    await ds.query(
+      `CREATE OR REPLACE PROCEDURE noop_action(job_id int, config jsonb) LANGUAGE plpgsql AS $$ BEGIN END $$`,
+    );
+
+    // exercises the config + initialStart + fixedSchedule add_job branches
+    const jobId = await ts.addJob('noop_action', {
+      scheduleInterval: '1 hour',
+      config: { k: 1 },
+      initialStart: '2024-01-01T00:00:00Z',
+      fixedSchedule: true,
+    });
+    expect(jobId).toBeGreaterThan(0);
+    let job = (await ts.listJobs()).find((j) => j.jobId === jobId);
+    expect(job?.procName).toBe('noop_action');
+    expect(job?.config).toMatchObject({ k: 1 });
+
+    // alter only the schedule → config must survive (verified 2.18 + latest)
+    await ts.alterJob(jobId, { scheduleInterval: '30 minutes' });
+    job = (await ts.listJobs()).find((j) => j.jobId === jobId);
+    expect(job?.scheduleInterval).toBe('00:30:00');
+    expect(job?.config).toMatchObject({ k: 1 });
+
+    // config, when set, replaces wholesale
+    await ts.alterJob(jobId, { config: { k: 2 }, scheduled: false });
+    job = (await ts.listJobs()).find((j) => j.jobId === jobId);
+    expect(job?.config).toMatchObject({ k: 2 });
+    expect(job?.scheduled).toBe(false);
+
+    // exercises the max_runtime / max_retries / retry_period alter branches
+    await ts.alterJob(jobId, { maxRuntime: '5 minutes', maxRetries: 3, retryPeriod: '1 minute' });
+    const raw: Array<{ max_retries: unknown }> = await ds.query(
+      'SELECT max_retries FROM timescaledb_information.jobs WHERE job_id = $1',
+      [jobId],
+    );
+    expect(Number(raw[0]?.max_retries)).toBe(3);
+    // a negative maxRetries is rejected client-side
+    await expect(ts.alterJob(jobId, { maxRetries: -1 })).rejects.toMatchObject({
+      code: TimescaleErrorCode.INVALID_ARGUMENT,
+    });
+
+    await ts.deleteJob(jobId);
+    expect((await ts.listJobs()).some((j) => j.jobId === jobId)).toBe(false);
+  });
+
+  it('alterJob with no changes, and addJob with an empty proc name, are rejected', async () => {
+    const ts = createTimescale(ds);
+    await expect(ts.alterJob(1000, {})).rejects.toMatchObject({
+      code: TimescaleErrorCode.INVALID_ARGUMENT,
+    });
+    await expect(ts.addJob('  ', { scheduleInterval: '1 hour' })).rejects.toMatchObject({
+      code: TimescaleErrorCode.INVALID_ARGUMENT,
+    });
+    await expect(ts.deleteJob(0)).rejects.toMatchObject({
+      code: TimescaleErrorCode.INVALID_ARGUMENT,
+    });
+  });
 });

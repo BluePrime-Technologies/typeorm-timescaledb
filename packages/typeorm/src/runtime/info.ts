@@ -254,3 +254,137 @@ export async function runJob(dataSource: DataSource, jobId: number): Promise<voi
   assertJobId(jobId);
   await dataSource.query('CALL run_job($1)', [jobId]);
 }
+
+// ---------------------------------------------------------------------------
+// User-defined action jobs — add_job / alter_job / delete_job
+// ---------------------------------------------------------------------------
+
+export interface AddJobOptions {
+  /** How often the job runs, as an INTERVAL literal (e.g. `'1 hour'`). */
+  readonly scheduleInterval: string;
+  /** Opaque JSONB config passed to the action procedure on each run. */
+  readonly config?: Record<string, unknown>;
+  /** First scheduled run (a fixed-schedule anchor). */
+  readonly initialStart?: Date | string;
+  /** Fixed schedule (align runs to `initialStart`) vs drifting from the last finish. */
+  readonly fixedSchedule?: boolean;
+}
+
+/**
+ * Register a user-defined action job via `add_job(<proc>, <interval>, …)`, returning the
+ * new job id. `proc` is the name of a stored procedure `(job_id int, config jsonb)` that
+ * must already exist (bound as a `regproc` — resolved by PostgreSQL, never interpolated).
+ * An unqualified name is resolved via the session `search_path`; **schema-qualify it**
+ * (`my_schema.my_proc`) to resolve unambiguously. Every value is a bound parameter.
+ *
+ * Runs on a pooled connection (autocommit) — not enrolled in a surrounding
+ * `dataSource.transaction(...)`, so it commits independently.
+ */
+export async function addJob(
+  dataSource: DataSource,
+  proc: string,
+  options: AddJobOptions,
+): Promise<number> {
+  if (typeof proc !== 'string' || proc.trim() === '') {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `addJob requires a procedure name, got ${JSON.stringify(proc)}`,
+      {},
+    );
+  }
+  if (!options.scheduleInterval) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'addJob requires a scheduleInterval',
+      {},
+    );
+  }
+  const args = ['$1::regproc', '$2::interval'];
+  const params: unknown[] = [proc.trim(), options.scheduleInterval];
+  if (options.config !== undefined) {
+    args.push(`config => $${params.push(JSON.stringify(options.config))}::jsonb`);
+  }
+  if (options.initialStart !== undefined) {
+    args.push(`initial_start => $${params.push(options.initialStart)}::timestamptz`);
+  }
+  if (options.fixedSchedule !== undefined) {
+    args.push(`fixed_schedule => $${params.push(options.fixedSchedule)}::boolean`);
+  }
+  const rows: Array<{ job_id: unknown }> = await dataSource.query(
+    `SELECT add_job(${args.join(', ')}) AS job_id`,
+    params,
+  );
+  const id = rows[0]?.job_id;
+  if (id == null) {
+    throw new TimescaleError(TimescaleErrorCode.INVALID_ARGUMENT, 'add_job returned no job id', {});
+  }
+  return toCount(id);
+}
+
+export interface AlterJobChanges {
+  /** New run interval (INTERVAL literal). */
+  readonly scheduleInterval?: string;
+  /**
+   * New JSONB config. NOTE: this **replaces** the job's entire config — it is not merged,
+   * so pass the complete object. Omitting it leaves the existing config unchanged.
+   */
+  readonly config?: Record<string, unknown>;
+  /** Enable/disable scheduling. */
+  readonly scheduled?: boolean;
+  /** Max runtime before the job is cancelled (INTERVAL literal). */
+  readonly maxRuntime?: string;
+  /** Retry count on failure. */
+  readonly maxRetries?: number;
+  /** Delay between retries (INTERVAL literal). */
+  readonly retryPeriod?: string;
+}
+
+/**
+ * Change an existing job via `alter_job(<id>, …)`. Only the fields you set are sent; any
+ * omitted field is left unchanged (verified on TimescaleDB 2.18 + latest). Throws if no
+ * change is given. `config`, when set, replaces the whole config (see {@link AlterJobChanges}).
+ * Runs on a pooled connection (autocommit) — not enrolled in a surrounding transaction.
+ */
+export async function alterJob(
+  dataSource: DataSource,
+  jobId: number,
+  changes: AlterJobChanges,
+): Promise<void> {
+  assertJobId(jobId);
+  if (
+    changes.maxRetries !== undefined &&
+    (!Number.isSafeInteger(changes.maxRetries) || changes.maxRetries < 0)
+  ) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `maxRetries must be a non-negative integer, got ${JSON.stringify(changes.maxRetries)}`,
+      { jobId },
+    );
+  }
+  const args = ['$1'];
+  const params: unknown[] = [jobId];
+  const set = (name: string, value: unknown, cast = ''): void => {
+    args.push(`${name} => $${params.push(value)}${cast}`);
+  };
+  if (changes.scheduleInterval !== undefined)
+    set('schedule_interval', changes.scheduleInterval, '::interval');
+  if (changes.config !== undefined) set('config', JSON.stringify(changes.config), '::jsonb');
+  if (changes.scheduled !== undefined) set('scheduled', changes.scheduled, '::boolean');
+  if (changes.maxRuntime !== undefined) set('max_runtime', changes.maxRuntime, '::interval');
+  if (changes.maxRetries !== undefined) set('max_retries', changes.maxRetries, '::integer');
+  if (changes.retryPeriod !== undefined) set('retry_period', changes.retryPeriod, '::interval');
+  if (args.length === 1) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'alterJob requires at least one change',
+      { jobId },
+    );
+  }
+  await dataSource.query(`SELECT alter_job(${args.join(', ')})`, params);
+}
+
+/** Delete a job via `delete_job(<id>)`. Runs autocommit (not in a surrounding transaction). */
+export async function deleteJob(dataSource: DataSource, jobId: number): Promise<void> {
+  assertJobId(jobId);
+  await dataSource.query('SELECT delete_job($1)', [jobId]);
+}
