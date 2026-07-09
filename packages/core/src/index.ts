@@ -68,6 +68,10 @@ export {
   heartbeatLiveAtExpr,
   heartbeatLiveRangesExpr,
   heartbeatDeadRangesExpr,
+  lttbExpr,
+  asapSmoothExpr,
+  tdigestExpr,
+  tdigestAccessorExpr,
 } from './sql/index.js';
 export type {
   CandlestickAccessor,
@@ -75,14 +79,21 @@ export type {
   Stats1DAccessor,
   Stats2DAccessor,
   PercentileSketchAccessor,
+  TDigestAccessor,
   CounterAccessor,
   TimeWeightMethod,
   TimeWeightAccessor,
   IntegralUnit,
   HeartbeatAccessor,
 } from './sql/index.js';
-export { compareHypertable, formatDrift } from './drift.js';
-export type { ExpectedHypertable, ActualHypertable, DriftItem } from './drift.js';
+export { compareHypertable, compareContinuousAggregate, formatDrift } from './drift.js';
+export type {
+  ExpectedHypertable,
+  ActualHypertable,
+  DriftItem,
+  ExpectedContinuousAggregate,
+  ActualContinuousAggregate,
+} from './drift.js';
 export {
   parseHypertableOptions,
   validateHypertableMetadata,

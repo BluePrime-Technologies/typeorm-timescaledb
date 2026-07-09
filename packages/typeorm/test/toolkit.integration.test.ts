@@ -374,6 +374,60 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
     });
   });
 
+  // ---- T-Digest percentiles (#83) ----
+
+  it('getTDigestPercentiles estimates percentiles + mean/min/max/count', async () => {
+    // x = [1,2,3,4,5] → p50≈3, min 1, max 5, mean 3, n 5.
+    const repo = createTimescale(ds).getRepository(Reading);
+    const t = await repo.getTDigestPercentiles({ valueColumn: 'x', percentiles: [0.5, 0.9] });
+    expect(t).not.toBeNull();
+    expect(t?.numVals).toBe(5);
+    expect(t?.min).toBeCloseTo(1, 6);
+    expect(t?.max).toBeCloseTo(5, 6);
+    expect(t?.mean).toBeCloseTo(3, 6);
+    expect(t?.percentiles[0]).toBeCloseTo(3, 0); // p50 of [1..5] ≈ 3 (loose: tdigest is approximate)
+    expect(t?.percentiles[1]).toBeGreaterThan(t!.percentiles[0]!);
+  });
+
+  it('getTDigestPercentileRanks estimates ranks and honours buckets + range', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    const ranks = await repo.getTDigestPercentileRanks({
+      valueColumn: 'x',
+      values: [3],
+      buckets: 200,
+    });
+    expect(ranks).not.toBeNull();
+    expect(ranks![0]).toBeGreaterThan(0.3);
+    expect(ranks![0]).toBeLessThan(0.7);
+    // buckets AND a matching range on the same call — exercises the :__buckets + range
+    // parameter ordering together (the one placeholder-sensitive combination).
+    const withBoth = await repo.getTDigestPercentiles({
+      valueColumn: 'x',
+      percentiles: [0.5],
+      buckets: 200,
+      range: { from: '2024-02-01T00:00:00Z', to: '2024-02-02T00:00:00Z' },
+    });
+    expect(withBoth).not.toBeNull();
+    expect(withBoth?.numVals).toBe(5);
+    // a range that matches no rows → null
+    const empty = await repo.getTDigestPercentiles({
+      valueColumn: 'x',
+      percentiles: [0.5],
+      range: { from: '2099-01-01T00:00:00Z', to: '2099-01-02T00:00:00Z' },
+    });
+    expect(empty).toBeNull();
+  });
+
+  it('getTDigestPercentiles rejects an empty percentile list and a bad buckets value', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    await expect(
+      repo.getTDigestPercentiles({ valueColumn: 'x', percentiles: [] }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.INVALID_ARGUMENT });
+    await expect(
+      repo.getTDigestPercentiles({ valueColumn: 'x', percentiles: [0.5], buckets: 0 }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.INVALID_ARGUMENT });
+  });
+
   // ---- M2.3b: counter_agg / time_weight ----
 
   it('getCounterAgg returns exact delta/rate/resets for a counter with one reset', async () => {
@@ -591,6 +645,82 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
       }),
     ).toBeNull();
   });
+
+  // ---- M2.4: downsampling (lttb + asap_smooth) ----
+
+  it('downsampleLTTB returns exactly `resolution` points, keeping the endpoints', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    const pts = await repo.downsampleLTTB({ valueColumn: 'price', resolution: 5 });
+    // LTTB returns exactly `resolution` points when resolution <= n (Trade has 7 rows).
+    expect(pts).toHaveLength(5);
+    // endpoints are preserved and rows are time-ascending
+    expect(pts[0]?.time).toBeInstanceOf(Date);
+    expect(pts[0]?.time.toISOString()).toBe('2024-01-01T00:05:00.000Z');
+    expect(pts[pts.length - 1]?.time.toISOString()).toBe('2024-01-01T01:50:00.000Z');
+    for (let i = 1; i < pts.length; i++) {
+      expect(pts[i]!.time.getTime()).toBeGreaterThan(pts[i - 1]!.time.getTime());
+      expect(Number.isFinite(pts[i]!.value)).toBe(true);
+    }
+  });
+
+  it('downsampleLTTB honours a range filter', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    const pts = await repo.downsampleLTTB({
+      valueColumn: 'price',
+      resolution: 3,
+      range: { from: '2024-01-01T01:00:00Z', to: '2024-01-01T02:00:00Z' },
+    });
+    expect(pts.length).toBeGreaterThanOrEqual(2);
+    for (const p of pts) {
+      const t = p.time.getTime();
+      expect(t).toBeGreaterThanOrEqual(new Date('2024-01-01T01:00:00Z').getTime());
+      expect(t).toBeLessThan(new Date('2024-01-01T02:00:00Z').getTime());
+    }
+  });
+
+  it('downsampleASAP returns smoothed points with finite values', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    const pts = await repo.downsampleASAP({ valueColumn: 'price', resolution: 4 });
+    expect(pts.length).toBeGreaterThanOrEqual(2);
+    for (const p of pts) {
+      expect(p.time).toBeInstanceOf(Date);
+      expect(Number.isFinite(p.value)).toBe(true);
+    }
+  });
+
+  it('downsampleLTTB with resolution greater than the row count returns all rows', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    const pts = await repo.downsampleLTTB({ valueColumn: 'price', resolution: 100 });
+    // Trade has 7 rows; LTTB cannot invent points, so it returns at most that many.
+    expect(pts.length).toBeGreaterThanOrEqual(2);
+    expect(pts.length).toBeLessThanOrEqual(7);
+  });
+
+  it('downsampleLTTB at the resolution floor of 3 keeps the endpoints', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    const pts = await repo.downsampleLTTB({ valueColumn: 'price', resolution: 3 });
+    expect(pts).toHaveLength(3);
+    expect(pts[0]?.time.toISOString()).toBe('2024-01-01T00:05:00.000Z');
+    expect(pts[2]?.time.toISOString()).toBe('2024-01-01T01:50:00.000Z');
+  });
+
+  it('downsampleLTTB returns [] for a range that matches no rows', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    const pts = await repo.downsampleLTTB({
+      valueColumn: 'price',
+      resolution: 5,
+      range: { from: '2099-01-01T00:00:00Z', to: '2099-01-02T00:00:00Z' },
+    });
+    expect(pts).toEqual([]);
+  });
+
+  it('downsampleLTTB rejects a resolution below the floor of 3 (client-side)', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    // 2 is below the toolkit's lttb floor — rejected client-side, not as a driver error.
+    await expect(
+      repo.downsampleLTTB({ valueColumn: 'price', resolution: 2 }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.INVALID_ARGUMENT });
+  });
 });
 
 describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', () => {
@@ -627,6 +757,13 @@ describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', ()
     });
   });
 
+  it('downsampleLTTB throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    await expect(
+      repo.downsampleLTTB({ valueColumn: 'price', resolution: 5 }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.TOOLKIT_MISSING });
+  });
+
   it('getRegression throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
     const repo = createTimescale(ds).getRepository(Reading);
     await expect(repo.getRegression({ yColumn: 'y', xColumn: 'x' })).rejects.toMatchObject({
@@ -638,6 +775,13 @@ describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', ()
     const repo = createTimescale(ds).getRepository(Reading);
     await expect(
       repo.getPercentiles({ valueColumn: 'x', percentiles: [0.5] }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.TOOLKIT_MISSING });
+  });
+
+  it('getTDigestPercentiles throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    await expect(
+      repo.getTDigestPercentiles({ valueColumn: 'x', percentiles: [0.5] }),
     ).rejects.toMatchObject({ code: TimescaleErrorCode.TOOLKIT_MISSING });
   });
 

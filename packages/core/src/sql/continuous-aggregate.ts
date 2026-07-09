@@ -116,7 +116,13 @@ export function createContinuousAggregateSQL(
     ...groupCols,
     ...input.aggregates.map(aggregateSelectItem),
   ];
-  const groupByItems = [quoteIdent(bucketAlias), ...groupCols];
+  // GROUP BY the time_bucket EXPRESSION, not the output alias. For a hierarchical CAGG the
+  // bucket alias can equal a source column name (e.g. parent buckets a child's "bucket"
+  // column and re-aliases the result "bucket"); Postgres then resolves an ambiguous GROUP BY
+  // name to the *input* column, dropping the time_bucket from the GROUP BY and tripping
+  // TimescaleDB's "must include a valid time bucket function". Grouping by the expression is
+  // unambiguous and equivalent for flat CAGGs.
+  const groupByItems = [bucketExpr, ...groupCols];
 
   const up = [
     `CREATE MATERIALIZED VIEW ${view.ident} ` +

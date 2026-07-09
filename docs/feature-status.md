@@ -87,19 +87,32 @@ ranges over shorthand wording.
 
 The following items are product direction, not shipped functionality:
 
-- Continuous aggregates — hierarchical CAGGs (CAGG-on-CAGG / `@RollupColumn`) and drift
-  detection for CAGGs are still planned. (The `createContinuousAggregateSQL` SQL builder,
-  the `refreshContinuousAggregate()` runtime refresh, the `@ContinuousAggregate` /
+- Continuous aggregates — only the `@RollupColumn` ergonomic sugar (and an avg-rollup
+  helper) is still planned. (The `createContinuousAggregateSQL` SQL builder, the
+  `refreshContinuousAggregate()` runtime refresh, the `@ContinuousAggregate` /
   `@BucketColumn` / `@GroupColumn` / `@AggregateColumn` decorators with migration codegen,
-  AND automatic refresh policies — `add_continuous_aggregate_policy` via the
-  `@ContinuousAggregate({ refresh })` option / `addContinuousAggregatePolicySQL` — are
-  implemented on `main` but are not yet part of a published release; do not describe them
-  as shipped until released.)
+  automatic refresh policies — `add_continuous_aggregate_policy` via the
+  `@ContinuousAggregate({ refresh })` option / `addContinuousAggregatePolicySQL` —
+  hierarchical CAGGs (a `@ContinuousAggregate` whose `source` is another CAGG, with
+  topological create/drop ordering), AND `assertSchema()` drift detection for CAGGs and
+  their refresh policies are implemented on `main`/`develop` but are not yet part of a
+  published release; do not describe them as shipped until released.)
+- Downsampling — `repo.downsampleLTTB()` and `repo.downsampleASAP()` (toolkit `lttb` /
+  `asap_smooth`, returning typed `{ time, value }[]`) are implemented on `develop` but are
+  not yet part of a published release; do not describe them as shipped until released.
+- Informational views + jobs — typed read accessors over `timescaledb_information.*`
+  (`listHypertables` / `listChunks` / `listContinuousAggregates` / `listJobs` / `getJobStats`)
+  and `runJob()` are implemented on `develop` but not yet released. The user-defined action
+  jobs API (`add_job` / `alter_job`, with the `alter_job` wholesale-config-replace trap) is
+  still planned.
 - `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
   constructs.
-- Stable Toolkit aggregates not listed in the 0.3.0 release scope, including
-  T-Digest helpers.
+- T-Digest percentiles — `repo.getTDigestPercentiles()` / `getTDigestPercentileRanks()`
+  (toolkit `tdigest` + `approx_percentile`/`approx_percentile_rank`, with mean/min/max/count)
+  are implemented on `develop` but not yet released; do not describe them as shipped until
+  released.
+- Other stable Toolkit aggregates not listed in the 0.3.0 release scope or above.
 - Full entity-to-database diff engine.
 - Validated cross-store references.
 - Complete coverage of every TimescaleDB feature.

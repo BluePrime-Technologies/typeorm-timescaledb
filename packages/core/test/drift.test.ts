@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   compareHypertable,
+  compareContinuousAggregate,
   formatDrift,
   type ActualHypertable,
   type ExpectedHypertable,
+  type ActualContinuousAggregate,
+  type ExpectedContinuousAggregate,
 } from '../src/index.js';
 
 const expected: ExpectedHypertable = {
@@ -84,5 +87,70 @@ describe('formatDrift', () => {
     expect(out).toContain('schema drift detected:');
     expect(out).toContain('  - public.metrics: retention policy is missing');
     expect(out).toContain('  - public.events: is not one');
+  });
+});
+
+describe('compareContinuousAggregate', () => {
+  const base: ExpectedContinuousAggregate = {
+    view: 'public.reading_hourly',
+    materializedOnly: false,
+    expectRefreshPolicy: true,
+  };
+  const inSync: ActualContinuousAggregate = {
+    exists: true,
+    materializedOnly: false,
+    hasRefreshPolicy: true,
+  };
+
+  it('returns no drift when the CAGG matches', () => {
+    expect(compareContinuousAggregate(base, inSync)).toEqual([]);
+  });
+
+  it('returns no drift when both sides are materialized_only', () => {
+    expect(
+      compareContinuousAggregate(
+        { ...base, materializedOnly: true },
+        { ...inSync, materializedOnly: true },
+      ),
+    ).toEqual([]);
+  });
+
+  it('flags a missing continuous aggregate (and skips further checks)', () => {
+    const drift = compareContinuousAggregate(base, {
+      exists: false,
+      materializedOnly: false,
+      hasRefreshPolicy: false,
+    });
+    expect(drift).toHaveLength(1);
+    expect(drift[0]?.message).toContain('does not exist');
+  });
+
+  it('flags a materialized_only mismatch', () => {
+    const drift = compareContinuousAggregate(base, { ...inSync, materializedOnly: true });
+    expect(drift).toHaveLength(1);
+    expect(drift[0]?.message).toContain('materialized_only mismatch (expected false, found true)');
+  });
+
+  it('flags a missing refresh policy only when one is expected', () => {
+    expect(compareContinuousAggregate(base, { ...inSync, hasRefreshPolicy: false })).toEqual([
+      { table: 'public.reading_hourly', message: 'refresh policy is missing' },
+    ]);
+    // not expected → absent policy is not drift
+    expect(
+      compareContinuousAggregate(
+        { ...base, expectRefreshPolicy: false },
+        { ...inSync, hasRefreshPolicy: false },
+      ),
+    ).toEqual([]);
+  });
+
+  it('reports multiple drifts at once (mismatch + missing policy)', () => {
+    const drift = compareContinuousAggregate(base, {
+      exists: true,
+      materializedOnly: true,
+      hasRefreshPolicy: false,
+    });
+    expect(drift).toHaveLength(2);
+    expect(formatDrift(drift)).toContain('public.reading_hourly');
   });
 });
