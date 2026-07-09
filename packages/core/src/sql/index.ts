@@ -68,6 +68,8 @@ export {
   heartbeatLiveAtExpr,
   heartbeatLiveRangesExpr,
   heartbeatDeadRangesExpr,
+  lttbExpr,
+  asapSmoothExpr,
 } from './toolkit.js';
 export type {
   CandlestickAccessor,

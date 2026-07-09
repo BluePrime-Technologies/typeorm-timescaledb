@@ -43,6 +43,8 @@ export type { StandardAggregate } from './query/aggregate.js';
 export { assertToolkit } from './query/toolkit.js';
 export type {
   Candle,
+  DownsampleOptions,
+  DownsampledPoint,
   GetCandlesticksOptions,
   ApproxCountDistinctOptions,
   TimeRange,

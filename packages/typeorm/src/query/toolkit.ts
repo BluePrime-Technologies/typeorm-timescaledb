@@ -3,6 +3,7 @@ import {
   approxCountDistinctAggExpr,
   approxPercentileExpr,
   approxPercentileRankExpr,
+  asapSmoothExpr,
   candlestickAccessorExpr,
   candlestickAggExpr,
   counterAccessorExpr,
@@ -13,6 +14,7 @@ import {
   heartbeatDeadRangesExpr,
   heartbeatLiveAtExpr,
   heartbeatLiveRangesExpr,
+  lttbExpr,
   mcvAggExpr,
   mcvIntoValuesExpr,
   mcvTopNExpr,
@@ -1117,4 +1119,103 @@ export async function isLiveAt<T extends ObjectLiteral>(
   const rows = (await repo.query(sql, [...params, options.at])) as Array<Record<string, unknown>>;
   const v = rows[0]?.live;
   return v === null || v === undefined ? null : Boolean(v);
+}
+
+// ---------------------------------------------------------------------------
+// Downsampling — LTTB + ASAP (timescaledb_toolkit)
+// ---------------------------------------------------------------------------
+
+/** One downsampled `(time, value)` point. */
+export interface DownsampledPoint {
+  readonly time: Date;
+  readonly value: number;
+}
+
+export interface DownsampleOptions {
+  /** Value **property** name to downsample. */
+  readonly valueColumn: string;
+  /** Target number of output points (must be an integer ≥ 3, the toolkit's `lttb` floor). */
+  readonly resolution: number;
+  /** Time **property** name; defaults to the entity's `@TimeColumn`. */
+  readonly timeColumn?: string;
+  /** Inclusive-from / exclusive-to time bounds (bound as parameters). */
+  readonly range?: TimeRange;
+}
+
+/** Shared engine for the two downsamplers — only the aggregate builder differs. */
+async function downsample<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  aggExpr: (timeColumn: string, valueColumn: string, resolutionToken: string) => string,
+  options: DownsampleOptions,
+): Promise<DownsampledPoint[]> {
+  await assertToolkit(repo.manager.connection);
+
+  // Floor is 3: the toolkit's lttb rejects resolution <= 2 ("must be greater than 2");
+  // validate client-side for a clear error instead of a raw driver fault. Upper bound
+  // guards against an accidental huge value OOMing the toolkit C code.
+  // (Number.isSafeInteger already rejects decimals, NaN, and ±Infinity.)
+  const MIN_RESOLUTION = 3;
+  const MAX_RESOLUTION = 1_000_000;
+  if (
+    !Number.isSafeInteger(options.resolution) ||
+    options.resolution < MIN_RESOLUTION ||
+    options.resolution > MAX_RESOLUTION
+  ) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `resolution must be an integer between ${MIN_RESOLUTION} and ${MAX_RESOLUTION}, got ${JSON.stringify(options.resolution)}`,
+      { resolution: options.resolution },
+    );
+  }
+
+  const resolve = columnResolver(repo);
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
+  const valueColumn = resolve(options.valueColumn);
+
+  // The aggregate returns a single timevector; unnest() expands it into (time, value)
+  // rows. Build the aggregate (with the resolution bound as :__resolution) + optional
+  // range filter in an inner query, then unnest its scalar result in the outer query.
+  const inner = repo
+    .createQueryBuilder('e')
+    .select(aggExpr(timeColumn, valueColumn, ':__resolution'), 'tv')
+    .setParameter('__resolution', options.resolution);
+  applyTimeRange(inner, timeColumn, options.range);
+  const [innerSql, params] = inner.getQueryAndParameters();
+
+  // An empty range makes the aggregate NULL; `unnest(NULL)` yields zero rows (verified on
+  // the toolkit image), so an empty series returns []. The `IS NOT NULL` guard is defence
+  // in depth in case a toolkit version emits a NULL-filled row instead.
+  const outerSql =
+    `SELECT (u).time AS "time", (u).value AS "value" ` +
+    `FROM unnest((${innerSql})) AS u WHERE (u).time IS NOT NULL ORDER BY (u).time ASC`;
+  const rows = (await repo.query(outerSql, params)) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    time: toDate(r.time, 'time'),
+    value: toNumber(r.value, 'value'),
+  }));
+}
+
+/**
+ * Largest-Triangle-Three-Buckets downsample — picks `resolution` points that best
+ * preserve the visual shape of the series. Requires `timescaledb_toolkit`.
+ */
+export function downsampleLTTB<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: DownsampleOptions,
+): Promise<DownsampledPoint[]> {
+  return downsample(repo, defaultTimeColumn, lttbExpr, options);
+}
+
+/**
+ * ASAP-smoothing downsample — smooths the series to `resolution` points to minimise
+ * visual noise while preserving large-scale trends. Requires `timescaledb_toolkit`.
+ */
+export function downsampleASAP<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: DownsampleOptions,
+): Promise<DownsampledPoint[]> {
+  return downsample(repo, defaultTimeColumn, asapSmoothExpr, options);
 }

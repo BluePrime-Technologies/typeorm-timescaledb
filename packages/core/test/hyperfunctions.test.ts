@@ -11,6 +11,8 @@ import {
   candlestickAccessorExpr,
   approxCountDistinctAggExpr,
   distinctCountExpr,
+  lttbExpr,
+  asapSmoothExpr,
   statsAgg1DExpr,
   statsAgg2DExpr,
   statsAccessor1DExpr,
@@ -225,6 +227,15 @@ describe('locf / interpolate', () => {
 describe('toolkit builders', () => {
   it('candlestickAggExpr quotes all three columns', () => {
     expect(candlestickAggExpr('ts', 'price', 'vol')).toBe('candlestick_agg("ts", "price", "vol")');
+  });
+  it('lttbExpr / asapSmoothExpr quote columns and bind the resolution', () => {
+    expect(lttbExpr('ts', 'val', ':__resolution')).toBe('lttb("ts", "val", :__resolution)');
+    expect(asapSmoothExpr('ts', 'val', '$1')).toBe('asap_smooth("ts", "val", $1)');
+  });
+  it('lttbExpr / asapSmoothExpr reject unsafe columns and bad bind tokens', () => {
+    expect(() => lttbExpr('ts);--', 'val', ':r')).toThrowError(TimescaleError);
+    expect(() => asapSmoothExpr('ts', 'val);--', ':r')).toThrowError(TimescaleError);
+    expect(() => lttbExpr('ts', 'val', '10')).toThrowError(TimescaleError); // raw int, not a placeholder
   });
   it('candlestickAggExpr rejects an unsafe column', () => {
     expect(() => candlestickAggExpr('ts);--', 'price', 'vol')).toThrowError(TimescaleError);

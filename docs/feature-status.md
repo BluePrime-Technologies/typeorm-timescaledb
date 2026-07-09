@@ -97,6 +97,9 @@ The following items are product direction, not shipped functionality:
   topological create/drop ordering), AND `assertSchema()` drift detection for CAGGs and
   their refresh policies are implemented on `main`/`develop` but are not yet part of a
   published release; do not describe them as shipped until released.)
+- Downsampling — `repo.downsampleLTTB()` and `repo.downsampleASAP()` (toolkit `lttb` /
+  `asap_smooth`, returning typed `{ time, value }[]`) are implemented on `develop` but are
+  not yet part of a published release; do not describe them as shipped until released.
 - `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
   constructs.

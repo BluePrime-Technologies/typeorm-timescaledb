@@ -15,6 +15,8 @@ import {
 } from '../query/getTimeBucket.js';
 import {
   approxCountDistinct,
+  downsampleASAP,
+  downsampleLTTB,
   getCandlesticks,
   getCounterAgg,
   getPercentileRanks,
@@ -35,6 +37,8 @@ import {
   type ApproxCountDistinctOptions,
   type Candle,
   type CounterSummary,
+  type DownsampleOptions,
+  type DownsampledPoint,
   type GetCandlesticksOptions,
   type GetCounterAggOptions,
   type GetPercentileRanksOptions,
@@ -161,6 +165,16 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * are no heartbeats in the window. Requires `timescaledb_toolkit`.
    */
   isLiveAt(options: IsLiveAtOptions): Promise<boolean | null>;
+  /**
+   * Largest-Triangle-Three-Buckets downsample (`lttb`) — `resolution` points that best
+   * preserve the series' visual shape. Requires `timescaledb_toolkit`.
+   */
+  downsampleLTTB(options: DownsampleOptions): Promise<DownsampledPoint[]>;
+  /**
+   * ASAP-smoothing downsample (`asap_smooth`) to `resolution` points. Requires
+   * `timescaledb_toolkit`.
+   */
+  downsampleASAP(options: DownsampleOptions): Promise<DownsampledPoint[]>;
 }
 
 /** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
@@ -303,6 +317,12 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         },
         isLiveAt(options: IsLiveAtOptions): Promise<boolean | null> {
           return isLiveAt(repo, timeColumn, options);
+        },
+        downsampleLTTB(options: DownsampleOptions): Promise<DownsampledPoint[]> {
+          return downsampleLTTB(repo, timeColumn, options);
+        },
+        downsampleASAP(options: DownsampleOptions): Promise<DownsampledPoint[]> {
+          return downsampleASAP(repo, timeColumn, options);
         },
       });
     },
