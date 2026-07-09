@@ -65,6 +65,21 @@ import {
   type TimeWeight,
 } from '../query/toolkit.js';
 import { assertSchema, type AssertSchemaOptions } from './assertSchema.js';
+import {
+  listHypertables,
+  listChunks,
+  listContinuousAggregates,
+  listJobs,
+  getJobStats,
+  runJob,
+  type HypertableInfo,
+  type ChunkInfo,
+  type ContinuousAggregateInfo,
+  type JobInfo,
+  type JobStats,
+  type ListChunksOptions,
+  type ListJobsOptions,
+} from './info.js';
 
 /** A TypeORM repository augmented (per instance) with its validated hypertable metadata. */
 export interface TimescaleRepository<T extends ObjectLiteral> extends Repository<T> {
@@ -203,6 +218,21 @@ export interface TimescaleContext {
     view: string,
     options?: { readonly start?: Date | string; readonly end?: Date | string },
   ): Promise<void>;
+  /** All hypertables on this database (`timescaledb_information.hypertables`). */
+  listHypertables(): Promise<HypertableInfo[]>;
+  /** Chunks, optionally filtered to one hypertable (`timescaledb_information.chunks`). */
+  listChunks(options?: ListChunksOptions): Promise<ChunkInfo[]>;
+  /** All continuous aggregates (`timescaledb_information.continuous_aggregates`). */
+  listContinuousAggregates(): Promise<ContinuousAggregateInfo[]>;
+  /** Background jobs, optionally filtered to one hypertable (`timescaledb_information.jobs`). */
+  listJobs(options?: ListJobsOptions): Promise<JobInfo[]>;
+  /** One job's execution stats (`timescaledb_information.job_stats`), or `null` if unknown. */
+  getJobStats(jobId: number): Promise<JobStats | null>;
+  /**
+   * Run a background job now via `run_job(<id>)`. Executes standalone (a job's action may
+   * not run inside a transaction), so it is not enrolled in a surrounding transaction.
+   */
+  runJob(jobId: number): Promise<void>;
 }
 
 /**
@@ -340,6 +370,24 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
       // Plain query() runs on a pooled connection in autocommit (no BEGIN/COMMIT), which
       // is required — refresh_continuous_aggregate() cannot run inside a transaction block.
       await dataSource.query(refreshContinuousAggregateSQL(view, startToken, endToken), params);
+    },
+    listHypertables(): Promise<HypertableInfo[]> {
+      return listHypertables(dataSource);
+    },
+    listChunks(options?: ListChunksOptions): Promise<ChunkInfo[]> {
+      return listChunks(dataSource, options);
+    },
+    listContinuousAggregates(): Promise<ContinuousAggregateInfo[]> {
+      return listContinuousAggregates(dataSource);
+    },
+    listJobs(options?: ListJobsOptions): Promise<JobInfo[]> {
+      return listJobs(dataSource, options);
+    },
+    getJobStats(jobId: number): Promise<JobStats | null> {
+      return getJobStats(dataSource, jobId);
+    },
+    runJob(jobId: number): Promise<void> {
+      return runJob(dataSource, jobId);
     },
   };
 }
