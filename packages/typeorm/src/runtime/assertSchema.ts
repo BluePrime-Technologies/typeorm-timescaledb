@@ -1,15 +1,22 @@
 import type { DataSource } from 'typeorm';
 import {
   compareHypertable,
+  compareContinuousAggregate,
   formatDrift,
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
   type ActualHypertable,
+  type ActualContinuousAggregate,
   type DriftItem,
   type ExpectedHypertable,
+  type ExpectedContinuousAggregate,
 } from '@blueprime/timescaledb-core';
-import { getTimescaleMetadata, hasTimescaleMetadata } from '../decorators/index.js';
+import {
+  getTimescaleMetadata,
+  hasTimescaleMetadata,
+  getContinuousAggregateMeta,
+} from '../decorators/index.js';
 
 type Ctor = abstract new (...args: never[]) => unknown;
 
@@ -23,6 +30,55 @@ export interface AssertSchemaOptions {
   readonly mode?: 'assert' | 'warn';
   /** Sink for `'warn'` mode. Defaults to `console.warn`. */
   readonly logger?: (message: string) => void;
+  /**
+   * `@ContinuousAggregate` classes to also check for drift. CAGGs are not TypeORM
+   * entities, so — like `generateTimescaleMigration` — they are passed explicitly.
+   */
+  readonly continuousAggregates?: ReadonlyArray<Ctor>;
+}
+
+/** Split an optionally schema-qualified view name into `{ schema, view }` (defaults to `public`). */
+function splitView(name: string): { schema: string; view: string } {
+  const dot = name.indexOf('.');
+  return dot === -1
+    ? { schema: 'public', view: name }
+    : { schema: name.slice(0, dot), view: name.slice(dot + 1) };
+}
+
+/** Read the live state of one continuous aggregate from `timescaledb_information.*`. */
+async function readActualCagg(
+  dataSource: DataSource,
+  schema: string,
+  view: string,
+): Promise<ActualContinuousAggregate> {
+  const rows: Array<{ materialized_only: unknown }> = await dataSource.query(
+    `SELECT materialized_only FROM timescaledb_information.continuous_aggregates
+       WHERE view_schema = $1 AND view_name = $2`,
+    [schema, view],
+  );
+  if (rows.length === 0) {
+    return { exists: false, materializedOnly: false, hasRefreshPolicy: false };
+  }
+  // Version-robust refresh-job match: jobs.hypertable_name is the user-facing view on
+  // newer servers but the internal materialization hypertable on 2.18 (see M2.5c).
+  const policy: unknown[] = await dataSource.query(
+    `SELECT 1 FROM timescaledb_information.jobs j
+       WHERE j.proc_name = 'policy_refresh_continuous_aggregate' AND (
+         (j.hypertable_schema = $1 AND j.hypertable_name = $2)
+         OR EXISTS (SELECT 1 FROM timescaledb_information.continuous_aggregates c
+           WHERE c.view_schema = $1 AND c.view_name = $2
+             AND c.materialization_hypertable_schema = j.hypertable_schema
+             AND c.materialization_hypertable_name = j.hypertable_name))`,
+    [schema, view],
+  );
+  // node-pg maps bool → boolean, but coerce defensively so a raw/other driver returning
+  // the Postgres text form ('t'/'f') still reads correctly.
+  const mo = rows[0]?.materialized_only;
+  return {
+    exists: true,
+    materializedOnly: mo === true || mo === 't',
+    hasRefreshPolicy: policy.length > 0,
+  };
 }
 
 /** Read the live state of one hypertable from `timescaledb_information.*`. */
@@ -111,6 +167,20 @@ export async function assertSchema(
 
     const actual = await readActual(dataSource, schema, em.tableName);
     drift.push(...compareHypertable(expected, actual));
+  }
+
+  // Continuous aggregates (passed explicitly — they are not TypeORM entities).
+  for (const caggCtor of options.continuousAggregates ?? []) {
+    const meta = getContinuousAggregateMeta(caggCtor);
+    if (!meta) continue; // not a @ContinuousAggregate — ignore
+    const { schema, view } = splitView(meta.viewName);
+    const expected: ExpectedContinuousAggregate = {
+      view: `${schema}.${view}`,
+      materializedOnly: meta.materializedOnly ?? false,
+      expectRefreshPolicy: meta.refresh !== undefined,
+    };
+    const actual = await readActualCagg(dataSource, schema, view);
+    drift.push(...compareContinuousAggregate(expected, actual));
   }
 
   if (drift.length > 0) {

@@ -14,6 +14,7 @@ import {
   addContinuousAggregatePolicySQL,
   createTimescaleMigration,
   generateTimescaleMigration,
+  assertSchema,
   ContinuousAggregate,
   BucketColumn,
   GroupColumn,
@@ -86,6 +87,17 @@ BucketColumn()(DailyRollupCagg.prototype, 'bucket');
 GroupColumn()(DailyRollupCagg.prototype, 'sensor');
 AggregateColumn({ fn: 'sum', column: 'sum_v' })(DailyRollupCagg.prototype, 'sum_v');
 AggregateColumn({ fn: 'sum', column: 'n' })(DailyRollupCagg.prototype, 'n');
+
+// M2.5e — a CAGG with a refresh policy, used to exercise assertSchema() drift detection.
+class DriftCheckCagg {}
+ContinuousAggregate({
+  name: 'drift_check_cagg',
+  source: Reading,
+  bucket: '1 hour',
+  refresh: { startOffset: '1 month', endOffset: '1 hour', scheduleInterval: '1 hour' },
+})(DriftCheckCagg);
+BucketColumn()(DriftCheckCagg.prototype, 'bucket');
+AggregateColumn({ fn: 'count' })(DriftCheckCagg.prototype, 'n');
 
 async function boot(image: string): Promise<{ container: StartedTestContainer; ds: DataSource }> {
   const container = await new GenericContainer(image)
@@ -368,5 +380,64 @@ describe.skipIf(!IMAGE)('M2.5a continuous aggregates', () => {
 
     await ds.query('DROP MATERIALIZED VIEW IF EXISTS daily_rollup_cagg');
     await ds.query('DROP MATERIALIZED VIEW IF EXISTS hourly_rollup_cagg');
+  });
+
+  // ---- M2.5e: assertSchema() drift detection for CAGGs + refresh policies ----
+
+  it('detects continuous-aggregate drift: in-sync, then missing policy, then missing view', async () => {
+    const gen = generateTimescaleMigration(ds, {
+      timestamp: 1700000000004,
+      continuousAggregates: [DriftCheckCagg],
+    });
+    const up = gen.up.filter((s) => s.includes('drift_check_cagg'));
+    const qr = ds.createQueryRunner();
+    await qr.startTransaction();
+    try {
+      for (const sql of up) await qr.query(sql);
+      await qr.commitTransaction();
+    } catch (e) {
+      await qr.rollbackTransaction();
+      throw e;
+    } finally {
+      await qr.release();
+    }
+
+    // In sync (CAGG exists, real-time, refresh policy present) → no drift.
+    expect(
+      await assertSchema(ds, { mode: 'warn', continuousAggregates: [DriftCheckCagg] }),
+    ).toEqual([]);
+
+    // Flip materialized_only on the live view (decorator declares false) → mismatch drift.
+    await ds.query(
+      'ALTER MATERIALIZED VIEW drift_check_cagg SET (timescaledb.materialized_only = true)',
+    );
+    const dm = await assertSchema(ds, { mode: 'warn', continuousAggregates: [DriftCheckCagg] });
+    expect(dm.some((d) => d.message.includes('materialized_only mismatch'))).toBe(true);
+    // Restore in-sync so the next checks isolate a single drift each.
+    await ds.query(
+      'ALTER MATERIALIZED VIEW drift_check_cagg SET (timescaledb.materialized_only = false)',
+    );
+    expect(
+      await assertSchema(ds, { mode: 'warn', continuousAggregates: [DriftCheckCagg] }),
+    ).toEqual([]);
+
+    // Remove the refresh policy → drift: policy missing.
+    await ds.query(
+      `SELECT remove_continuous_aggregate_policy('"public"."drift_check_cagg"', if_exists => TRUE)`,
+    );
+    const d1 = await assertSchema(ds, { mode: 'warn', continuousAggregates: [DriftCheckCagg] });
+    expect(d1).toHaveLength(1);
+    expect(d1[0]?.message).toContain('refresh policy is missing');
+
+    // Drop the view → drift: does not exist.
+    await ds.query('DROP MATERIALIZED VIEW IF EXISTS drift_check_cagg');
+    const d2 = await assertSchema(ds, { mode: 'warn', continuousAggregates: [DriftCheckCagg] });
+    expect(d2).toHaveLength(1);
+    expect(d2[0]?.message).toContain('does not exist');
+
+    // Default 'assert' mode throws SCHEMA_DRIFT on the same CAGG drift.
+    await expect(assertSchema(ds, { continuousAggregates: [DriftCheckCagg] })).rejects.toThrow(
+      /does not exist/,
+    );
   });
 });
