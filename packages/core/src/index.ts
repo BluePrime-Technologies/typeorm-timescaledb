@@ -68,6 +68,8 @@ export {
   heartbeatLiveAtExpr,
   heartbeatLiveRangesExpr,
   heartbeatDeadRangesExpr,
+  lttbExpr,
+  asapSmoothExpr,
 } from './sql/index.js';
 export type {
   CandlestickAccessor,

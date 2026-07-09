@@ -722,3 +722,36 @@ export function heartbeatLiveRangesExpr(aggExpr: string): string {
 export function heartbeatDeadRangesExpr(aggExpr: string): string {
   return `dead_ranges(${aggExpr})`;
 }
+
+// ---------------------------------------------------------------------------
+// Downsampling — LTTB (Largest-Triangle-Three-Buckets) + ASAP smoothing
+// ---------------------------------------------------------------------------
+
+/**
+ * `lttb(time, value, resolution)` — the Largest-Triangle-Three-Buckets downsample
+ * intermediate (a timevector). `resolutionToken` binds the target point count as a
+ * parameter (`$1` or `:name`); the caller `unnest(...)`s the result into `(time, value)`
+ * rows. Requires `timescaledb_toolkit`.
+ */
+export function lttbExpr(timeColumn: string, valueColumn: string, resolutionToken: string): string {
+  return `lttb(${safeIdent(timeColumn, 'lttb time column')}, ${safeIdent(
+    valueColumn,
+    'lttb value column',
+  )}, ${assertBindToken(resolutionToken, 'resolution')})`;
+}
+
+/**
+ * `asap_smooth(time, value, resolution)` — the ASAP-smoothing downsample intermediate
+ * (a timevector). `resolutionToken` binds the target point count as a parameter. The
+ * caller `unnest(...)`s the result into `(time, value)` rows. Requires `timescaledb_toolkit`.
+ */
+export function asapSmoothExpr(
+  timeColumn: string,
+  valueColumn: string,
+  resolutionToken: string,
+): string {
+  return `asap_smooth(${safeIdent(timeColumn, 'asap_smooth time column')}, ${safeIdent(
+    valueColumn,
+    'asap_smooth value column',
+  )}, ${assertBindToken(resolutionToken, 'resolution')})`;
+}
