@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
+  addContinuousAggregatePolicySQL,
   TimescaleError,
 } from '../src/index.js';
 
@@ -144,5 +145,96 @@ describe('refreshContinuousAggregateSQL', () => {
     expect(() => refreshContinuousAggregateSQL('reading_hourly', '$0', 'NULL')).toThrowError(
       TimescaleError,
     );
+  });
+});
+
+describe('addContinuousAggregatePolicySQL', () => {
+  it('builds add/remove with interval offsets + schedule, always if_not_exists', () => {
+    const stmt = addContinuousAggregatePolicySQL({
+      view: 'reading_hourly',
+      startOffset: '1 month',
+      endOffset: '1 hour',
+      scheduleInterval: '30 minutes',
+    });
+    expect(stmt.up).toEqual([
+      `SELECT add_continuous_aggregate_policy('"public"."reading_hourly"', ` +
+        `start_offset => INTERVAL '1 month', end_offset => INTERVAL '1 hour', ` +
+        `schedule_interval => INTERVAL '30 minutes', if_not_exists => TRUE);`,
+    ]);
+    expect(stmt.down).toEqual([
+      `SELECT remove_continuous_aggregate_policy('"public"."reading_hourly"', if_exists => TRUE);`,
+    ]);
+  });
+
+  it('emits NULL for open (null) offsets', () => {
+    const stmt = addContinuousAggregatePolicySQL({
+      view: 'reading_hourly',
+      startOffset: null,
+      endOffset: null,
+      scheduleInterval: '1 hour',
+    });
+    expect(stmt.up[0]).toContain('start_offset => NULL, end_offset => NULL');
+  });
+
+  it('omits schedule_interval when not provided (server default)', () => {
+    const stmt = addContinuousAggregatePolicySQL({
+      view: 'reading_hourly',
+      startOffset: '7 days',
+      endOffset: '1 hour',
+    });
+    expect(stmt.up[0]).not.toContain('schedule_interval');
+    expect(stmt.up[0]).toContain("end_offset => INTERVAL '1 hour', if_not_exists => TRUE");
+  });
+
+  it('honours a schema-qualified view in add, remove, and inspect', () => {
+    const stmt = addContinuousAggregatePolicySQL({
+      view: 'analytics.reading_hourly',
+      startOffset: '1 month',
+      endOffset: '1 hour',
+    });
+    expect(stmt.up[0]).toContain(`add_continuous_aggregate_policy('"analytics"."reading_hourly"'`);
+    expect(stmt.down[0]).toContain(
+      `remove_continuous_aggregate_policy('"analytics"."reading_hourly"'`,
+    );
+    // inspect matches the view either directly or via its materialization hypertable
+    expect(stmt.inspect).toContain("proc_name = 'policy_refresh_continuous_aggregate'");
+    expect(stmt.inspect).toContain(`view_schema = 'analytics'`);
+    expect(stmt.inspect).toContain(`view_name = 'reading_hourly'`);
+  });
+
+  it('rejects a non-positive / invalid interval offset', () => {
+    expect(() =>
+      addContinuousAggregatePolicySQL({
+        view: 'reading_hourly',
+        startOffset: 'not-an-interval',
+        endOffset: '1 hour',
+      }),
+    ).toThrowError(TimescaleError);
+    expect(() =>
+      addContinuousAggregatePolicySQL({
+        view: 'reading_hourly',
+        startOffset: '1 month',
+        endOffset: '1 hour',
+        scheduleInterval: 'nope',
+      }),
+    ).toThrowError(TimescaleError);
+  });
+
+  it('rejects an unsafe view identifier (injection guard)', () => {
+    expect(() =>
+      addContinuousAggregatePolicySQL({
+        view: 'v);--',
+        startOffset: '1 month',
+        endOffset: '1 hour',
+      }),
+    ).toThrowError(TimescaleError);
+    // zero-magnitude interval is rejected (a zero-width refresh window is a no-op)
+    expect(() =>
+      addContinuousAggregatePolicySQL({
+        view: 'reading_hourly',
+        startOffset: '0 hour',
+        endOffset: '0 hour',
+      }),
+    ).toThrowError(TimescaleError);
   });
 });

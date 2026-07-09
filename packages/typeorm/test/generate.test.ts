@@ -297,6 +297,28 @@ ContinuousAggregate({ name: 'dup_cols', source: Reading, bucket: '1 hour' })(Dup
 BucketColumn()(DupCols.prototype, 'total');
 AggregateColumn({ fn: 'sum', column: 'value' })(DupCols.prototype, 'total');
 
+// A CAGG with an explicit refresh policy (all three offsets set).
+class ReadingHourlyRefreshed {}
+ContinuousAggregate({
+  name: 'reading_hourly_refreshed',
+  source: Reading,
+  bucket: '1 hour',
+  refresh: { startOffset: '1 month', endOffset: '1 hour', scheduleInterval: '30 minutes' },
+})(ReadingHourlyRefreshed);
+BucketColumn()(ReadingHourlyRefreshed.prototype, 'bucket');
+AggregateColumn({ fn: 'avg', column: 'value' })(ReadingHourlyRefreshed.prototype, 'avgValue');
+
+// A CAGG whose refresh omits scheduleInterval → codegen defaults it to the bucket width.
+class ReadingHourlyDefaultSchedule {}
+ContinuousAggregate({
+  name: 'reading_hourly_defsched',
+  source: Reading,
+  bucket: '2 hours',
+  refresh: { startOffset: '7 days', endOffset: '1 hour' },
+})(ReadingHourlyDefaultSchedule);
+BucketColumn()(ReadingHourlyDefaultSchedule.prototype, 'bucket');
+AggregateColumn({ fn: 'count' })(ReadingHourlyDefaultSchedule.prototype, 'n');
+
 describe('generateTimescaleMigration — continuous aggregates', () => {
   it('emits CAGG DDL from decorators (after the hypertables), reversed on down', () => {
     const ds = stubDataSource([
@@ -484,6 +506,87 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
 
   it('getContinuousAggregateMeta returns undefined for a non-CAGG class', () => {
     expect(getContinuousAggregateMeta(Plain)).toBeUndefined();
+  });
+
+  const readingDs = (): DataSource =>
+    stubDataSource([
+      {
+        target: Reading,
+        tableName: 'reading',
+        columns: [
+          { propertyName: 'time', databaseName: 'time' },
+          { propertyName: 'sensor', databaseName: 'sensor' },
+          { propertyName: 'value', databaseName: 'value' },
+        ],
+      },
+    ]);
+
+  it('emits add_continuous_aggregate_policy after CREATE, and removes it before DROP', () => {
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ReadingHourlyRefreshed],
+    });
+    const createIdx = gen.up.findIndex((s) =>
+      s.includes('CREATE MATERIALIZED VIEW "public"."reading_hourly_refreshed"'),
+    );
+    const addIdx = gen.up.findIndex((s) => s.includes('add_continuous_aggregate_policy'));
+    expect(createIdx).toBeGreaterThanOrEqual(0);
+    expect(addIdx).toBeGreaterThan(createIdx); // policy added AFTER the view exists
+    expect(gen.up[addIdx]).toContain(
+      `add_continuous_aggregate_policy('"public"."reading_hourly_refreshed"', ` +
+        `start_offset => INTERVAL '1 month', end_offset => INTERVAL '1 hour', ` +
+        `schedule_interval => INTERVAL '30 minutes', if_not_exists => TRUE);`,
+    );
+    // down: remove policy BEFORE dropping the view
+    const removeIdx = gen.down.findIndex((s) => s.includes('remove_continuous_aggregate_policy'));
+    const dropIdx = gen.down.findIndex((s) =>
+      s.includes('DROP MATERIALIZED VIEW IF EXISTS "public"."reading_hourly_refreshed"'),
+    );
+    expect(removeIdx).toBeGreaterThanOrEqual(0);
+    expect(dropIdx).toBeGreaterThan(removeIdx);
+  });
+
+  it('defaults schedule_interval to the bucket width when refresh omits it', () => {
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ReadingHourlyDefaultSchedule],
+    });
+    const add = gen.up.find((s) => s.includes('add_continuous_aggregate_policy')) ?? '';
+    // bucket is '2 hours' → schedule_interval defaults to it (always emitted for 2.18 compat)
+    expect(add).toContain(`schedule_interval => INTERVAL '2 hours'`);
+  });
+
+  it('emits no refresh policy when the CAGG has no refresh option', () => {
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ReadingHourly],
+    });
+    expect(gen.up.join('\n')).not.toContain('add_continuous_aggregate_policy');
+    expect(gen.down.join('\n')).not.toContain('remove_continuous_aggregate_policy');
+  });
+
+  it('tears multiple CAGGs down in the exact reverse of creation order (remove before drop)', () => {
+    // Sorted by view name, 'reading_hourly_defsched' is created before 'reading_hourly_refreshed'.
+    // A true reverse drops 'refreshed' first; and within each CAGG the policy is removed
+    // BEFORE the view is dropped (a flat reverse would wrongly invert that inner order).
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ReadingHourlyDefaultSchedule, ReadingHourlyRefreshed],
+    });
+    const d = gen.down;
+    const at = (needle: string, view: string): number =>
+      d.findIndex((s) => s.includes(needle) && s.includes(view));
+    const refreshedRemove = at('remove_continuous_aggregate_policy', 'reading_hourly_refreshed');
+    const refreshedDrop = at('DROP MATERIALIZED VIEW', 'reading_hourly_refreshed');
+    const defschedRemove = at('remove_continuous_aggregate_policy', 'reading_hourly_defsched');
+    const defschedDrop = at('DROP MATERIALIZED VIEW', 'reading_hourly_defsched');
+
+    expect(
+      Math.min(refreshedRemove, refreshedDrop, defschedRemove, defschedDrop),
+    ).toBeGreaterThanOrEqual(0);
+    expect(refreshedRemove).toBeLessThan(refreshedDrop); // remove policy before DROP
+    expect(defschedRemove).toBeLessThan(defschedDrop);
+    expect(refreshedDrop).toBeLessThan(defschedRemove); // 'refreshed' (created last) torn down first
   });
 
   it('drops the continuous aggregate before the (no-op) hypertable down', () => {

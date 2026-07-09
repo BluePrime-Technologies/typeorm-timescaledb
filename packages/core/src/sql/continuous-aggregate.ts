@@ -132,6 +132,84 @@ export function createContinuousAggregateSQL(
   return { up, down, inspect };
 }
 
+/**
+ * Input for {@link addContinuousAggregatePolicySQL} — an automatic refresh policy
+ * (`add_continuous_aggregate_policy`) attached to an existing continuous aggregate.
+ */
+export interface ContinuousAggregatePolicyInput {
+  /** CAGG view name, optionally `schema.view`. */
+  readonly view: string;
+  /**
+   * How far back from *now* the refresh window starts, as an INTERVAL literal
+   * (e.g. `'1 month'`). `null` = open (refresh from the beginning of time — expensive).
+   */
+  readonly startOffset: string | null;
+  /**
+   * How far back from *now* the refresh window ends, as an INTERVAL literal
+   * (e.g. `'1 hour'`, to leave the still-filling latest bucket alone). `null` = up to now.
+   *
+   * Must be *smaller* than `startOffset` — TimescaleDB requires `start_offset > end_offset`
+   * (magnitude is the DB's authority; an inverted window fails loudly at migration time).
+   */
+  readonly endOffset: string | null;
+  /**
+   * How often the policy runs, as an INTERVAL literal. Emitted only when provided.
+   *
+   * NOTE: TimescaleDB **2.18** (this package's supported floor) has no overload that
+   * omits `schedule_interval`, so the migration generator always supplies one
+   * (defaulting to the bucket width). Direct core callers targeting newer servers may
+   * omit it to accept the server default.
+   */
+  readonly scheduleInterval?: string;
+}
+
+/**
+ * Build the DDL for a continuous-aggregate **refresh policy**. Verified against a live
+ * TimescaleDB (2.18 + latest): the call runs inside a transaction (migration-safe) and
+ * `if_not_exists => TRUE` is idempotent (a duplicate is skipped, not an error). `down`
+ * removes only the policy/job with `if_exists => TRUE` — it never touches the CAGG or
+ * the source data.
+ */
+export function addContinuousAggregatePolicySQL(
+  input: ContinuousAggregatePolicyInput,
+): MigrationStatement {
+  const v = parseTable(input.view);
+  const offset = (val: string | null, role: string): string =>
+    val === null ? 'NULL' : `INTERVAL ${quoteLiteral(assertPositiveInterval(val, role))}`;
+
+  const args = [
+    v.regclass,
+    `start_offset => ${offset(input.startOffset, 'startOffset')}`,
+    `end_offset => ${offset(input.endOffset, 'endOffset')}`,
+  ];
+  if (input.scheduleInterval !== undefined) {
+    args.push(
+      `schedule_interval => INTERVAL ${quoteLiteral(assertPositiveInterval(input.scheduleInterval, 'scheduleInterval'))}`,
+    );
+  }
+  args.push('if_not_exists => TRUE');
+
+  const up = [`SELECT add_continuous_aggregate_policy(${args.join(', ')});`];
+  const down = [`SELECT remove_continuous_aggregate_policy(${v.regclass}, if_exists => TRUE);`];
+  // `jobs.hypertable_name` is version-divergent: newer servers report the user-facing
+  // view (public.<view>), 2.18 reports the internal materialization hypertable. Match
+  // either — directly by the view name, or via the CAGG's materialization hypertable.
+  const inspect =
+    // Cast the interval to text so it reads back as a stable string ('00:30:00') rather
+    // than the driver's parsed interval object; the offsets are JSON text already.
+    `SELECT j.schedule_interval::text AS schedule_interval, j.config ->> 'start_offset' AS start_offset, ` +
+    `j.config ->> 'end_offset' AS end_offset ` +
+    `FROM timescaledb_information.jobs j ` +
+    `WHERE j.proc_name = 'policy_refresh_continuous_aggregate' AND (` +
+    `(j.hypertable_schema = ${quoteLiteral(v.schema)} AND j.hypertable_name = ${quoteLiteral(v.name)}) ` +
+    `OR EXISTS (SELECT 1 FROM timescaledb_information.continuous_aggregates c ` +
+    `WHERE c.view_schema = ${quoteLiteral(v.schema)} AND c.view_name = ${quoteLiteral(v.name)} ` +
+    `AND c.materialization_hypertable_schema = j.hypertable_schema ` +
+    `AND c.materialization_hypertable_name = j.hypertable_name));`;
+
+  return { up, down, inspect };
+}
+
 /** A refresh bound token: a positional placeholder (`$1`) or the literal `NULL` (open bound). */
 function assertRefreshBound(token: string, role: string): string {
   if (!/^(\$[1-9]\d*|NULL)$/.test(token)) {

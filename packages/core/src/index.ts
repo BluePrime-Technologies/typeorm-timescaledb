@@ -8,6 +8,7 @@ export {
   addRetentionPolicySQL,
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
+  addContinuousAggregatePolicySQL,
 } from './sql/index.js';
 export type {
   MigrationStatement,
@@ -17,6 +18,7 @@ export type {
   CreateContinuousAggregateInput,
   ContinuousAggregateColumn,
   ContinuousAggregateFn,
+  ContinuousAggregatePolicyInput,
 } from './sql/index.js';
 export {
   timeBucketExpr,

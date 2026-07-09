@@ -11,6 +11,7 @@ import {
   HypertablePrimaryKey,
   createTimescale,
   createContinuousAggregateSQL,
+  addContinuousAggregatePolicySQL,
   createTimescaleMigration,
   generateTimescaleMigration,
   ContinuousAggregate,
@@ -54,6 +55,17 @@ BucketColumn()(ReadingHourlyCagg.prototype, 'bucket');
 GroupColumn()(ReadingHourlyCagg.prototype, 'sensor');
 AggregateColumn({ fn: 'avg', column: 'value' })(ReadingHourlyCagg.prototype, 'avg_v');
 AggregateColumn({ fn: 'count' })(ReadingHourlyCagg.prototype, 'n');
+
+// M2.5c — a decorator-driven CAGG carrying an automatic refresh policy.
+class ReadingHourlyRefreshedCagg {}
+ContinuousAggregate({
+  name: 'reading_hourly_refreshed_cagg',
+  source: Reading,
+  bucket: '1 hour',
+  refresh: { startOffset: '1 month', endOffset: '1 hour', scheduleInterval: '30 minutes' },
+})(ReadingHourlyRefreshedCagg);
+BucketColumn()(ReadingHourlyRefreshedCagg.prototype, 'bucket');
+AggregateColumn({ fn: 'count' })(ReadingHourlyRefreshedCagg.prototype, 'n');
 
 async function boot(image: string): Promise<{ container: StartedTestContainer; ds: DataSource }> {
   const container = await new GenericContainer(image)
@@ -235,5 +247,56 @@ describe.skipIf(!IMAGE)('M2.5a continuous aggregates', () => {
     expect(Number(rows[1]?.avg_v)).toBeCloseTo(40, 10);
 
     await ds.query('DROP MATERIALIZED VIEW IF EXISTS reading_hourly_cagg');
+  });
+
+  // ---- M2.5c: a CAGG refresh policy through the migration generator ----
+
+  it('generates + applies a refresh policy, finds it via inspect, and removes it on down', async () => {
+    const view = 'reading_hourly_refreshed_cagg';
+    const gen = generateTimescaleMigration(ds, {
+      timestamp: 1700000000002,
+      continuousAggregates: [ReadingHourlyRefreshedCagg],
+    });
+    // The CAGG-scoped up = CREATE MATERIALIZED VIEW + add_continuous_aggregate_policy.
+    const up = gen.up.filter((s) => s.includes(view));
+    expect(up.some((s) => s.includes('CREATE MATERIALIZED VIEW'))).toBe(true);
+    expect(up.some((s) => s.includes('add_continuous_aggregate_policy'))).toBe(true);
+
+    // Both the create AND the add-policy must succeed inside a single transaction.
+    const qr = ds.createQueryRunner();
+    await qr.startTransaction();
+    try {
+      for (const sql of up) await qr.query(sql);
+      await qr.commitTransaction();
+    } catch (e) {
+      await qr.rollbackTransaction();
+      throw e;
+    } finally {
+      await qr.release();
+    }
+
+    // The builder's own (version-robust) inspect must find exactly this policy.
+    const inspect = addContinuousAggregatePolicySQL({
+      view,
+      startOffset: '1 month',
+      endOffset: '1 hour',
+      scheduleInterval: '30 minutes',
+    }).inspect;
+    const found = (await ds.query(inspect)) as Array<{
+      schedule_interval: string;
+      start_offset: string;
+      end_offset: string;
+    }>;
+    expect(found).toHaveLength(1);
+    expect(found[0]?.schedule_interval).toBe('00:30:00');
+    expect(found[0]?.start_offset).toMatch(/mon/); // '1 month' → normalized '1 mon'
+    expect(found[0]?.end_offset).toBe('01:00:00'); // '1 hour' → normalized '01:00:00'
+
+    // down: remove the policy, then drop the view. After it, inspect finds nothing.
+    const down = gen.down.filter((s) => s.includes(view));
+    expect(down[0]).toContain('remove_continuous_aggregate_policy'); // removed before the DROP
+    for (const sql of down) await ds.query(sql);
+    const after = (await ds.query(inspect)) as unknown[];
+    expect(after).toHaveLength(0);
   });
 });

@@ -1,6 +1,7 @@
 import type { DataSource, MigrationInterface, QueryRunner } from 'typeorm';
 import {
   addColumnstorePolicySQL,
+  addContinuousAggregatePolicySQL,
   addRetentionPolicySQL,
   createContinuousAggregateSQL,
   createHypertableSQL,
@@ -276,7 +277,27 @@ export function generateTimescaleMigration(
       })),
     });
     caggUp.push(...stmt.up);
-    caggDown.push(...stmt.down);
+    // Per-CAGG down: DROP the view (reversed relative to `up`). A refresh policy, if any,
+    // is removed BEFORE the DROP (true reverse of "create then add policy").
+    const caggThisDown: string[] = [...stmt.down];
+
+    if (meta.refresh) {
+      // Always pass schedule_interval (default = the bucket width): TimescaleDB 2.18, our
+      // supported floor, has no `add_continuous_aggregate_policy` overload that omits it.
+      const policy = addContinuousAggregatePolicySQL({
+        view: meta.viewName,
+        startOffset: meta.refresh.startOffset,
+        endOffset: meta.refresh.endOffset,
+        scheduleInterval: meta.refresh.scheduleInterval ?? meta.bucketInterval,
+      });
+      caggUp.push(...policy.up); // add policy AFTER the CREATE MATERIALIZED VIEW
+      caggThisDown.unshift(...policy.down); // remove policy BEFORE the DROP
+    }
+
+    // Prepend each CAGG's down block so the overall CAGG teardown is the exact reverse of
+    // creation order (the CAGG created last is dropped first) while keeping remove-policy
+    // before DROP within each. Matters once CAGGs can depend on each other (hierarchical).
+    caggDown.unshift(...caggThisDown);
   }
   up.push(...caggUp);
   down.unshift(...caggDown);
