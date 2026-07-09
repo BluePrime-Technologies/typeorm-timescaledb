@@ -2,11 +2,11 @@ export { assertSafeIdentifier, quoteIdent, quoteQualified, safeIdent } from './i
 export { quoteLiteral } from './literal.js';
 export { assertInterval, assertPositiveInterval, INTERVAL_PATTERN } from './interval.js';
 export { TimescaleError, TimescaleErrorCode } from './errors.js';
+export { TIMESCALEDB_PRESENCE_SQL } from './sql/index.js';
 export {
   createHypertableSQL,
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
-  TIMESCALEDB_PRESENCE_SQL,
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
