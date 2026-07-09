@@ -8,7 +8,16 @@
 export * from './orm.js';
 
 export { Hypertable, TimeColumn, HypertablePrimaryKey } from './decorators/index.js';
+export {
+  ContinuousAggregate,
+  BucketColumn,
+  GroupColumn,
+  AggregateColumn,
+} from './decorators/index.js';
+export type { ContinuousAggregateOptions, AggregateColumnOptions } from './decorators/index.js';
 export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.js';
+export { getContinuousAggregateMeta, hasContinuousAggregateMeta } from './decorators/index.js';
+export type { ContinuousAggregateMeta, CaggAggregate } from './decorators/index.js';
 export { createTimescale } from './runtime/createTimescale.js';
 export type { TimescaleContext, TimescaleRepository } from './runtime/createTimescale.js';
 

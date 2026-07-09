@@ -87,11 +87,12 @@ ranges over shorthand wording.
 
 The following items are product direction, not shipped functionality:
 
-- Continuous aggregates — the ergonomic `@ContinuousAggregate` decorator + migration
-  codegen, refresh policies, real-time-aggregation defaults, and hierarchical CAGGs are
-  planned. (A foundational `createContinuousAggregateSQL` SQL builder and the
-  `refreshContinuousAggregate()` runtime refresh are implemented on `main` but are not
-  yet part of a published release; do not describe them as shipped until released.)
+- Continuous aggregates — refresh policies (`add_continuous_aggregate_policy`),
+  hierarchical CAGGs, and drift detection for CAGGs are still planned. (The
+  `createContinuousAggregateSQL` SQL builder, the `refreshContinuousAggregate()` runtime
+  refresh, AND the `@ContinuousAggregate` / `@BucketColumn` / `@GroupColumn` /
+  `@AggregateColumn` decorators with migration codegen are implemented on `main` but are
+  not yet part of a published release; do not describe them as shipped until released.)
 - `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
   constructs.
