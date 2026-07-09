@@ -5,6 +5,13 @@ import {
   setBucketColumn,
   setContinuousAggregate,
 } from './metadata-store.js';
+import type { CaggRefreshPolicy } from './metadata-store.js';
+
+/**
+ * An automatic refresh policy attached to a {@link ContinuousAggregate}. Public alias of
+ * the metadata type — see {@link CaggRefreshPolicy} for the field docs.
+ */
+export type RefreshPolicyOptions = CaggRefreshPolicy;
 
 type Ctor = abstract new (...args: never[]) => unknown;
 
@@ -26,6 +33,11 @@ export interface ContinuousAggregateOptions {
   readonly materializedOnly?: boolean;
   /** Source time **property** to bucket; defaults to the source's `@TimeColumn`. */
   readonly timeColumn?: string;
+  /**
+   * Automatic refresh policy. When set, the generated migration wires up
+   * `add_continuous_aggregate_policy(...)` so the CAGG keeps itself up to date.
+   */
+  readonly refresh?: RefreshPolicyOptions;
 }
 
 /**
@@ -57,6 +69,7 @@ export function ContinuousAggregate(options: ContinuousAggregateOptions): ClassD
       bucketInterval: options.bucket,
       ...(options.materializedOnly !== undefined && { materializedOnly: options.materializedOnly }),
       ...(options.timeColumn !== undefined && { timeColumn: options.timeColumn }),
+      ...(options.refresh !== undefined && { refresh: options.refresh }),
     });
   };
 }

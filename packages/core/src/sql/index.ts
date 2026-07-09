@@ -6,11 +6,13 @@ export {
 export {
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
+  addContinuousAggregatePolicySQL,
 } from './continuous-aggregate.js';
 export type {
   CreateContinuousAggregateInput,
   ContinuousAggregateColumn,
   ContinuousAggregateFn,
+  ContinuousAggregatePolicyInput,
 } from './continuous-aggregate.js';
 export type {
   MigrationStatement,

@@ -14,10 +14,18 @@ export {
   GroupColumn,
   AggregateColumn,
 } from './decorators/index.js';
-export type { ContinuousAggregateOptions, AggregateColumnOptions } from './decorators/index.js';
+export type {
+  ContinuousAggregateOptions,
+  AggregateColumnOptions,
+  RefreshPolicyOptions,
+} from './decorators/index.js';
 export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.js';
 export { getContinuousAggregateMeta, hasContinuousAggregateMeta } from './decorators/index.js';
-export type { ContinuousAggregateMeta, CaggAggregate } from './decorators/index.js';
+export type {
+  ContinuousAggregateMeta,
+  CaggAggregate,
+  CaggRefreshPolicy,
+} from './decorators/index.js';
 export { createTimescale } from './runtime/createTimescale.js';
 export type { TimescaleContext, TimescaleRepository } from './runtime/createTimescale.js';
 
@@ -93,6 +101,7 @@ export {
   parseHypertableOptions,
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
+  addContinuousAggregatePolicySQL,
   TimescaleError,
   TimescaleErrorCode,
 } from '@blueprime/timescaledb-core';
@@ -109,4 +118,5 @@ export type {
   CreateContinuousAggregateInput,
   ContinuousAggregateColumn,
   ContinuousAggregateFn,
+  ContinuousAggregatePolicyInput,
 } from '@blueprime/timescaledb-core';

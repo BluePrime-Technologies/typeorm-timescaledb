@@ -103,6 +103,29 @@ export interface CaggAggregate {
   readonly column?: string;
 }
 
+/** An automatic refresh policy attached to a continuous aggregate. */
+export interface CaggRefreshPolicy {
+  /**
+   * How far back from *now* the refresh window starts, as an INTERVAL literal
+   * (e.g. `'1 month'`). `null` = from the beginning of time (refreshes all history — expensive).
+   */
+  readonly startOffset: string | null;
+  /**
+   * How far back from *now* the refresh window ends, as an INTERVAL literal
+   * (e.g. `'1 hour'`, to leave the still-filling latest bucket alone). `null` = up to now.
+   *
+   * Must be *smaller* than `startOffset` — TimescaleDB requires `start_offset > end_offset`
+   * (an inverted window fails loudly when the migration runs).
+   */
+  readonly endOffset: string | null;
+  /**
+   * How often the policy runs, as an INTERVAL literal. Defaults at codegen to the CAGG's
+   * **bucket width**. (Always emitted into the migration — TimescaleDB 2.18 has no
+   * overload that omits `schedule_interval`.)
+   */
+  readonly scheduleInterval?: string;
+}
+
 /** Resolved `@ContinuousAggregate` metadata for a CAGG entity constructor. */
 export interface ContinuousAggregateMeta {
   /** The CAGG view name, optionally `schema.view`. */
@@ -121,6 +144,8 @@ export interface ContinuousAggregateMeta {
   readonly groupProperties: readonly string[];
   /** `@AggregateColumn` outputs. */
   readonly aggregates: readonly CaggAggregate[];
+  /** Optional automatic refresh policy (`add_continuous_aggregate_policy`). */
+  readonly refresh?: CaggRefreshPolicy;
 }
 
 interface MutableCaggMeta {
@@ -133,6 +158,7 @@ interface MutableCaggMeta {
   bucketProperty?: string;
   groupProperties: string[];
   aggregates: CaggAggregate[];
+  refresh?: CaggRefreshPolicy;
 }
 
 const caggStore = new WeakMap<object, MutableCaggMeta>();
@@ -154,6 +180,7 @@ export function setContinuousAggregate(
     bucketInterval: string;
     materializedOnly?: boolean;
     timeColumn?: string;
+    refresh?: CaggRefreshPolicy;
   },
 ): void {
   const meta = ensureCagg(ctor);
@@ -163,6 +190,7 @@ export function setContinuousAggregate(
   meta.bucketInterval = cfg.bucketInterval;
   if (cfg.materializedOnly !== undefined) meta.materializedOnly = cfg.materializedOnly;
   if (cfg.timeColumn !== undefined) meta.timeColumn = cfg.timeColumn;
+  if (cfg.refresh !== undefined) meta.refresh = cfg.refresh;
 }
 
 export function setBucketColumn(ctor: object, property: string): void {
@@ -245,6 +273,7 @@ export function getContinuousAggregateMeta(ctor: Ctor): ContinuousAggregateMeta 
     bucketProperty: m.bucketProperty,
     groupProperties: [...m.groupProperties],
     aggregates: m.aggregates.map((a) => ({ ...a })),
+    ...(m.refresh !== undefined && { refresh: { ...m.refresh } }),
   };
 }
 
