@@ -24,7 +24,7 @@ describe('createContinuousAggregateSQL', () => {
       'CREATE MATERIALIZED VIEW "public"."reading_hourly" ' +
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 hour', "ts") AS "bucket", avg("value") AS "avg_v", count(*) AS "n" ` +
-        'FROM "public"."reading" GROUP BY "bucket" WITH NO DATA;',
+        `FROM "public"."reading" GROUP BY time_bucket(INTERVAL '1 hour', "ts") WITH NO DATA;`,
     ]);
   });
 
@@ -43,7 +43,7 @@ describe('createContinuousAggregateSQL', () => {
       'CREATE MATERIALIZED VIEW "public"."reading_hourly" ' +
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 hour', "ts") AS "hour", "sensor", avg("value") AS "avg_v", count(*) AS "n" ` +
-        'FROM "public"."reading" GROUP BY "hour", "sensor" WITH NO DATA;',
+        `FROM "public"."reading" GROUP BY time_bucket(INTERVAL '1 hour', "ts"), "sensor" WITH NO DATA;`,
     );
   });
 

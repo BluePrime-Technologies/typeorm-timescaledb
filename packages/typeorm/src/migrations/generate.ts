@@ -13,6 +13,7 @@ import {
 } from '@blueprime/timescaledb-core';
 import {
   getContinuousAggregateMeta,
+  hasContinuousAggregateMeta,
   getTimescaleMetadata,
   hasTimescaleMetadata,
 } from '../decorators/index.js';
@@ -186,16 +187,48 @@ export function generateTimescaleMigration(
   }
 
   // Continuous aggregates, after the hypertables (a CAGG needs its source to exist).
-  // Sorted by view name for deterministic output. Their `up` is appended after the
-  // hypertable `up`, and their `down` (DROP MATERIALIZED VIEW) is prepended before the
-  // hypertable `down` — dependents are dropped before what they depend on.
+  // Their `up` is appended after the hypertable `up`; their `down` is prepended before it.
   const caggUp: string[] = [];
   const caggDown: string[] = [];
-  const caggs = [...(options.continuousAggregates ?? [])].sort((a, b) => {
-    const av = getContinuousAggregateMeta(a)?.viewName ?? '';
-    const bv = getContinuousAggregateMeta(b)?.viewName ?? '';
-    return av.localeCompare(bv);
-  });
+  // Order the CAGGs so a hierarchical parent (whose source is another CAGG in this set) is
+  // created AFTER its child. Independent CAGGs keep a deterministic view-name order. The
+  // per-CAGG `down` is `unshift`ed below, so this ordering also drops parents before children.
+  // Dedupe first: a class passed twice must not be emitted twice, and the topo
+  // termination check below compares against this length (dupes would false-trip it).
+  const declaredCaggs: Ctor[] = [...new Set<Ctor>(options.continuousAggregates ?? [])];
+  const caggInSet = new Set<Ctor>(declaredCaggs);
+  const caggSourceInSet = (c: Ctor): Ctor | undefined => {
+    const src = getContinuousAggregateMeta(c)?.source as Ctor | undefined;
+    return src !== undefined && caggInSet.has(src) && hasContinuousAggregateMeta(src)
+      ? src
+      : undefined;
+  };
+  const byViewName = [...declaredCaggs].sort((a, b) =>
+    (getContinuousAggregateMeta(a)?.viewName ?? '').localeCompare(
+      getContinuousAggregateMeta(b)?.viewName ?? '',
+    ),
+  );
+  const caggs: Ctor[] = [];
+  const emittedCaggs = new Set<Ctor>();
+  let topoProgress = true;
+  while (caggs.length < byViewName.length && topoProgress) {
+    topoProgress = false;
+    for (const c of byViewName) {
+      if (emittedCaggs.has(c)) continue;
+      const dep = caggSourceInSet(c);
+      if (dep === undefined || emittedCaggs.has(dep)) {
+        caggs.push(c);
+        emittedCaggs.add(c);
+        topoProgress = true;
+      }
+    }
+  }
+  if (caggs.length < byViewName.length) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'continuous aggregates have a circular source dependency',
+    );
+  }
   for (const caggCtor of caggs) {
     const meta = getContinuousAggregateMeta(caggCtor);
     if (!meta) {
@@ -204,35 +237,62 @@ export function generateTimescaleMigration(
         `${(caggCtor as { name?: string }).name ?? 'class'} was passed as a continuous aggregate but is not decorated with @ContinuousAggregate`,
       );
     }
-    const sourceEm = dataSource.entityMetadatas.find((e) => e.target === meta.source);
-    const sourceName = (meta.source as { name?: string }).name ?? 'source';
-    if (!sourceEm) {
-      throw new TimescaleError(
-        TimescaleErrorCode.INVALID_ARGUMENT,
-        `@ContinuousAggregate ${meta.viewName}: source ${sourceName} is not a registered entity on this DataSource`,
-        { view: meta.viewName },
-      );
-    }
-    const sourceHt = getTimescaleMetadata(meta.source as Ctor);
-    if (!sourceHt) {
-      throw new TimescaleError(
-        TimescaleErrorCode.NOT_A_HYPERTABLE,
-        `@ContinuousAggregate ${meta.viewName}: source ${sourceEm.tableName} is not a @Hypertable`,
-        { view: meta.viewName, source: sourceEm.tableName },
-      );
-    }
-    // Group/aggregate columns + the time column reference SOURCE columns — resolve
-    // property -> databaseName via the source entity (honours @Column({ name })).
-    const srcDb = new Map<string, string>(
-      (sourceEm.columns ?? []).map((c) => [c.propertyName, c.databaseName]),
-    );
-    const srcToDb = (property: string): string => srcDb.get(property) ?? property;
+    // Resolve the source: a hypertable @Entity (the common case) or, for a hierarchical
+    // CAGG, another @ContinuousAggregate (its view). These produce the FROM target, the
+    // property->column resolver, and the time-bucket source column.
+    let sourceRef: string; // schema-qualified table/view for FROM
+    let srcToDb: (property: string) => string; // property -> physical column name
+    let srcTimeProp: string | undefined;
+    let sourceLabel: string; // for error messages
 
-    const srcTimeProp = meta.timeColumn ?? sourceHt.timeColumn ?? sourceHt.options.timeColumn;
+    const sourceCagg = hasContinuousAggregateMeta(meta.source as Ctor)
+      ? getContinuousAggregateMeta(meta.source as Ctor)
+      : undefined;
+
+    if (sourceCagg) {
+      // Hierarchical CAGG: FROM the child's view. Resolve columns by identity — the child's
+      // bucket and aggregate outputs are property-named verbatim; a child @GroupColumn output
+      // takes the child's source physical column name (which equals the property unless the
+      // child's source hypertable column is @Column({ name })-remapped). Either way the name
+      // is a real column on the child view, so identity forwards it and a genuine typo fails
+      // loudly at migration run. The time bucket defaults to the child's @BucketColumn output.
+      sourceRef = sourceCagg.viewName;
+      srcToDb = (property) => property;
+      srcTimeProp = meta.timeColumn ?? sourceCagg.bucketProperty;
+      sourceLabel = sourceCagg.viewName;
+    } else {
+      const sourceEm = dataSource.entityMetadatas.find((e) => e.target === meta.source);
+      const sourceName = (meta.source as { name?: string }).name ?? 'source';
+      if (!sourceEm) {
+        throw new TimescaleError(
+          TimescaleErrorCode.INVALID_ARGUMENT,
+          `@ContinuousAggregate ${meta.viewName}: source ${sourceName} is neither a registered @Hypertable entity nor a @ContinuousAggregate`,
+          { view: meta.viewName },
+        );
+      }
+      const sourceHt = getTimescaleMetadata(meta.source as Ctor);
+      if (!sourceHt) {
+        throw new TimescaleError(
+          TimescaleErrorCode.NOT_A_HYPERTABLE,
+          `@ContinuousAggregate ${meta.viewName}: source ${sourceEm.tableName} is not a @Hypertable`,
+          { view: meta.viewName, source: sourceEm.tableName },
+        );
+      }
+      // Group/aggregate columns + the time column reference SOURCE columns — resolve
+      // property -> databaseName via the source entity (honours @Column({ name })).
+      const srcDb = new Map<string, string>(
+        (sourceEm.columns ?? []).map((c) => [c.propertyName, c.databaseName]),
+      );
+      srcToDb = (property) => srcDb.get(property) ?? property;
+      srcTimeProp = meta.timeColumn ?? sourceHt.timeColumn ?? sourceHt.options.timeColumn;
+      sourceRef = sourceEm.schema ? `${sourceEm.schema}.${sourceEm.tableName}` : sourceEm.tableName;
+      sourceLabel = sourceEm.tableName;
+    }
+
     if (srcTimeProp === undefined) {
       throw new TimescaleError(
         TimescaleErrorCode.NO_TIME_COLUMN,
-        `@ContinuousAggregate ${meta.viewName}: source ${sourceEm.tableName} has no resolvable time column`,
+        `@ContinuousAggregate ${meta.viewName}: source ${sourceLabel} has no resolvable time column`,
         { view: meta.viewName },
       );
     }
@@ -263,7 +323,7 @@ export function generateTimescaleMigration(
 
     const stmt = createContinuousAggregateSQL({
       view: meta.viewName,
-      source: sourceEm.schema ? `${sourceEm.schema}.${sourceEm.tableName}` : sourceEm.tableName,
+      source: sourceRef,
       timeColumn: srcToDb(srcTimeProp),
       bucketInterval: meta.bucketInterval,
       // Output-column names come from the CAGG property names (verbatim).

@@ -319,6 +319,56 @@ ContinuousAggregate({
 BucketColumn()(ReadingHourlyDefaultSchedule.prototype, 'bucket');
 AggregateColumn({ fn: 'count' })(ReadingHourlyDefaultSchedule.prototype, 'n');
 
+// M2.5d — a hierarchical CAGG: a daily rollup built FROM an hourly CAGG (not the hypertable).
+// The child exposes rollup-friendly aggregates (sum + count) so the parent can re-aggregate.
+class ReadingHourlyRollup {}
+ContinuousAggregate({ name: 'reading_hourly_rollup', source: Reading, bucket: '1 hour' })(
+  ReadingHourlyRollup,
+);
+BucketColumn()(ReadingHourlyRollup.prototype, 'bucket');
+GroupColumn()(ReadingHourlyRollup.prototype, 'sensor');
+AggregateColumn({ fn: 'sum', column: 'value' })(ReadingHourlyRollup.prototype, 'sumValue');
+AggregateColumn({ fn: 'count' })(ReadingHourlyRollup.prototype, 'samples');
+
+class ReadingDailyRollup {}
+ContinuousAggregate({ name: 'reading_daily_rollup', source: ReadingHourlyRollup, bucket: '1 day' })(
+  ReadingDailyRollup,
+);
+BucketColumn()(ReadingDailyRollup.prototype, 'bucket');
+GroupColumn()(ReadingDailyRollup.prototype, 'sensor'); // child's projected group column
+AggregateColumn({ fn: 'sum', column: 'sumValue' })(ReadingDailyRollup.prototype, 'sumValue'); // roll up child sums
+AggregateColumn({ fn: 'sum', column: 'samples' })(ReadingDailyRollup.prototype, 'samples'); // roll up child counts
+
+// A circular pair (A sources B, B sources A) — must be rejected at codegen.
+class CyclicA {}
+class CyclicB {}
+ContinuousAggregate({ name: 'cyclic_a', source: CyclicB, bucket: '1 hour' })(CyclicA);
+ContinuousAggregate({ name: 'cyclic_b', source: CyclicA, bucket: '1 hour' })(CyclicB);
+BucketColumn()(CyclicA.prototype, 'bucket');
+AggregateColumn({ fn: 'count' })(CyclicA.prototype, 'n');
+BucketColumn()(CyclicB.prototype, 'bucket');
+AggregateColumn({ fn: 'count' })(CyclicB.prototype, 'n');
+
+// A 3-level chain whose view names sort in the REVERSE of dependency order, so a correct
+// topological sort cannot be faked by alphabetical ordering: base(zzz) → mid(mmm) → top(aaa).
+class ChainBase {}
+ContinuousAggregate({ name: 'zzz_chain_base', source: Reading, bucket: '1 minute' })(ChainBase);
+BucketColumn()(ChainBase.prototype, 'bucket');
+GroupColumn()(ChainBase.prototype, 'sensor');
+AggregateColumn({ fn: 'sum', column: 'value' })(ChainBase.prototype, 'sum_v');
+
+class ChainMid {}
+ContinuousAggregate({ name: 'mmm_chain_mid', source: ChainBase, bucket: '1 hour' })(ChainMid);
+BucketColumn()(ChainMid.prototype, 'bucket');
+GroupColumn()(ChainMid.prototype, 'sensor');
+AggregateColumn({ fn: 'sum', column: 'sum_v' })(ChainMid.prototype, 'sum_v');
+
+class ChainTop {}
+ContinuousAggregate({ name: 'aaa_chain_top', source: ChainMid, bucket: '1 day' })(ChainTop);
+BucketColumn()(ChainTop.prototype, 'bucket');
+GroupColumn()(ChainTop.prototype, 'sensor');
+AggregateColumn({ fn: 'sum', column: 'sum_v' })(ChainTop.prototype, 'sum_v');
+
 describe('generateTimescaleMigration — continuous aggregates', () => {
   it('emits CAGG DDL from decorators (after the hypertables), reversed on down', () => {
     const ds = stubDataSource([
@@ -341,7 +391,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 hour', "time") AS "bucket", "sensor", ` +
         'avg("value") AS "avgValue", count(*) AS "samples" ' +
-        'FROM "public"."reading" GROUP BY "bucket", "sensor" WITH NO DATA;',
+        `FROM "public"."reading" GROUP BY time_bucket(INTERVAL '1 hour', "time"), "sensor" WITH NO DATA;`,
     );
     expect(gen.down).toContain('DROP MATERIALIZED VIEW IF EXISTS "public"."reading_hourly";');
   });
@@ -366,7 +416,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
         'WITH (timescaledb.continuous, timescaledb.materialized_only = TRUE) AS ' +
         `SELECT time_bucket(INTERVAL '1 day', "measured_at") AS "day", ` +
         'sum("reading_val") AS "total" ' +
-        'FROM "public"."mapped" GROUP BY "day" WITH NO DATA;',
+        `FROM "public"."mapped" GROUP BY time_bucket(INTERVAL '1 day', "measured_at") WITH NO DATA;`,
     );
   });
 
@@ -444,7 +494,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 day', "measured_at") AS "day", "device_id", ` +
         'sum("reading_val") AS "total" ' +
-        'FROM "public"."mapped" GROUP BY "day", "device_id" WITH NO DATA;',
+        `FROM "public"."mapped" GROUP BY time_bucket(INTERVAL '1 day', "measured_at"), "device_id" WITH NO DATA;`,
     );
     expect(gen.up.join('\n')).not.toContain('deviceId'); // property name must not leak
   });
@@ -611,5 +661,93 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
     const noticeIdx = gen.down.findIndex((s) => s.includes('RAISE NOTICE'));
     expect(dropIdx).toBe(0);
     expect(noticeIdx).toBeGreaterThan(dropIdx);
+  });
+
+  it('builds a hierarchical CAGG that selects FROM the child CAGG view', () => {
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ReadingDailyRollup, ReadingHourlyRollup],
+    });
+    const parent = gen.up.find((s) => s.includes('"public"."reading_daily_rollup"')) ?? '';
+    expect(parent).toContain('CREATE MATERIALIZED VIEW "public"."reading_daily_rollup"');
+    // buckets on the child's @BucketColumn output, FROM the child's view (not the hypertable)
+    expect(parent).toContain(`time_bucket(INTERVAL '1 day', "bucket")`);
+    expect(parent).toContain('FROM "public"."reading_hourly_rollup"');
+    // rolls up the child's output columns verbatim (identity resolution — no @Column remap)
+    expect(parent).toContain('sum("sumValue") AS "sumValue"');
+    expect(parent).toContain('sum("samples") AS "samples"');
+    expect(parent).toContain('"sensor"'); // grouped child column
+  });
+
+  it('creates the child CAGG before its parent even when the parent sorts first alphabetically', () => {
+    // 'reading_daily_rollup' < 'reading_hourly_rollup' alphabetically, so a naive sort would
+    // emit the parent first; topological ordering must still create the child (hourly) first.
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ReadingDailyRollup, ReadingHourlyRollup],
+    });
+    const childCreate = gen.up.findIndex((s) =>
+      s.includes('CREATE MATERIALIZED VIEW "public"."reading_hourly_rollup"'),
+    );
+    const parentCreate = gen.up.findIndex((s) =>
+      s.includes('CREATE MATERIALIZED VIEW "public"."reading_daily_rollup"'),
+    );
+    expect(childCreate).toBeGreaterThanOrEqual(0);
+    expect(childCreate).toBeLessThan(parentCreate);
+    // down drops the parent before the child
+    const childDrop = gen.down.findIndex((s) => s.includes('"public"."reading_hourly_rollup"'));
+    const parentDrop = gen.down.findIndex((s) => s.includes('"public"."reading_daily_rollup"'));
+    expect(parentDrop).toBeLessThan(childDrop);
+  });
+
+  it('resolves a CAGG source not in the set (cross-migration parent) without ordering', () => {
+    // Only the parent is passed; its child CAGG already exists from an earlier migration.
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ReadingDailyRollup],
+    });
+    const parent = gen.up.find((s) => s.includes('"public"."reading_daily_rollup"')) ?? '';
+    expect(parent).toContain('FROM "public"."reading_hourly_rollup"');
+    // the child is NOT (re)created in this migration
+    expect(
+      gen.up.some((s) => s.includes('CREATE MATERIALIZED VIEW "public"."reading_hourly_rollup"')),
+    ).toBe(false);
+  });
+
+  it('rejects a circular source dependency between continuous aggregates', () => {
+    expect(() =>
+      generateTimescaleMigration(readingDs(), {
+        timestamp: TS,
+        continuousAggregates: [CyclicA, CyclicB],
+      }),
+    ).toThrowError(/circular/);
+  });
+
+  it('orders an N-level CAGG chain by dependency, not alphabetically', () => {
+    // View names sort top < mid < base, the reverse of the base → mid → top dependency.
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ChainTop, ChainMid, ChainBase], // deliberately unsorted
+    });
+    const up = (v: string): number =>
+      gen.up.findIndex((s) => s.includes(`CREATE MATERIALIZED VIEW "public"."${v}"`));
+    expect(up('zzz_chain_base')).toBeGreaterThanOrEqual(0);
+    expect(up('zzz_chain_base')).toBeLessThan(up('mmm_chain_mid')); // base before mid
+    expect(up('mmm_chain_mid')).toBeLessThan(up('aaa_chain_top')); // mid before top
+    // down is the strict reverse: top dropped first, base last
+    const down = (v: string): number => gen.down.findIndex((s) => s.includes(`"public"."${v}"`));
+    expect(down('aaa_chain_top')).toBeLessThan(down('mmm_chain_mid'));
+    expect(down('mmm_chain_mid')).toBeLessThan(down('zzz_chain_base'));
+  });
+
+  it('dedupes a continuous aggregate passed more than once (no double create, no false cycle)', () => {
+    const gen = generateTimescaleMigration(readingDs(), {
+      timestamp: TS,
+      continuousAggregates: [ReadingHourlyRollup, ReadingHourlyRollup],
+    });
+    const creates = gen.up.filter((s) =>
+      s.includes('CREATE MATERIALIZED VIEW "public"."reading_hourly_rollup"'),
+    );
+    expect(creates).toHaveLength(1);
   });
 });

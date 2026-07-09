@@ -87,14 +87,15 @@ ranges over shorthand wording.
 
 The following items are product direction, not shipped functionality:
 
-- Continuous aggregates — hierarchical CAGGs (CAGG-on-CAGG / `@RollupColumn`) and drift
-  detection for CAGGs are still planned. (The `createContinuousAggregateSQL` SQL builder,
-  the `refreshContinuousAggregate()` runtime refresh, the `@ContinuousAggregate` /
+- Continuous aggregates — the `@RollupColumn` ergonomic sugar and drift detection for
+  CAGGs are still planned. (The `createContinuousAggregateSQL` SQL builder, the
+  `refreshContinuousAggregate()` runtime refresh, the `@ContinuousAggregate` /
   `@BucketColumn` / `@GroupColumn` / `@AggregateColumn` decorators with migration codegen,
-  AND automatic refresh policies — `add_continuous_aggregate_policy` via the
-  `@ContinuousAggregate({ refresh })` option / `addContinuousAggregatePolicySQL` — are
-  implemented on `main` but are not yet part of a published release; do not describe them
-  as shipped until released.)
+  automatic refresh policies — `add_continuous_aggregate_policy` via the
+  `@ContinuousAggregate({ refresh })` option / `addContinuousAggregatePolicySQL` — AND
+  hierarchical CAGGs (a `@ContinuousAggregate` whose `source` is another CAGG, with
+  topological create/drop ordering) are implemented on `main` but are not yet part of a
+  published release; do not describe them as shipped until released.)
 - `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
   constructs.
