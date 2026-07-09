@@ -83,6 +83,62 @@ export function compareHypertable(
   return drift;
 }
 
+/** What a `@ContinuousAggregate` declares the database should look like. */
+export interface ExpectedContinuousAggregate {
+  /** Schema-qualified view name, e.g. `public.reading_hourly` (used in messages). */
+  readonly view: string;
+  /** `timescaledb.materialized_only` the decorator declares (real-time when false). */
+  readonly materializedOnly: boolean;
+  /** A refresh policy is expected (the decorator declared `refresh`). */
+  readonly expectRefreshPolicy: boolean;
+}
+
+/** The relevant live state of a continuous aggregate read from `timescaledb_information.*`. */
+export interface ActualContinuousAggregate {
+  /** The view exists as a continuous aggregate. */
+  readonly exists: boolean;
+  /** Its live `materialized_only` flag (meaningful only when `exists`). */
+  readonly materializedOnly: boolean;
+  /** A refresh-policy job exists for it. */
+  readonly hasRefreshPolicy: boolean;
+}
+
+/**
+ * Compare one `@ContinuousAggregate`'s expectation against the live database. Missing-only
+ * semantics, mirroring {@link compareHypertable}: it flags a view that is absent, a
+ * `materialized_only` mismatch, or an expected-but-absent refresh policy — it does not flag
+ * policies or views the database has beyond what the decorator declares.
+ */
+export function compareContinuousAggregate(
+  expected: ExpectedContinuousAggregate,
+  actual: ActualContinuousAggregate,
+): DriftItem[] {
+  const drift: DriftItem[] = [];
+  const add = (message: string): void => {
+    drift.push({ table: expected.view, message });
+  };
+
+  if (!actual.exists) {
+    add(
+      `expected a continuous aggregate but "${expected.view}" does not exist — run the generated migration`,
+    );
+    // Without the view, the remaining checks are meaningless.
+    return drift;
+  }
+
+  if (expected.materializedOnly !== actual.materializedOnly) {
+    add(
+      `materialized_only mismatch (expected ${expected.materializedOnly}, found ${actual.materializedOnly})`,
+    );
+  }
+
+  if (expected.expectRefreshPolicy && !actual.hasRefreshPolicy) {
+    add('refresh policy is missing');
+  }
+
+  return drift;
+}
+
 /** Render drift items as a single human-readable diff block. */
 export function formatDrift(drift: readonly DriftItem[]): string {
   if (drift.length === 0) return 'no schema drift';
