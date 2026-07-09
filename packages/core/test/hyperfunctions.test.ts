@@ -13,6 +13,8 @@ import {
   distinctCountExpr,
   lttbExpr,
   asapSmoothExpr,
+  tdigestExpr,
+  tdigestAccessorExpr,
   statsAgg1DExpr,
   statsAgg2DExpr,
   statsAccessor1DExpr,
@@ -236,6 +238,19 @@ describe('toolkit builders', () => {
     expect(() => lttbExpr('ts);--', 'val', ':r')).toThrowError(TimescaleError);
     expect(() => asapSmoothExpr('ts', 'val);--', ':r')).toThrowError(TimescaleError);
     expect(() => lttbExpr('ts', 'val', '10')).toThrowError(TimescaleError); // raw int, not a placeholder
+  });
+  it('tdigestExpr binds the bucket size and quotes the value column', () => {
+    expect(tdigestExpr('val', ':__buckets')).toBe('tdigest(:__buckets, "val")');
+    expect(tdigestExpr('val', '$1')).toBe('tdigest($1, "val")');
+    expect(() => tdigestExpr('val);--', ':b')).toThrowError(TimescaleError);
+    expect(() => tdigestExpr('val', '100')).toThrowError(TimescaleError); // raw int, not a placeholder
+  });
+  it('tdigestAccessorExpr allow-lists the accessor', () => {
+    const agg = tdigestExpr('val', ':b');
+    expect(tdigestAccessorExpr('mean', agg)).toBe('mean(tdigest(:b, "val"))');
+    expect(tdigestAccessorExpr('min_val', agg)).toBe('min_val(tdigest(:b, "val"))');
+    // @ts-expect-error — not an allow-listed accessor
+    expect(() => tdigestAccessorExpr('error', agg)).toThrowError(TimescaleError);
   });
   it('candlestickAggExpr rejects an unsafe column', () => {
     expect(() => candlestickAggExpr('ts);--', 'price', 'vol')).toThrowError(TimescaleError);

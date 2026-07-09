@@ -374,6 +374,60 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
     });
   });
 
+  // ---- T-Digest percentiles (#83) ----
+
+  it('getTDigestPercentiles estimates percentiles + mean/min/max/count', async () => {
+    // x = [1,2,3,4,5] → p50≈3, min 1, max 5, mean 3, n 5.
+    const repo = createTimescale(ds).getRepository(Reading);
+    const t = await repo.getTDigestPercentiles({ valueColumn: 'x', percentiles: [0.5, 0.9] });
+    expect(t).not.toBeNull();
+    expect(t?.numVals).toBe(5);
+    expect(t?.min).toBeCloseTo(1, 6);
+    expect(t?.max).toBeCloseTo(5, 6);
+    expect(t?.mean).toBeCloseTo(3, 6);
+    expect(t?.percentiles[0]).toBeCloseTo(3, 0); // p50 of [1..5] ≈ 3 (loose: tdigest is approximate)
+    expect(t?.percentiles[1]).toBeGreaterThan(t!.percentiles[0]!);
+  });
+
+  it('getTDigestPercentileRanks estimates ranks and honours buckets + range', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    const ranks = await repo.getTDigestPercentileRanks({
+      valueColumn: 'x',
+      values: [3],
+      buckets: 200,
+    });
+    expect(ranks).not.toBeNull();
+    expect(ranks![0]).toBeGreaterThan(0.3);
+    expect(ranks![0]).toBeLessThan(0.7);
+    // buckets AND a matching range on the same call — exercises the :__buckets + range
+    // parameter ordering together (the one placeholder-sensitive combination).
+    const withBoth = await repo.getTDigestPercentiles({
+      valueColumn: 'x',
+      percentiles: [0.5],
+      buckets: 200,
+      range: { from: '2024-02-01T00:00:00Z', to: '2024-02-02T00:00:00Z' },
+    });
+    expect(withBoth).not.toBeNull();
+    expect(withBoth?.numVals).toBe(5);
+    // a range that matches no rows → null
+    const empty = await repo.getTDigestPercentiles({
+      valueColumn: 'x',
+      percentiles: [0.5],
+      range: { from: '2099-01-01T00:00:00Z', to: '2099-01-02T00:00:00Z' },
+    });
+    expect(empty).toBeNull();
+  });
+
+  it('getTDigestPercentiles rejects an empty percentile list and a bad buckets value', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    await expect(
+      repo.getTDigestPercentiles({ valueColumn: 'x', percentiles: [] }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.INVALID_ARGUMENT });
+    await expect(
+      repo.getTDigestPercentiles({ valueColumn: 'x', percentiles: [0.5], buckets: 0 }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.INVALID_ARGUMENT });
+  });
+
   // ---- M2.3b: counter_agg / time_weight ----
 
   it('getCounterAgg returns exact delta/rate/resets for a counter with one reset', async () => {
@@ -721,6 +775,13 @@ describe.skipIf(!STOCK_IMAGE)('M2.2 toolkit guard (stock image, no toolkit)', ()
     const repo = createTimescale(ds).getRepository(Reading);
     await expect(
       repo.getPercentiles({ valueColumn: 'x', percentiles: [0.5] }),
+    ).rejects.toMatchObject({ code: TimescaleErrorCode.TOOLKIT_MISSING });
+  });
+
+  it('getTDigestPercentiles throws TSDB_TOOLKIT_MISSING when the extension is absent', async () => {
+    const repo = createTimescale(ds).getRepository(Reading);
+    await expect(
+      repo.getTDigestPercentiles({ valueColumn: 'x', percentiles: [0.5] }),
     ).rejects.toMatchObject({ code: TimescaleErrorCode.TOOLKIT_MISSING });
   });
 

@@ -346,6 +346,40 @@ export function percentileSketchAccessorExpr(
 }
 
 // ---------------------------------------------------------------------------
+// tdigest — approximate percentiles (T-Digest sketch)
+// ---------------------------------------------------------------------------
+
+/**
+ * `tdigest(<buckets>, value)` — the T-Digest percentile intermediate. `bucketsToken`
+ * binds the sketch size (accuracy/compression) as a parameter (`$N` or `:name`). The
+ * `approx_percentile` / `approx_percentile_rank` accessors are shared with the uddsketch
+ * builders ({@link approxPercentileExpr} / {@link approxPercentileRankExpr}).
+ */
+export function tdigestExpr(valueColumn: string, bucketsToken: string): string {
+  return `tdigest(${assertBindToken(bucketsToken, 'buckets')}, ${safeIdent(valueColumn, 'tdigest value column')})`;
+}
+
+/** Scalar accessors over a `tdigest` sketch. */
+export type TDigestAccessor = 'mean' | 'min_val' | 'max_val' | 'num_vals';
+
+const TDIGEST_ACCESSORS: ReadonlySet<string> = new Set(['mean', 'min_val', 'max_val', 'num_vals']);
+
+/**
+ * Wrap a `tdigest` sketch in a scalar accessor (`mean`/`min_val`/`max_val`/`num_vals`),
+ * e.g. `mean(tdigest(100,"v"))`. The accessor is allow-listed; `aggExpr` must already be safe.
+ */
+export function tdigestAccessorExpr(accessor: TDigestAccessor, aggExpr: string): string {
+  if (!TDIGEST_ACCESSORS.has(accessor)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `unknown tdigest accessor: ${JSON.stringify(accessor)}`,
+      { accessor: String(accessor) },
+    );
+  }
+  return `${accessor}(${aggExpr})`;
+}
+
+// ---------------------------------------------------------------------------
 // counter_agg — monotonic counters that may reset (delta / rate / …)
 // ---------------------------------------------------------------------------
 
