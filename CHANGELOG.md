@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [0.4.0] - 2026-07-09
+
+Minor release: completes the continuous-aggregate story and adds downsampling,
+operational introspection (informational views + jobs), and T-Digest percentiles.
+No breaking changes.
+
+### Added
+
+- **Continuous aggregates (typed)** — `@ContinuousAggregate` / `@BucketColumn` /
+  `@GroupColumn` / `@AggregateColumn` decorators with migration codegen, the core
+  `createContinuousAggregateSQL` builder, and `createTimescale(ds).refreshContinuousAggregate(...)`.
+- **Automatic refresh policies** — `@ContinuousAggregate({ refresh })` and
+  `addContinuousAggregatePolicySQL` (`add_continuous_aggregate_policy`).
+- **Hierarchical continuous aggregates** — a `@ContinuousAggregate` whose `source` is
+  another CAGG, with topological create/drop ordering.
+- **CAGG drift detection** — `assertSchema()` now covers continuous aggregates and their
+  refresh policies.
+- **Downsampling** — `repo.downsampleLTTB(...)` and `repo.downsampleASAP(...)` via toolkit
+  `lttb` / `asap_smooth`, returning typed `{ time, value }[]`.
+- **Informational views** — `createTimescale(ds).listHypertables(...)`, `listChunks(...)`,
+  `listContinuousAggregates(...)`, `listJobs(...)`, and `getJobStats(...)` over
+  `timescaledb_information.*`.
+- **Jobs API** — `runJob(...)`, plus the user-defined action jobs API `addJob(...)` /
+  `alterJob(...)` / `deleteJob(...)`.
+- **T-Digest percentiles** — `repo.getTDigestPercentiles(...)` / `getTDigestPercentileRanks(...)`
+  via toolkit `tdigest`, with mean/min/max/count.
+- Corresponding core SQL builders are exported for the raw escape-hatch tier.
+
+### Notes
+
+- Downsampling and T-Digest require `timescaledb_toolkit` (fail fast with
+  `TSDB_TOOLKIT_MISSING`); continuous aggregates, informational views, and the jobs API are
+  base TimescaleDB. Verified against TimescaleDB 2.18 and latest on the CI matrix (Node
+  20/22/24, TypeORM 0.3.20 / 1.0.0).
+- `alterJob` sends only the fields you set (omitted fields are unchanged); `config`, when
+  set, replaces the whole config (not merged).
+- Not yet covered: `@RollupColumn` sugar for hierarchical rollups (expressible today via
+  `@AggregateColumn`), the still-`toolkit_experimental` aggregates (`gauge_agg`, `freq_agg`,
+  `compact_state_agg`), and a full safe entity-to-database diff engine.
+
 ## [0.3.0] - 2026-06-28
 
 Minor release: expanded typed `timescaledb_toolkit` aggregate coverage for the
@@ -113,6 +153,7 @@ Initial public release — the schema foundation (M1).
 - `@blueprime/timescaledb-core` — ORM-agnostic SQL/DDL generation, metadata model, and
   identifier safety.
 
+[0.4.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.1.0...v0.1.1
