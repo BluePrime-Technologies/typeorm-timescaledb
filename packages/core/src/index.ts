@@ -7,12 +7,19 @@ export {
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
   TIMESCALEDB_PRESENCE_SQL,
+  createContinuousAggregateSQL,
+  refreshContinuousAggregateSQL,
+  addContinuousAggregatePolicySQL,
 } from './sql/index.js';
 export type {
   MigrationStatement,
   CreateHypertableInput,
   ColumnstorePolicyInput,
   RetentionPolicyInput,
+  CreateContinuousAggregateInput,
+  ContinuousAggregateColumn,
+  ContinuousAggregateFn,
+  ContinuousAggregatePolicyInput,
 } from './sql/index.js';
 export {
   timeBucketExpr,
