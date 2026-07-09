@@ -77,6 +77,9 @@ import {
   listJobs,
   getJobStats,
   runJob,
+  addJob,
+  alterJob,
+  deleteJob,
   type HypertableInfo,
   type ChunkInfo,
   type ContinuousAggregateInfo,
@@ -84,6 +87,8 @@ import {
   type JobStats,
   type ListChunksOptions,
   type ListJobsOptions,
+  type AddJobOptions,
+  type AlterJobChanges,
 } from './info.js';
 
 /** A TypeORM repository augmented (per instance) with its validated hypertable metadata. */
@@ -249,6 +254,18 @@ export interface TimescaleContext {
    * not run inside a transaction), so it is not enrolled in a surrounding transaction.
    */
   runJob(jobId: number): Promise<void>;
+  /**
+   * Register a user-defined action job (`add_job(<proc>, …)`), returning its id. `proc` is
+   * an existing stored procedure `(job_id int, config jsonb)` name.
+   */
+  addJob(proc: string, options: AddJobOptions): Promise<number>;
+  /**
+   * Change an existing job (`alter_job`). Only the fields you set are sent; omitted fields
+   * are unchanged. `config`, when set, replaces the whole config (not merged).
+   */
+  alterJob(jobId: number, changes: AlterJobChanges): Promise<void>;
+  /** Delete a job (`delete_job(<id>)`). */
+  deleteJob(jobId: number): Promise<void>;
 }
 
 /**
@@ -414,6 +431,15 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
     },
     runJob(jobId: number): Promise<void> {
       return runJob(dataSource, jobId);
+    },
+    addJob(proc: string, options: AddJobOptions): Promise<number> {
+      return addJob(dataSource, proc, options);
+    },
+    alterJob(jobId: number, changes: AlterJobChanges): Promise<void> {
+      return alterJob(dataSource, jobId, changes);
+    },
+    deleteJob(jobId: number): Promise<void> {
+      return deleteJob(dataSource, jobId);
     },
   };
 }
