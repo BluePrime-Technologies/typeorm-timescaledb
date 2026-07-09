@@ -28,6 +28,15 @@ export type {
 } from './decorators/index.js';
 export { createTimescale } from './runtime/createTimescale.js';
 export type { TimescaleContext, TimescaleRepository } from './runtime/createTimescale.js';
+export type {
+  HypertableInfo,
+  ChunkInfo,
+  ContinuousAggregateInfo,
+  JobInfo,
+  JobStats,
+  ListChunksOptions,
+  ListJobsOptions,
+} from './runtime/info.js';
 
 // Query layer (M2): hyperfunctions via a per-instance QueryBuilder wrapper + typed
 // raw-result coercion helpers. No prototype mutation.

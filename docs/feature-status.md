@@ -100,6 +100,11 @@ The following items are product direction, not shipped functionality:
 - Downsampling — `repo.downsampleLTTB()` and `repo.downsampleASAP()` (toolkit `lttb` /
   `asap_smooth`, returning typed `{ time, value }[]`) are implemented on `develop` but are
   not yet part of a published release; do not describe them as shipped until released.
+- Informational views + jobs — typed read accessors over `timescaledb_information.*`
+  (`listHypertables` / `listChunks` / `listContinuousAggregates` / `listJobs` / `getJobStats`)
+  and `runJob()` are implemented on `develop` but not yet released. The user-defined action
+  jobs API (`add_job` / `alter_job`, with the `alter_job` wholesale-config-replace trap) is
+  still planned.
 - `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
   constructs.
