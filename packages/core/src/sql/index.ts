@@ -70,6 +70,8 @@ export {
   heartbeatDeadRangesExpr,
   lttbExpr,
   asapSmoothExpr,
+  tdigestExpr,
+  tdigestAccessorExpr,
 } from './toolkit.js';
 export type {
   CandlestickAccessor,
@@ -77,6 +79,7 @@ export type {
   Stats1DAccessor,
   Stats2DAccessor,
   PercentileSketchAccessor,
+  TDigestAccessor,
   CounterAccessor,
   TimeWeightMethod,
   TimeWeightAccessor,

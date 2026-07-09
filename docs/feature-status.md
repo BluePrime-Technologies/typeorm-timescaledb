@@ -108,8 +108,11 @@ The following items are product direction, not shipped functionality:
 - `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
   constructs.
-- Stable Toolkit aggregates not listed in the 0.3.0 release scope, including
-  T-Digest helpers.
+- T-Digest percentiles — `repo.getTDigestPercentiles()` / `getTDigestPercentileRanks()`
+  (toolkit `tdigest` + `approx_percentile`/`approx_percentile_rank`, with mean/min/max/count)
+  are implemented on `develop` but not yet released; do not describe them as shipped until
+  released.
+- Other stable Toolkit aggregates not listed in the 0.3.0 release scope or above.
 - Full entity-to-database diff engine.
 - Validated cross-store references.
 - Complete coverage of every TimescaleDB feature.

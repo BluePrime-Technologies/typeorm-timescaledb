@@ -31,6 +31,8 @@ import {
   getStatePeriods,
   getStateTimeline,
   getStats,
+  getTDigestPercentiles,
+  getTDigestPercentileRanks,
   getTimeWeight,
   getTopN,
   isLiveAt,
@@ -62,6 +64,9 @@ import {
   type StateDuration,
   type StateInterval,
   type StatsSummary,
+  type TDigestResult,
+  type GetTDigestPercentilesOptions,
+  type GetTDigestPercentileRanksOptions,
   type TimeWeight,
 } from '../query/toolkit.js';
 import { assertSchema, type AssertSchemaOptions } from './assertSchema.js';
@@ -127,6 +132,17 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * is empty. Requires `timescaledb_toolkit`.
    */
   getPercentileRanks(options: GetPercentileRanksOptions): Promise<number[] | null>;
+  /**
+   * Typed approximate percentiles via a **T-Digest** sketch (`tdigest`) — higher tail
+   * accuracy than uddsketch; returns the values plus mean/min/max/count, or `null` when
+   * the set is empty. Requires `timescaledb_toolkit`.
+   */
+  getTDigestPercentiles(options: GetTDigestPercentilesOptions): Promise<TDigestResult | null>;
+  /**
+   * Typed T-Digest percentile ranks (`approx_percentile_rank`). `null` when the set is
+   * empty. Requires `timescaledb_toolkit`.
+   */
+  getTDigestPercentileRanks(options: GetTDigestPercentileRanksOptions): Promise<number[] | null>;
   /**
    * Typed `counter_agg` summary (delta/rate/resets for a monotonic counter). `null`
    * when the set is empty. Requires `timescaledb_toolkit`.
@@ -311,6 +327,16 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         },
         getPercentileRanks(options: GetPercentileRanksOptions): Promise<number[] | null> {
           return getPercentileRanks(repo, timeColumn, options);
+        },
+        getTDigestPercentiles(
+          options: GetTDigestPercentilesOptions,
+        ): Promise<TDigestResult | null> {
+          return getTDigestPercentiles(repo, timeColumn, options);
+        },
+        getTDigestPercentileRanks(
+          options: GetTDigestPercentileRanksOptions,
+        ): Promise<number[] | null> {
+          return getTDigestPercentileRanks(repo, timeColumn, options);
         },
         getCounterAgg(options: GetCounterAggOptions): Promise<CounterSummary | null> {
           return getCounterAgg(repo, timeColumn, options);

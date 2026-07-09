@@ -20,6 +20,8 @@ import {
   mcvTopNExpr,
   percentileAggExpr,
   percentileSketchAccessorExpr,
+  tdigestExpr,
+  tdigestAccessorExpr,
   safeIdent,
   stateAggExpr,
   stateAtExpr,
@@ -521,6 +523,161 @@ export async function getPercentileRanks<T extends ObjectLiteral>(
   const cols = options.values.map((v, i) => `${approxPercentileRankExpr(v, 'q."s"')} AS "r${i}"`);
   const outerSql =
     `SELECT ${cols.join(', ')}, ${percentileSketchAccessorExpr('num_vals', 'q."s"')} AS "num_vals" ` +
+    `FROM (${innerSql}) q`;
+
+  const rows = (await repo.query(outerSql, params)) as Array<Record<string, unknown>>;
+  const row = rows[0];
+  if (!row || row.num_vals === null || row.num_vals === undefined) {
+    return null;
+  }
+  return options.values.map((_, i) => toNumber(row[`r${i}`], `rank[${i}]`));
+}
+
+// ---------------------------------------------------------------------------
+// tdigest — approximate percentiles (T-Digest sketch)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_TDIGEST_BUCKETS = 100;
+const MAX_TDIGEST_BUCKETS = 1_000_000;
+
+function assertBuckets(buckets: number): void {
+  // tdigest has no floor above 1 (verified: tdigest(1,…)/tdigest(2,…) both work, unlike
+  // lttb's floor of 3). Cap the upper end to guard against an accidental huge sketch,
+  // consistent with the downsample resolution cap.
+  if (!Number.isSafeInteger(buckets) || buckets < 1 || buckets > MAX_TDIGEST_BUCKETS) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `buckets must be an integer between 1 and ${MAX_TDIGEST_BUCKETS}, got ${JSON.stringify(buckets)}`,
+      { buckets },
+    );
+  }
+}
+
+/** Build the inner `tdigest(<buckets>, value)` sketch query (sketch aliased `s`). */
+function tdigestInner<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: { valueColumn: string; buckets?: number; range?: TimeRange; timeColumn?: string },
+): [sql: string, params: unknown[]] {
+  const resolve = columnResolver(repo);
+  const agg = tdigestExpr(resolve(options.valueColumn), ':__buckets');
+  const timeColumn = resolve(options.timeColumn ?? defaultTimeColumn);
+  const inner = repo
+    .createQueryBuilder('e')
+    .select(agg, 's')
+    .setParameter('__buckets', options.buckets ?? DEFAULT_TDIGEST_BUCKETS);
+  applyTimeRange(inner, timeColumn, options.range);
+  return inner.getQueryAndParameters();
+}
+
+export interface GetTDigestPercentilesOptions {
+  /** Value **property** name to estimate percentiles of. */
+  readonly valueColumn: string;
+  /** Percentiles in `[0, 1]` (e.g. `[0.5, 0.95, 0.99]`); must be non-empty. */
+  readonly percentiles: readonly number[];
+  /** T-Digest sketch size (accuracy/compression). Default 100; must be a positive integer. */
+  readonly buckets?: number;
+  /** Inclusive-from / exclusive-to time bounds (bound as parameters). */
+  readonly range?: TimeRange;
+  /** Time **property** for `range`; defaults to the entity's `@TimeColumn`. */
+  readonly timeColumn?: string;
+}
+
+export interface TDigestResult {
+  /** `approx_percentile` values, aligned to the requested `percentiles`. */
+  readonly percentiles: number[];
+  /** Arithmetic mean of the ingested values. */
+  readonly mean: number;
+  /** Smallest ingested value. */
+  readonly min: number;
+  /** Largest ingested value. */
+  readonly max: number;
+  readonly numVals: number;
+}
+
+/**
+ * Typed approximate percentiles over a hypertable via a **T-Digest** sketch (`tdigest`).
+ * T-Digest gives higher accuracy at the distribution tails than uddsketch. Computes the
+ * sketch once, then extracts each requested percentile plus mean/min/max/count. Requires
+ * `timescaledb_toolkit`. Returns `null` when the (filtered) set is empty.
+ */
+export async function getTDigestPercentiles<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetTDigestPercentilesOptions,
+): Promise<TDigestResult | null> {
+  if (options.percentiles.length === 0) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'getTDigestPercentiles requires at least one percentile',
+      {},
+    );
+  }
+  assertBuckets(options.buckets ?? DEFAULT_TDIGEST_BUCKETS);
+  await assertToolkit(repo.manager.connection);
+
+  const [innerSql, params] = tdigestInner(repo, defaultTimeColumn, options);
+  const cols = options.percentiles.map((p, i) => `${approxPercentileExpr(p, 'q."s"')} AS "p${i}"`);
+  const outerSql =
+    `SELECT ${cols.join(', ')}, ` +
+    `${tdigestAccessorExpr('mean', 'q."s"')} AS "mean", ` +
+    `${tdigestAccessorExpr('min_val', 'q."s"')} AS "min", ` +
+    `${tdigestAccessorExpr('max_val', 'q."s"')} AS "max", ` +
+    `${tdigestAccessorExpr('num_vals', 'q."s"')} AS "num_vals" ` +
+    `FROM (${innerSql}) q`;
+
+  const rows = (await repo.query(outerSql, params)) as Array<Record<string, unknown>>;
+  const row = rows[0];
+  if (!row || row.num_vals === null || row.num_vals === undefined) {
+    return null;
+  }
+  return {
+    percentiles: options.percentiles.map((_, i) => toNumber(row[`p${i}`], `percentile[${i}]`)),
+    mean: toNumber(row.mean, 'mean'),
+    min: toNumber(row.min, 'min'),
+    max: toNumber(row.max, 'max'),
+    numVals: toNumber(row.num_vals, 'num_vals'),
+  };
+}
+
+export interface GetTDigestPercentileRanksOptions {
+  /** Value **property** name whose sketch the ranks are computed against. */
+  readonly valueColumn: string;
+  /** Values to rank (e.g. `[100, 250, 500]`); must be non-empty. */
+  readonly values: readonly number[];
+  /** T-Digest sketch size. Default 100; must be a positive integer. */
+  readonly buckets?: number;
+  /** Inclusive-from / exclusive-to time bounds (bound as parameters). */
+  readonly range?: TimeRange;
+  /** Time **property** for `range`; defaults to the entity's `@TimeColumn`. */
+  readonly timeColumn?: string;
+}
+
+/**
+ * Typed approximate percentile **ranks** via a T-Digest sketch — for each input value,
+ * the fraction of the distribution at or below it (`approx_percentile_rank`). Requires
+ * `timescaledb_toolkit`. Returns `null` when the (filtered) set is empty; otherwise an
+ * array aligned to the input `values`.
+ */
+export async function getTDigestPercentileRanks<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  defaultTimeColumn: string,
+  options: GetTDigestPercentileRanksOptions,
+): Promise<number[] | null> {
+  if (options.values.length === 0) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'getTDigestPercentileRanks requires at least one value',
+      {},
+    );
+  }
+  assertBuckets(options.buckets ?? DEFAULT_TDIGEST_BUCKETS);
+  await assertToolkit(repo.manager.connection);
+
+  const [innerSql, params] = tdigestInner(repo, defaultTimeColumn, options);
+  const cols = options.values.map((v, i) => `${approxPercentileRankExpr(v, 'q."s"')} AS "r${i}"`);
+  const outerSql =
+    `SELECT ${cols.join(', ')}, ${tdigestAccessorExpr('num_vals', 'q."s"')} AS "num_vals" ` +
     `FROM (${innerSql}) q`;
 
   const rows = (await repo.query(outerSql, params)) as Array<Record<string, unknown>>;
