@@ -39,7 +39,8 @@ No breaking changes.
 
 - **`approxCountDistinct` over an empty set** now returns `"0"` (the distinct count of
   no rows) instead of throwing on the `NULL` the toolkit accessor returns — matching the
-  empty-set handling of every other typed aggregate helper.
+  empty-set handling of every other typed aggregate helper. Present since `0.2.0` (when
+  `approxCountDistinct` was introduced).
 
 ### Notes
 
