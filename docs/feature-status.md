@@ -1,8 +1,8 @@
 # Feature status
 
 This page is the public source of truth for what `typeorm-timescaledb` ships in
-the current published release line, what is in the 0.3.0 release scope, and what
-is explicitly not supported yet.
+the current published release line, what is in the 0.3.0 and 0.4.0 release scopes,
+and what is explicitly not supported yet.
 
 Use this page when updating README copy, npm-facing descriptions, release notes,
 issue templates, launch copy, and public examples.
@@ -22,7 +22,7 @@ issue templates, launch copy, and public examples.
 
 ## Shipped in 0.2.x
 
-The following features may be described as shipped for the current 0.3.x scope:
+The following features may be described as shipped for the current 0.4.x scope:
 
 - TypeORM-first TimescaleDB integration.
 - Unified import surface for TypeORM symbols and TimescaleDB extensions.
@@ -69,6 +69,31 @@ families implemented in this package:
 - default time-column resolution across toolkit helpers, including entities whose
   `@TimeColumn` property is mapped with `@Column({ name })`.
 
+## Shipped in 0.4.0
+
+0.4.0 completes the continuous-aggregate story and adds downsampling, operational
+introspection, and T-Digest percentiles:
+
+- **Continuous aggregates** — the `@ContinuousAggregate` / `@BucketColumn` / `@GroupColumn` /
+  `@AggregateColumn` decorators with migration codegen; the `createContinuousAggregateSQL`
+  builder and `createTimescale(ds).refreshContinuousAggregate()` runtime refresh.
+- **Automatic refresh policies** — `@ContinuousAggregate({ refresh })` /
+  `addContinuousAggregatePolicySQL` (`add_continuous_aggregate_policy`).
+- **Hierarchical continuous aggregates** — a `@ContinuousAggregate` whose `source` is another
+  CAGG, with topological create/drop ordering.
+- **CAGG drift detection** — `assertSchema()` covers continuous aggregates and their refresh
+  policies.
+- **Downsampling** — `repo.downsampleLTTB()` and `repo.downsampleASAP()` (toolkit `lttb` /
+  `asap_smooth`), returning typed `{ time, value }[]`.
+- **Informational views + jobs** — `listHypertables()` / `listChunks()` /
+  `listContinuousAggregates()` / `listJobs()` / `getJobStats()`, plus `runJob()` and the
+  user-defined action jobs API `addJob()` / `alterJob()` / `deleteJob()`.
+- **T-Digest percentiles** — `repo.getTDigestPercentiles()` / `getTDigestPercentileRanks()`
+  (toolkit `tdigest`), with mean/min/max/count.
+
+All of the above are covered by unit tests and real-TimescaleDB integration on the CI matrix
+(TimescaleDB 2.18 + latest, Node 20/22/24, TypeORM 0.3.20/1.0.0).
+
 ## Supported platform claims
 
 The following platform claims are safe to use when they match package metadata
@@ -87,32 +112,14 @@ ranges over shorthand wording.
 
 The following items are product direction, not shipped functionality:
 
-- Continuous aggregates — only the `@RollupColumn` ergonomic sugar (and an avg-rollup
-  helper) is still planned. (The `createContinuousAggregateSQL` SQL builder, the
-  `refreshContinuousAggregate()` runtime refresh, the `@ContinuousAggregate` /
-  `@BucketColumn` / `@GroupColumn` / `@AggregateColumn` decorators with migration codegen,
-  automatic refresh policies — `add_continuous_aggregate_policy` via the
-  `@ContinuousAggregate({ refresh })` option / `addContinuousAggregatePolicySQL` —
-  hierarchical CAGGs (a `@ContinuousAggregate` whose `source` is another CAGG, with
-  topological create/drop ordering), AND `assertSchema()` drift detection for CAGGs and
-  their refresh policies are implemented on `main`/`develop` but are not yet part of a
-  published release; do not describe them as shipped until released.)
-- Downsampling — `repo.downsampleLTTB()` and `repo.downsampleASAP()` (toolkit `lttb` /
-  `asap_smooth`, returning typed `{ time, value }[]`) are implemented on `develop` but are
-  not yet part of a published release; do not describe them as shipped until released.
-- Informational views + jobs — typed read accessors over `timescaledb_information.*`
-  (`listHypertables` / `listChunks` / `listContinuousAggregates` / `listJobs` / `getJobStats`),
-  `runJob()`, and the user-defined action jobs API (`addJob` / `alterJob` / `deleteJob`) are
-  implemented but not yet released. `alterJob` sends only the fields you set (omitted fields
-  are unchanged); `config`, when set, replaces the whole config (not merged).
+- Continuous aggregates — `@RollupColumn` ergonomic sugar (and an avg-rollup helper) for
+  hierarchical CAGGs is still planned. (Hierarchical rollups already work today via
+  `@AggregateColumn`, e.g. `{ fn: 'sum', column: 'sum_v' }`; `@RollupColumn` would only add
+  sugar.)
 - `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
   constructs.
-- T-Digest percentiles — `repo.getTDigestPercentiles()` / `getTDigestPercentileRanks()`
-  (toolkit `tdigest` + `approx_percentile`/`approx_percentile_rank`, with mean/min/max/count)
-  are implemented on `develop` but not yet released; do not describe them as shipped until
-  released.
-- Other stable Toolkit aggregates not listed in the 0.3.0 release scope or above.
+- Other stable Toolkit aggregates not listed in the 0.3.0 / 0.4.0 release scope.
 - Full entity-to-database diff engine.
 - Validated cross-store references.
 - Complete coverage of every TimescaleDB feature.
@@ -151,17 +158,16 @@ Use wording like:
 
 - `0.2.x ships typed hypertables, columnstore, retention, hash partitioning, migration generation, CLI commands, repositories, drift checks, NestJS wiring, time bucketing, gap-filling, candlesticks, and approximate distinct count.`
 - `The 0.3.0 release scope adds typed helpers for the stable Toolkit aggregate families implemented in this package, including stats/regression, UddSketch percentiles, counters, time-weight, state tracking, MCV/top-N, and heartbeat/liveness.`
-- `Continuous aggregates, experimental toolkit aggregates, stable Toolkit aggregates not listed in the docs, validated cross-store references, and a full safe diff engine are planned but not shipped yet.`
+- `0.4.0 adds continuous aggregates (including hierarchical CAGGs and refresh policies), downsampling (LTTB/ASAP), informational views and the jobs API, and T-Digest percentiles.`
+- `Experimental toolkit aggregates, stable Toolkit aggregates not listed in the docs, validated cross-store references, and a full safe diff engine are planned but not shipped yet.`
 
 Avoid wording like:
 
 - `Every TimescaleDB feature is supported.`
 - `The package automatically diffs and reconciles all entity and database changes.`
-- `Continuous aggregates are available.`
 - `Generated down migrations drop or rewrite live data.`
 - `Stable toolkit aggregate coverage shipped in 0.2.0.`
 - `Every stable timescaledb_toolkit aggregate is covered.`
-- `0.3.x is the current release before the package metadata is bumped.`
 - `Hyperfunction query expressions are future scope.`
 
 ## Review rule

@@ -274,6 +274,18 @@ describe.skipIf(!TOOLKIT_IMAGE)('M2.2 toolkit features (toolkit image)', () => {
     ).toBe('3');
   });
 
+  it('approxCountDistinct returns "0" for an empty set (not a thrown null)', async () => {
+    const repo = createTimescale(ds).getRepository(Trade);
+    // A range matching zero rows → approx_count_distinct is NULL → distinct_count(NULL)
+    // is NULL; the distinct count of nothing is 0, not an error.
+    expect(
+      await repo.approxCountDistinct({
+        column: 'price',
+        range: { from: '1999-01-01T00:00:00Z', to: '1999-01-02T00:00:00Z' },
+      }),
+    ).toBe('0');
+  });
+
   // ---- M2.3a: stats_agg / percentile_agg ----
 
   it('getStats returns exact 1D statistics (sample method default)', async () => {
