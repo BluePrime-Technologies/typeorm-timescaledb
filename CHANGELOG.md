@@ -35,6 +35,12 @@ No breaking changes.
   via toolkit `tdigest`, with mean/min/max/count.
 - Corresponding core SQL builders are exported for the raw escape-hatch tier.
 
+### Fixed
+
+- **`approxCountDistinct` over an empty set** now returns `"0"` (the distinct count of
+  no rows) instead of throwing on the `NULL` the toolkit accessor returns — matching the
+  empty-set handling of every other typed aggregate helper.
+
 ### Notes
 
 - Downsampling and T-Digest require `timescaledb_toolkit` (fail fast with

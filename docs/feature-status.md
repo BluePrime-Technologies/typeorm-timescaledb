@@ -158,17 +158,16 @@ Use wording like:
 
 - `0.2.x ships typed hypertables, columnstore, retention, hash partitioning, migration generation, CLI commands, repositories, drift checks, NestJS wiring, time bucketing, gap-filling, candlesticks, and approximate distinct count.`
 - `The 0.3.0 release scope adds typed helpers for the stable Toolkit aggregate families implemented in this package, including stats/regression, UddSketch percentiles, counters, time-weight, state tracking, MCV/top-N, and heartbeat/liveness.`
-- `Continuous aggregates, experimental toolkit aggregates, stable Toolkit aggregates not listed in the docs, validated cross-store references, and a full safe diff engine are planned but not shipped yet.`
+- `0.4.0 adds continuous aggregates (including hierarchical CAGGs and refresh policies), downsampling (LTTB/ASAP), informational views and the jobs API, and T-Digest percentiles.`
+- `Experimental toolkit aggregates, stable Toolkit aggregates not listed in the docs, validated cross-store references, and a full safe diff engine are planned but not shipped yet.`
 
 Avoid wording like:
 
 - `Every TimescaleDB feature is supported.`
 - `The package automatically diffs and reconciles all entity and database changes.`
-- `Continuous aggregates are available.`
 - `Generated down migrations drop or rewrite live data.`
 - `Stable toolkit aggregate coverage shipped in 0.2.0.`
 - `Every stable timescaledb_toolkit aggregate is covered.`
-- `0.4.x is the current release before the package metadata is bumped.`
 - `Hyperfunction query expressions are future scope.`
 
 ## Review rule

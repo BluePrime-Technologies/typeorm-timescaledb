@@ -229,7 +229,11 @@ export async function approxCountDistinct<T extends ObjectLiteral>(
   applyTimeRange(qb, timeColumn, options.range);
 
   const row = await qb.getRawOne<{ n: unknown }>();
-  return toBigIntString(row?.n, 'approx_count_distinct');
+  // Over an empty set the ungrouped aggregate still returns one row, but
+  // approx_count_distinct → NULL and the strict distinct_count(NULL) → NULL. The
+  // distinct count of nothing is 0, so map that to "0" rather than letting
+  // toBigIntString reject the null (every sibling helper guards the empty case).
+  return row?.n == null ? '0' : toBigIntString(row.n, 'approx_count_distinct');
 }
 
 // ---------------------------------------------------------------------------
