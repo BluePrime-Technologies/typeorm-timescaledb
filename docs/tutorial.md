@@ -333,6 +333,11 @@ such as expected hypertables, expected dimension columns, and expected
 columnstore/retention policy jobs. Do not rely on it to catch every changed
 chunk interval, ordering change, retention interval change, or extra policy.
 
+If any `@Hypertable` entities are registered but the `timescaledb` extension
+itself is not installed, `assertSchema()` fails fast with a clear
+`TSDB_TIMESCALEDB_MISSING` error instead of a raw
+`relation "timescaledb_information.hypertables" does not exist` error.
+
 ## Common problems
 
 ### `ERR_UNKNOWN_FILE_EXTENSION` for `src/data-source.ts`
@@ -350,9 +355,10 @@ Confirm that `src/data-source.ts` includes the generated directory in the
 migrations: ['src/migrations/*.{ts,js}'];
 ```
 
-### `create_hypertable` is missing
+### `function by_range(unknown, interval) does not exist`
 
-Confirm the target database has the extension:
+This means the target database is plain PostgreSQL, or is missing the
+`timescaledb` extension. Confirm the target database has the extension:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS timescaledb;

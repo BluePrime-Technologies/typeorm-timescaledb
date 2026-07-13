@@ -17,6 +17,13 @@ import { TimescaleError, TimescaleErrorCode } from '../errors.js';
  * position with {@link quoteLiteral}; intervals are validated with {@link assertInterval}.
  */
 
+/**
+ * Catalog query: number of rows is the `timescaledb`-installed flag (0 = missing).
+ * Mirrors {@link import('./toolkit.js').TOOLKIT_PRESENCE_SQL} but for the base
+ * `timescaledb` extension rather than `timescaledb_toolkit`.
+ */
+export const TIMESCALEDB_PRESENCE_SQL = "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'";
+
 /** A reversible, inspectable unit of hypertable DDL. */
 export interface MigrationStatement {
   /**

@@ -247,7 +247,17 @@ Write a hand-authored migration and test it against a realistic database copy.
 **Symptom**
 
 A migration fails because TimescaleDB functions such as hypertable creation are
-not available.
+not available. Depending on where this is hit, the exact error text differs:
+
+- Running a generated migration (`typeorm-timescaledb run`):
+  ```txt
+  Migration "Timescale<timestamp>" failed, error: function by_range(unknown, interval) does not exist
+  ```
+  (`by_range` is the TimescaleDB dimension-builder function the generated migration
+  calls — it only exists once the extension is installed.)
+- Calling `assertSchema()` on an entity with `@Hypertable` metadata: this fails
+  fast with `TimescaleError(TSDB_TIMESCALEDB_MISSING)` and a clear message telling
+  you to run `CREATE EXTENSION timescaledb;`.
 
 **Likely cause**
 
