@@ -56,6 +56,32 @@ creation and normal TypeORM migration behavior.
 - `hasTimescaleMetadata(target)` — returns whether a class has `@Hypertable`
   metadata.
 
+### Continuous aggregate decorators (0.4.0)
+
+A continuous aggregate (CAGG) is declared on its own class — **not** a TypeORM
+`@Entity`, since a CAGG is a materialized view, not a table:
+
+- `ContinuousAggregate(options)` — class decorator declaring a CAGG.
+  `options.name` is the view name (optionally `schema.view`); `options.source`
+  is the `@Hypertable` entity (or another `@ContinuousAggregate` class, for a
+  hierarchical CAGG) it aggregates; `options.bucket` is the bucket width (e.g.
+  `'1 hour'`). Optional: `materializedOnly` (default `false` — real-time
+  aggregation on), `timeColumn` (defaults to the source's `@TimeColumn`), and
+  `refresh` (a `RefreshPolicyOptions` — `startOffset`, `endOffset`, and
+  optional `scheduleInterval`, defaulting to the bucket width).
+- `BucketColumn()` — property decorator marking the CAGG's `time_bucket(...)`
+  output column.
+- `GroupColumn()` — property decorator marking an extra `GROUP BY` key. Its
+  output name is the **source column's physical name**, not the CAGG property
+  name (unlike `@BucketColumn`/`@AggregateColumn`, whose output names are the
+  property verbatim).
+- `AggregateColumn(options)` — property decorator marking an aggregate output
+  column. `options.fn` is an allow-listed aggregate function; `options.column`
+  is the source property to aggregate (omit only for `fn: 'count'`).
+- `getContinuousAggregateMeta(target)` / `hasContinuousAggregateMeta(target)` —
+  metadata accessors mirroring `getTimescaleMetadata`/`hasTimescaleMetadata`
+  for CAGG classes.
+
 ## Runtime context
 
 ### `createTimescale(dataSource)`
@@ -76,10 +102,28 @@ interface TimescaleContext {
   readonly dataSource: DataSource;
   getRepository<T>(entity: EntityTarget<T>): TimescaleRepository<T>;
   assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]>;
+  refreshContinuousAggregate(
+    view: string,
+    options?: { start?: Date | string; end?: Date | string },
+  ): Promise<void>;
+  listHypertables(): Promise<HypertableInfo[]>;
+  listChunks(options?: ListChunksOptions): Promise<ChunkInfo[]>;
+  listContinuousAggregates(): Promise<ContinuousAggregateInfo[]>;
+  listJobs(options?: ListJobsOptions): Promise<JobInfo[]>;
+  getJobStats(jobId: number): Promise<JobStats | null>;
+  runJob(jobId: number): Promise<void>;
+  addJob(proc: string, options: AddJobOptions): Promise<number>;
+  alterJob(jobId: number, changes: AlterJobChanges): Promise<void>;
+  deleteJob(jobId: number): Promise<void>;
 }
 ```
 
-Use `getRepository()` with the entity class, not a string table name.
+Use `getRepository()` with the entity class, not a string table name. The
+non-`getRepository`/`assertSchema` methods (added in 0.4.0) are DataSource-wide
+operations — continuous-aggregate refresh and operational introspection — not
+scoped to a single entity, which is why they live on the context rather than a
+repository. See [Operational introspection](#operational-introspection-and-jobs-040)
+below for the informational-view and jobs methods.
 
 ### `TimescaleRepository<T>`
 
@@ -94,16 +138,67 @@ Important properties and methods include:
 - `timescaleQueryBuilder(alias?)`
 - `getTimeBucket(options)`
 - toolkit-backed helpers such as `getCandlesticks()`, `approxCountDistinct()`,
-  `getStats()`, `getRegression()`, `getPercentiles()`, `getCounterAgg()`,
-  `getTimeWeight()`, `getStateDurations()`, `getMostCommonValues()`, and
-  `getHeartbeatHealth()`
+  `getStats()`, `getRegression()`, `getPercentiles()`, `getTDigestPercentiles()`,
+  `getCounterAgg()`, `getTimeWeight()`, `getStateDurations()`,
+  `getMostCommonValues()`, `getHeartbeatHealth()`, `downsampleLTTB()`, and
+  `downsampleASAP()`
+
+## Continuous aggregates (0.4.0)
+
+See [Decorators and metadata helpers](#continuous-aggregate-decorators-040)
+above for `@ContinuousAggregate`/`@BucketColumn`/`@GroupColumn`/`@AggregateColumn`,
+and [`TimescaleContext`](#timescalecontext) above for
+`refreshContinuousAggregate()`. This section covers the remaining pieces:
+migration generation and the re-exported core builders.
+
+### Migration generation for continuous aggregates
+
+`GenerateMigrationOptions.continuousAggregates` (see
+[Migration generation](#migration-generation) below) accepts an array of
+`@ContinuousAggregate` classes. They are not TypeORM entities, so they can't be
+discovered from `entityMetadatas` — pass them explicitly:
+
+```ts
+const migration = generateTimescaleMigration(AppDataSource, {
+  continuousAggregates: [ReadingHourly],
+});
+```
+
+Each CAGG's `source` must be a `@Hypertable` entity registered on the
+DataSource, or another `@ContinuousAggregate` in the same `continuousAggregates`
+array (hierarchical CAGG). Generation topologically orders hierarchical CAGGs
+(parent after child) and throws on a circular `source` dependency.
+
+### Re-exported core builders
+
+Unlike the toolkit SQL builders (see
+[Core SQL builder exports](#core-sql-builder-exports) below), the
+continuous-aggregate core builders **are** re-exported at the `typeorm-timescaledb`
+package root, since migration generation needs them directly:
+
+- `createContinuousAggregateSQL`
+- `refreshContinuousAggregateSQL`
+- `addContinuousAggregatePolicySQL`
+
+Related exported types: `CreateContinuousAggregateInput`,
+`ContinuousAggregateColumn`, `ContinuousAggregateFn`,
+`ContinuousAggregatePolicyInput`.
+
+### Drift detection
+
+`assertSchema()` (see [Schema assertion](#schema-assertion) below) also checks
+that each `@ContinuousAggregate` view exists and, when `refresh` is set, that
+its policy is attached.
 
 ## Query layer
 
 0.2.x introduced the base query layer: time buckets, `first`/`last`, `histogram`,
 gap-filling, candlesticks, approximate distinct count, and raw-result coercion.
-The 0.3.0 release scope expands repository helpers for the stable Toolkit
-aggregate families implemented in this package.
+0.3.0 expanded repository helpers for the stable Toolkit aggregate families
+implemented in this package. 0.4.0 adds continuous aggregates (see
+[Continuous aggregates](#continuous-aggregates-040) above), downsampling,
+T-Digest percentiles, and DataSource-wide operational introspection (see
+[Operational introspection](#operational-introspection-and-jobs-040) below).
 
 ### `repo.getTimeBucket(options)`
 
@@ -176,6 +271,8 @@ The following methods require `timescaledb_toolkit`:
 - `getRegression(options): Promise<Regression | null>`
 - `getPercentiles(options): Promise<PercentileResult | null>`
 - `getPercentileRanks(options): Promise<number[] | null>`
+- `getTDigestPercentiles(options): Promise<TDigestResult | null>`
+- `getTDigestPercentileRanks(options): Promise<number[] | null>`
 - `getCounterAgg(options): Promise<CounterSummary | null>`
 - `getTimeWeight(options): Promise<TimeWeight | null>`
 - `getStateDurations(options): Promise<StateDuration[]>`
@@ -188,16 +285,20 @@ The following methods require `timescaledb_toolkit`:
 - `getLiveRanges(options): Promise<Period[]>`
 - `getDeadRanges(options): Promise<Period[]>`
 - `isLiveAt(options): Promise<boolean | null>`
+- `downsampleLTTB(options): Promise<DownsampledPoint[]>`
+- `downsampleASAP(options): Promise<DownsampledPoint[]>`
 
 Related exported option/result types include `Candle`, `GetCandlesticksOptions`,
 `ApproxCountDistinctOptions`, `GetStatsOptions`, `StatsSummary`,
 `GetRegressionOptions`, `Regression`, `GetPercentilesOptions`,
-`PercentileResult`, `GetCounterAggOptions`, `CounterSummary`,
-`GetTimeWeightOptions`, `TimeWeight`, `GetStateDurationsOptions`,
-`StateDuration`, `GetStateTimelineOptions`, `StateInterval`, `GetStateAtOptions`,
-`GetStatePeriodsOptions`, `Period`, `GetMostCommonValuesOptions`,
-`MostCommonValue`, `GetTopNOptions`, `HeartbeatWindow`, `HeartbeatHealth`, and
-`IsLiveAtOptions`.
+`PercentileResult`, `GetPercentileRanksOptions`, `GetTDigestPercentilesOptions`,
+`GetTDigestPercentileRanksOptions`, `TDigestResult`, `GetCounterAggOptions`,
+`CounterSummary`, `GetTimeWeightOptions`, `TimeWeight`,
+`GetStateDurationsOptions`, `StateDuration`, `GetStateTimelineOptions`,
+`StateInterval`, `GetStateAtOptions`, `GetStatePeriodsOptions`, `Period`,
+`GetMostCommonValuesOptions`, `MostCommonValue`, `GetTopNOptions`,
+`HeartbeatWindow`, `HeartbeatHealth`, `IsLiveAtOptions`, `DownsampleOptions`,
+and `DownsampledPoint`.
 
 Key option fields by family:
 
@@ -208,13 +309,16 @@ Key option fields by family:
   `timeColumn`.
 - Regression: `yColumn`, `xColumn`, optional `method`, optional `range`, optional
   `timeColumn`.
-- Percentiles: `valueColumn`, percentile values or rank values, optional `range`,
-  optional `timeColumn`.
+- Percentiles (UddSketch and T-Digest): `valueColumn`, percentile values or rank
+  values, optional `range`, optional `timeColumn`; T-Digest also takes an
+  optional `buckets` sketch-size (default `100`).
 - Counter/time-weight: value columns plus optional `range` and `timeColumn`.
 - State tracking: `valueColumn`, optional `range`, optional `timeColumn`; some
   methods also take `at` or `state`.
 - Most-common-values: text value column plus sketch/top-N sizing options.
 - Heartbeat/liveness: heartbeat/window options and optional `at` for `isLiveAt()`.
+- Downsampling: `valueColumn`, `resolution` (target point count, integer 3 to
+  1,000,000), optional `timeColumn`, optional `range`.
 
 ### Core SQL builder exports
 
@@ -226,11 +330,51 @@ outside the TypeORM repository helpers:
 import { statsAgg1DExpr, statsAccessor1DExpr } from '@blueprime/timescaledb-core';
 ```
 
-The 0.3.0 release scope includes core builders/accessors for the same implemented
-Toolkit families: stats/regression, UddSketch percentiles, counters, time-weight,
-state tracking, most-common-values, and heartbeat helpers. The TypeORM package
-root re-exports the related option types `StatsMethod`, `TimeWeightMethod`, and
-`IntegralUnit`, but not the SQL builder functions themselves.
+`@blueprime/timescaledb-core` includes core builders/accessors for the same
+implemented Toolkit families: stats/regression, UddSketch percentiles, counters,
+time-weight, state tracking, most-common-values, and heartbeat helpers (0.3.0),
+plus T-Digest (`tdigestExpr`, `tdigestAccessorExpr`) and downsampling
+(`lttbExpr`, `asapSmoothExpr`) added in 0.4.0. The TypeORM package root
+re-exports the related option types `StatsMethod`, `TimeWeightMethod`, and
+`IntegralUnit`, but not these SQL builder functions themselves — unlike the
+continuous-aggregate builders, which the root package does re-export (see
+[Continuous aggregates](#continuous-aggregates-040) above), since migration
+generation needs them directly.
+
+## Operational introspection and jobs (0.4.0)
+
+Read-only accessors over `timescaledb_information.*`, plus the jobs API. All are
+methods on `TimescaleContext` (see above) — DataSource-wide, not entity-scoped —
+not on a repository.
+
+- `listHypertables(): Promise<HypertableInfo[]>` — every hypertable, with
+  dimension/chunk counts and columnstore state.
+- `listChunks(options?: ListChunksOptions): Promise<ChunkInfo[]>` — chunks,
+  optionally filtered to one hypertable (`options.hypertable`).
+- `listContinuousAggregates(): Promise<ContinuousAggregateInfo[]>` — every CAGG,
+  with materialized-only and compression state.
+- `listJobs(options?: ListJobsOptions): Promise<JobInfo[]>` — background jobs,
+  optionally filtered to one hypertable/CAGG.
+- `getJobStats(jobId: number): Promise<JobStats | null>` — one job's run
+  history, or `null` if the id is unknown.
+- `runJob(jobId: number): Promise<void>` — runs a job now via `run_job`.
+  Executes standalone (autocommit) since a job's action may not run inside a
+  transaction.
+- `addJob(proc: string, options: AddJobOptions): Promise<number>` — registers a
+  user-defined action job for an existing stored procedure
+  `(job_id int, config jsonb)`; returns the new job id.
+- `alterJob(jobId: number, changes: AlterJobChanges): Promise<void>` — changes
+  an existing job. Only the fields set in `changes` are sent; `config`, when
+  set, replaces the whole config rather than merging.
+- `deleteJob(jobId: number): Promise<void>` — deletes a job.
+
+Related exported types: `HypertableInfo`, `ChunkInfo`, `ListChunksOptions`,
+`ContinuousAggregateInfo`, `JobInfo`, `ListJobsOptions`, `JobStats`,
+`AddJobOptions`, `AlterJobChanges`.
+
+`refreshContinuousAggregate()`, `runJob()`, and `addJob()`/`alterJob()`/
+`deleteJob()` all run on a pooled connection outside any surrounding
+transaction — the underlying TimescaleDB procedures cannot run inside one.
 
 ## Schema assertion
 
@@ -280,6 +424,9 @@ interface GeneratedMigration {
 interface GenerateMigrationOptions {
   readonly name?: string;
   readonly timestamp?: number;
+  /** `@ContinuousAggregate` classes to emit CAGG DDL for (0.4.0). See
+   * [Continuous aggregates](#continuous-aggregates-040) above. */
+  readonly continuousAggregates?: ReadonlyArray<abstract new (...args: never[]) => unknown>;
 }
 ```
 
@@ -328,6 +475,15 @@ The root package re-exports the main metadata/config types from
 - `StatsMethod`
 - `TimeWeightMethod`
 - `IntegralUnit`
+- `CreateContinuousAggregateInput`
+- `ContinuousAggregateColumn`
+- `ContinuousAggregateFn`
+- `ContinuousAggregatePolicyInput`
+
+Plus the TypeORM-package-level continuous-aggregate metadata types
+`ContinuousAggregateMeta`, `CaggAggregate`, and `CaggRefreshPolicy` (the latter
+also public as `RefreshPolicyOptions`, see
+[Decorators and metadata helpers](#continuous-aggregate-decorators-040) above).
 
 ## Validation and errors
 
@@ -340,10 +496,12 @@ The root package re-exports the main metadata/config types from
 ## What is not part of this API
 
 The current public API does not include automatic destructive migrations,
-automatic live configuration rewrites, continuous aggregates, validated
-cross-store references, experimental toolkit aggregates, stable Toolkit
-aggregates not listed above (including T-Digest), or complete TimescaleDB
-feature coverage.
+automatic live configuration rewrites, `@RollupColumn` ergonomic sugar for
+hierarchical continuous-aggregate rollups (expressible today via
+`@AggregateColumn`, see [Continuous aggregates](#continuous-aggregates-040)
+above), validated cross-store references, experimental toolkit aggregates
+(`gauge_agg`, `freq_agg`, `compact_state_agg`), stable Toolkit aggregates not
+listed above, or complete TimescaleDB feature coverage.
 
 For unsupported live schema changes, write explicit TypeORM migrations and review
 the generated SQL before applying it.
