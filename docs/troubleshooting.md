@@ -83,13 +83,26 @@ already uses.
 
 **Symptom**
 
-The CLI cannot load a `.ts` DataSource file, or Node reports that it does not
-understand TypeScript syntax.
+The CLI cannot load a `.ts` DataSource file. Depending on the Node version, this
+shows up two different ways:
+
+- Node with no TypeScript support at all reports that it does not understand
+  TypeScript syntax (`ERR_UNKNOWN_FILE_EXTENSION`).
+- Node `≥ 22.18` / `≥ 23.6`, where native type stripping is enabled by default,
+  _does_ load the `.ts` file directly, but then fails resolving one of its own
+  imports:
+  ```txt
+  Cannot find module '<project>/src/entities/Reading.js' imported from <project>/src/data-source.ts
+  ```
+  (`ERR_MODULE_NOT_FOUND`) — because native type stripping does not remap
+  `.js`-suffixed import specifiers back to their sibling `.ts` files the way
+  `tsx` does.
 
 **Likely cause**
 
-The CLI uses native dynamic `import()`. Node cannot import `.ts` files directly
-without a TypeScript loader.
+The CLI uses native dynamic `import()`. Without a TypeScript loader, Node either
+can't import `.ts` files at all, or (on newer Node) imports them but can't follow
+their `tsx`-style `.js` import specifiers.
 
 **Fix**
 

@@ -12,7 +12,7 @@ export class CliError extends Error {
 
 export interface ParsedArgs {
   readonly command: Command;
-  /** Path to a module whose default export is a `DataSource`. */
+  /** Path to a module exporting a `DataSource`, as a default or named export. */
   readonly dataSource: string;
   /** Output directory for `generate`. Default `migrations`. */
   readonly outDir: string;
@@ -29,7 +29,7 @@ Commands:
   status     Show whether migrations are pending
 
 Options:
-  -d, --dataSource <path>   Module whose default export is a DataSource (required)
+  -d, --dataSource <path>   Module exporting a DataSource, default or named (required)
   -o, --outDir <dir>        Output dir for 'generate' (default: migrations)
   -n, --name <name>         Migration class-name prefix for 'generate'
   -h, --help                Show this help`;
