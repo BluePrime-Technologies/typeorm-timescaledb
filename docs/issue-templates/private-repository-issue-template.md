@@ -1,9 +1,9 @@
 ---
 name: Private repository issue
 description: Standard issue template for private BluePrime project repositories
-title: "task: "
+title: 'task: '
 labels: triage
-assignees: ""
+assignees: ''
 ---
 
 <!--
