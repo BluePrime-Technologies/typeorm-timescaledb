@@ -186,9 +186,11 @@ Related exported types: `CreateContinuousAggregateInput`,
 
 ### Drift detection
 
-`assertSchema()` (see [Schema assertion](#schema-assertion) below) also checks
-that each `@ContinuousAggregate` view exists and, when `refresh` is set, that
-its policy is attached.
+`assertSchema()` (see [Schema assertion](#schema-assertion) below) can also
+check that each `@ContinuousAggregate` view exists and, when `refresh` is set,
+that its policy is attached — but **only for CAGGs you pass explicitly** via
+`AssertSchemaOptions.continuousAggregates`. With no `continuousAggregates`
+passed, `assertSchema()` checks `@Hypertable` entities only.
 
 ## Query layer
 
@@ -398,6 +400,9 @@ It is a scoped sanity check, not a full database diff engine.
 interface AssertSchemaOptions {
   readonly mode?: 'assert' | 'warn';
   readonly logger?: (message: string) => void;
+  /** `@ContinuousAggregate` classes to also check for drift (0.4.0). Opt-in — see
+   * [Continuous aggregates](#continuous-aggregates-040) above. */
+  readonly continuousAggregates?: ReadonlyArray<abstract new (...args: never[]) => unknown>;
 }
 ```
 
