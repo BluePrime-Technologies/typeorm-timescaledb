@@ -296,9 +296,17 @@ outside a transaction.
 
 ### Drift detection
 
-`assertSchema()` now also checks that each `@ContinuousAggregate` view exists
+`assertSchema()` can also check that each `@ContinuousAggregate` view exists
 and, when `refresh` is set, that its refresh policy is attached — same
-`assert`/`warn` mode behavior as hypertable drift checks.
+`assert`/`warn` mode behavior as hypertable drift checks. **This does not
+happen automatically**: pass the CAGG classes via `continuousAggregates`, the
+same way you pass them to `generateTimescaleMigration`. With no
+`continuousAggregates` passed, `assertSchema()` only checks `@Hypertable`
+entities.
+
+```ts
+await ts.assertSchema({ continuousAggregates: [ReadingHourly] });
+```
 
 ## Toolkit-backed helpers
 
