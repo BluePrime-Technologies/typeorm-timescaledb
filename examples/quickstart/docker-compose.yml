@@ -1,0 +1,20 @@
+services:
+  db:
+    image: ${TIMESCALEDB_IMAGE:-timescale/timescaledb:2.18.0-pg16}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-timescale}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-timescale}
+      POSTGRES_DB: ${POSTGRES_DB:-quickstart}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - quickstart-timescaledb-data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: 'pg_isready -U $${POSTGRES_USER:-timescale} -d $${POSTGRES_DB:-quickstart}'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  quickstart-timescaledb-data:

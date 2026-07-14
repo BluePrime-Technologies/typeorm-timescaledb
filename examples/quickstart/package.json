@@ -1,0 +1,29 @@
+{
+  "name": "typeorm-timescaledb-quickstart-example",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runnable quickstart example for typeorm-timescaledb.",
+  "type": "module",
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down -v",
+    "table:create": "dotenv -e .env -- tsx src/create-base-table.ts",
+    "migration:generate": "dotenv -e .env -- tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations",
+    "migration:run": "dotenv -e .env -- tsx node_modules/typeorm-timescaledb/dist/cli/main.js run -d src/data-source.ts",
+    "demo": "dotenv -e .env -- tsx src/demo.ts",
+    "verify:hypertable": "dotenv -e .env -- sh -c 'docker compose exec -T db psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -c \"SELECT hypertable_name FROM timescaledb_information.hypertables;\"'",
+    "quickstart": "npm run db:up && npm run table:create && npm run migration:generate && npm run migration:run && npm run demo && npm run verify:hypertable"
+  },
+  "dependencies": {
+    "pg": "^8.21.0",
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "^1.0.0",
+    "typeorm-timescaledb": "^0.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "dotenv-cli": "^8.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.3"
+  }
+}
