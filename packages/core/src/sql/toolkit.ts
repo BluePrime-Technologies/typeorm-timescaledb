@@ -346,6 +346,40 @@ export function percentileSketchAccessorExpr(
 }
 
 // ---------------------------------------------------------------------------
+// tdigest — approximate percentiles (T-Digest sketch)
+// ---------------------------------------------------------------------------
+
+/**
+ * `tdigest(<buckets>, value)` — the T-Digest percentile intermediate. `bucketsToken`
+ * binds the sketch size (accuracy/compression) as a parameter (`$N` or `:name`). The
+ * `approx_percentile` / `approx_percentile_rank` accessors are shared with the uddsketch
+ * builders ({@link approxPercentileExpr} / {@link approxPercentileRankExpr}).
+ */
+export function tdigestExpr(valueColumn: string, bucketsToken: string): string {
+  return `tdigest(${assertBindToken(bucketsToken, 'buckets')}, ${safeIdent(valueColumn, 'tdigest value column')})`;
+}
+
+/** Scalar accessors over a `tdigest` sketch. */
+export type TDigestAccessor = 'mean' | 'min_val' | 'max_val' | 'num_vals';
+
+const TDIGEST_ACCESSORS: ReadonlySet<string> = new Set(['mean', 'min_val', 'max_val', 'num_vals']);
+
+/**
+ * Wrap a `tdigest` sketch in a scalar accessor (`mean`/`min_val`/`max_val`/`num_vals`),
+ * e.g. `mean(tdigest(100,"v"))`. The accessor is allow-listed; `aggExpr` must already be safe.
+ */
+export function tdigestAccessorExpr(accessor: TDigestAccessor, aggExpr: string): string {
+  if (!TDIGEST_ACCESSORS.has(accessor)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `unknown tdigest accessor: ${JSON.stringify(accessor)}`,
+      { accessor: String(accessor) },
+    );
+  }
+  return `${accessor}(${aggExpr})`;
+}
+
+// ---------------------------------------------------------------------------
 // counter_agg — monotonic counters that may reset (delta / rate / …)
 // ---------------------------------------------------------------------------
 
@@ -721,4 +755,37 @@ export function heartbeatLiveRangesExpr(aggExpr: string): string {
 /** `dead_ranges(<agg>)` — table function returning the dead `(start, end)` intervals. */
 export function heartbeatDeadRangesExpr(aggExpr: string): string {
   return `dead_ranges(${aggExpr})`;
+}
+
+// ---------------------------------------------------------------------------
+// Downsampling — LTTB (Largest-Triangle-Three-Buckets) + ASAP smoothing
+// ---------------------------------------------------------------------------
+
+/**
+ * `lttb(time, value, resolution)` — the Largest-Triangle-Three-Buckets downsample
+ * intermediate (a timevector). `resolutionToken` binds the target point count as a
+ * parameter (`$1` or `:name`); the caller `unnest(...)`s the result into `(time, value)`
+ * rows. Requires `timescaledb_toolkit`.
+ */
+export function lttbExpr(timeColumn: string, valueColumn: string, resolutionToken: string): string {
+  return `lttb(${safeIdent(timeColumn, 'lttb time column')}, ${safeIdent(
+    valueColumn,
+    'lttb value column',
+  )}, ${assertBindToken(resolutionToken, 'resolution')})`;
+}
+
+/**
+ * `asap_smooth(time, value, resolution)` — the ASAP-smoothing downsample intermediate
+ * (a timevector). `resolutionToken` binds the target point count as a parameter. The
+ * caller `unnest(...)`s the result into `(time, value)` rows. Requires `timescaledb_toolkit`.
+ */
+export function asapSmoothExpr(
+  timeColumn: string,
+  valueColumn: string,
+  resolutionToken: string,
+): string {
+  return `asap_smooth(${safeIdent(timeColumn, 'asap_smooth time column')}, ${safeIdent(
+    valueColumn,
+    'asap_smooth value column',
+  )}, ${assertBindToken(resolutionToken, 'resolution')})`;
 }

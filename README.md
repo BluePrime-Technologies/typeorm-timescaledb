@@ -2,7 +2,7 @@
 
 > A pre-1.0, multi-DataSource-safe [TimescaleDB](https://www.tigerdata.com/) integration for [TypeORM](https://typeorm.io/) — define hypertables, columnstore, and retention as typed entities, and generate/apply reviewable migrations for them.
 
-**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.2.x** introduced the query layer (time buckets, gap-filling, candlesticks). The **0.3.0 release scope** expands typed coverage for the stable `timescaledb_toolkit` aggregate families implemented in this package. Continuous aggregates, cross-store references, and a full safe diff engine come later.
+**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.2.x** introduced the query layer (time buckets, gap-filling, candlesticks); **0.3.0** expanded the stable `timescaledb_toolkit` aggregate coverage; **0.4.0** completes continuous aggregates (typed decorators, refresh policies, hierarchical, drift) and adds downsampling, informational views + jobs, and T-Digest percentiles. Cross-store references and a full safe diff engine come later.
 
 ## Status and scope
 
@@ -102,34 +102,32 @@ export class AppModule {}
 
 Multiple TimescaleDB DataSources? Pass a `name` to `forRoot` / `forFeature` / `@InjectTimescaleRepository`.
 
-## What's in 0.3.x
+## What's in 0.4.x
 
-**Works today in the current published 0.2.x line:**
+**Works today (0.4.x):**
 
 - `@Hypertable` / `@TimeColumn` / `@HypertablePrimaryKey` — hypertables with chunk interval, **columnstore** (segmentby/orderby + policy), **retention** policy, and **space (hash) partitioning**.
 - **Migration generation + CLI** (`generate | run | revert | status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
 - **Per-DataSource repositories** (`createTimescale`) and **boot-time drift detection** (`assertSchema`).
 - **Base typed query layer** — `repo.getTimeBucket(...)` and a fluent `repo.timescaleQueryBuilder()` covering `time_bucket` (timezone/origin/offset), `first`/`last`, `histogram`, and the gap-filling family (`time_bucket_gapfill` + `locf` / `interpolate`). Results come back through typed coercion helpers.
 - **Stable `timescaledb_toolkit` aggregate helpers** — `repo.getCandlesticks(...)`, `repo.approxCountDistinct(...)`, `repo.getStats(...)`, `repo.getRegression(...)`, `repo.getPercentiles(...)`, `repo.getPercentileRanks(...)`, `repo.getCounterAgg(...)`, `repo.getTimeWeight(...)`, `repo.getStateDurations(...)`, `repo.getStateTimeline(...)`, `repo.getStateAt(...)`, `repo.getStatePeriods(...)`, `repo.getMostCommonValues(...)`, `repo.getTopN(...)`, `repo.getHeartbeatHealth(...)`, `repo.getLiveRanges(...)`, `repo.getDeadRanges(...)`, and `repo.isLiveAt(...)`, all with a presence check that fails fast (`TSDB_TOOLKIT_MISSING`) when the extension is not installed.
+- **Continuous aggregates** — `@ContinuousAggregate` / `@BucketColumn` / `@GroupColumn` / `@AggregateColumn` decorators with migration codegen, **automatic refresh policies** (`@ContinuousAggregate({ refresh })`), **hierarchical** CAGGs (a CAGG whose `source` is another CAGG), runtime `refreshContinuousAggregate(...)`, and **drift detection** for CAGGs + policies via `assertSchema()`.
+- **Downsampling** — `repo.downsampleLTTB(...)` / `repo.downsampleASAP(...)` (toolkit `lttb` / `asap_smooth`), typed `{ time, value }[]`.
+- **Informational views + jobs** — `createTimescale(ds).listHypertables(...)`, `listChunks(...)`, `listContinuousAggregates(...)`, `listJobs(...)`, `getJobStats(...)`, `runJob(...)`, and the action jobs API `addJob(...)` / `alterJob(...)` / `deleteJob(...)`.
+- **T-Digest percentiles** — `repo.getTDigestPercentiles(...)` / `repo.getTDigestPercentileRanks(...)` (toolkit `tdigest`).
 - **NestJS module** with optional-peer wiring and named multi-DataSource contexts.
 - Unified import surface (one package, never raw `typeorm`); dual ESM + CJS.
 
-## 0.3.0 release scope
+## 0.4.0 release scope
 
-The 0.3.0 release expands toolkit-backed repository helpers for the stable toolkit
-aggregate families implemented in this package:
-
-- `repo.getStats(...)` / `repo.getRegression(...)` via `stats_agg`.
-- `repo.getPercentiles(...)` / `repo.getPercentileRanks(...)` via UddSketch `percentile_agg`.
-- `repo.getCounterAgg(...)` via `counter_agg`.
-- `repo.getTimeWeight(...)` via `time_weight`.
-- `repo.getStateDurations(...)`, `repo.getStateTimeline(...)`, `repo.getStateAt(...)`, and `repo.getStatePeriods(...)` via `state_agg`.
-- `repo.getMostCommonValues(...)` and `repo.getTopN(...)` via `mcv_agg`.
-- `repo.getHeartbeatHealth(...)`, `repo.getLiveRanges(...)`, `repo.getDeadRanges(...)`, and `repo.isLiveAt(...)` via `heartbeat_agg`.
+The 0.4.0 release completes the continuous-aggregate story and adds downsampling,
+operational introspection, and T-Digest percentiles (all listed under **Works today**
+above). It builds on the 0.3.0 toolkit-aggregate helpers (stats/regression, UddSketch
+percentiles, counters, time-weight, state tracking, MCV/top-N, heartbeat/liveness).
 
 **Migration model (important):** generated migrations are **additive / desired-state** — they emit the full hypertable setup idempotently (`if_not_exists`). Adding supported configuration (a new entity, a new policy) propagates on the next `generate` + `run`. **Removing or altering** existing config (e.g. dropping a retention policy, changing a chunk interval) is **not** auto-diffed yet — do those in a hand-written migration for now. A full entity↔DB diff engine is planned. (The base `CREATE TABLE` is TypeORM's job — via `synchronize` or its own migration; this package adds the TimescaleDB layer on top.)
 
-**Not yet (planned):** continuous aggregates, the still-`toolkit_experimental` aggregates (`gauge_agg`/`freq_agg`/`compact_state_agg`), stable Toolkit aggregates not listed above (including T-Digest), the full diff engine, and validated cross-store references. **Unsupported by design:** automatic destructive/altering migrations.
+**Not yet (planned):** `@RollupColumn` sugar for hierarchical rollups (expressible today via `@AggregateColumn`), the still-`toolkit_experimental` aggregates (`gauge_agg`/`freq_agg`/`compact_state_agg`), stable Toolkit aggregates not listed above, the full diff engine, and validated cross-store references. **Unsupported by design:** automatic destructive/altering migrations.
 
 ## Design principles
 

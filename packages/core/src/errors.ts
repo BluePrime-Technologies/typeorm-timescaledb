@@ -7,6 +7,8 @@ export const TimescaleErrorCode = {
   UNSAFE_IDENTIFIER: 'TSDB_UNSAFE_IDENTIFIER',
   /** A required timescaledb_toolkit function was used but the extension is absent. */
   TOOLKIT_MISSING: 'TSDB_TOOLKIT_MISSING',
+  /** A hypertable-scoped operation was requested but the `timescaledb` extension is absent. */
+  TIMESCALEDB_MISSING: 'TSDB_TIMESCALEDB_MISSING',
   /** Live DB schema does not match the entity metadata (drift). */
   SCHEMA_DRIFT: 'TSDB_SCHEMA_DRIFT',
   /** A hypertable primary key does not include the partition (time) column. */

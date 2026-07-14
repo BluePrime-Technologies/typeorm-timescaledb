@@ -1,5 +1,6 @@
 import type { DataSource, EntityTarget, ObjectLiteral, Repository } from 'typeorm';
 import {
+  refreshContinuousAggregateSQL,
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
@@ -14,6 +15,8 @@ import {
 } from '../query/getTimeBucket.js';
 import {
   approxCountDistinct,
+  downsampleASAP,
+  downsampleLTTB,
   getCandlesticks,
   getCounterAgg,
   getPercentileRanks,
@@ -28,12 +31,16 @@ import {
   getStatePeriods,
   getStateTimeline,
   getStats,
+  getTDigestPercentiles,
+  getTDigestPercentileRanks,
   getTimeWeight,
   getTopN,
   isLiveAt,
   type ApproxCountDistinctOptions,
   type Candle,
   type CounterSummary,
+  type DownsampleOptions,
+  type DownsampledPoint,
   type GetCandlesticksOptions,
   type GetCounterAggOptions,
   type GetPercentileRanksOptions,
@@ -57,9 +64,32 @@ import {
   type StateDuration,
   type StateInterval,
   type StatsSummary,
+  type TDigestResult,
+  type GetTDigestPercentilesOptions,
+  type GetTDigestPercentileRanksOptions,
   type TimeWeight,
 } from '../query/toolkit.js';
 import { assertSchema, type AssertSchemaOptions } from './assertSchema.js';
+import {
+  listHypertables,
+  listChunks,
+  listContinuousAggregates,
+  listJobs,
+  getJobStats,
+  runJob,
+  addJob,
+  alterJob,
+  deleteJob,
+  type HypertableInfo,
+  type ChunkInfo,
+  type ContinuousAggregateInfo,
+  type JobInfo,
+  type JobStats,
+  type ListChunksOptions,
+  type ListJobsOptions,
+  type AddJobOptions,
+  type AlterJobChanges,
+} from './info.js';
 
 /** A TypeORM repository augmented (per instance) with its validated hypertable metadata. */
 export interface TimescaleRepository<T extends ObjectLiteral> extends Repository<T> {
@@ -107,6 +137,17 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * is empty. Requires `timescaledb_toolkit`.
    */
   getPercentileRanks(options: GetPercentileRanksOptions): Promise<number[] | null>;
+  /**
+   * Typed approximate percentiles via a **T-Digest** sketch (`tdigest`) — higher tail
+   * accuracy than uddsketch; returns the values plus mean/min/max/count, or `null` when
+   * the set is empty. Requires `timescaledb_toolkit`.
+   */
+  getTDigestPercentiles(options: GetTDigestPercentilesOptions): Promise<TDigestResult | null>;
+  /**
+   * Typed T-Digest percentile ranks (`approx_percentile_rank`). `null` when the set is
+   * empty. Requires `timescaledb_toolkit`.
+   */
+  getTDigestPercentileRanks(options: GetTDigestPercentileRanksOptions): Promise<number[] | null>;
   /**
    * Typed `counter_agg` summary (delta/rate/resets for a monotonic counter). `null`
    * when the set is empty. Requires `timescaledb_toolkit`.
@@ -160,6 +201,16 @@ export interface TimescaleRepository<T extends ObjectLiteral> extends Repository
    * are no heartbeats in the window. Requires `timescaledb_toolkit`.
    */
   isLiveAt(options: IsLiveAtOptions): Promise<boolean | null>;
+  /**
+   * Largest-Triangle-Three-Buckets downsample (`lttb`) — `resolution` points that best
+   * preserve the series' visual shape. Requires `timescaledb_toolkit`.
+   */
+  downsampleLTTB(options: DownsampleOptions): Promise<DownsampledPoint[]>;
+  /**
+   * ASAP-smoothing downsample (`asap_smooth`) to `resolution` points. Requires
+   * `timescaledb_toolkit`.
+   */
+  downsampleASAP(options: DownsampleOptions): Promise<DownsampledPoint[]>;
 }
 
 /** A DataSource-scoped TimescaleDB context. Bound to ONE DataSource — never global. */
@@ -173,6 +224,48 @@ export interface TimescaleContext {
    * logs and returns it (`mode: 'warn'`). Returns `[]` when in sync.
    */
   assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]>;
+  /**
+   * Refresh a continuous aggregate over `[start, end)` (both optional → open bound /
+   * full refresh) via `refresh_continuous_aggregate`. Runs **standalone** (this
+   * procedure cannot run inside a transaction block). `view` is the CAGG name,
+   * optionally `schema.view`.
+   *
+   * Note: it executes on its own pooled connection via `dataSource.query()`, so it is
+   * NOT enrolled in any surrounding `dataSource.transaction(...)` callback — the refresh
+   * commits independently and is not undone if that outer transaction later rolls back
+   * (by necessity: the refresh cannot run inside a transaction). Call it outside a txn.
+   */
+  refreshContinuousAggregate(
+    view: string,
+    options?: { readonly start?: Date | string; readonly end?: Date | string },
+  ): Promise<void>;
+  /** All hypertables on this database (`timescaledb_information.hypertables`). */
+  listHypertables(): Promise<HypertableInfo[]>;
+  /** Chunks, optionally filtered to one hypertable (`timescaledb_information.chunks`). */
+  listChunks(options?: ListChunksOptions): Promise<ChunkInfo[]>;
+  /** All continuous aggregates (`timescaledb_information.continuous_aggregates`). */
+  listContinuousAggregates(): Promise<ContinuousAggregateInfo[]>;
+  /** Background jobs, optionally filtered to one hypertable (`timescaledb_information.jobs`). */
+  listJobs(options?: ListJobsOptions): Promise<JobInfo[]>;
+  /** One job's execution stats (`timescaledb_information.job_stats`), or `null` if unknown. */
+  getJobStats(jobId: number): Promise<JobStats | null>;
+  /**
+   * Run a background job now via `run_job(<id>)`. Executes standalone (a job's action may
+   * not run inside a transaction), so it is not enrolled in a surrounding transaction.
+   */
+  runJob(jobId: number): Promise<void>;
+  /**
+   * Register a user-defined action job (`add_job(<proc>, …)`), returning its id. `proc` is
+   * an existing stored procedure `(job_id int, config jsonb)` name.
+   */
+  addJob(proc: string, options: AddJobOptions): Promise<number>;
+  /**
+   * Change an existing job (`alter_job`). Only the fields you set are sent; omitted fields
+   * are unchanged. `config`, when set, replaces the whole config (not merged).
+   */
+  alterJob(jobId: number, changes: AlterJobChanges): Promise<void>;
+  /** Delete a job (`delete_job(<id>)`). */
+  deleteJob(jobId: number): Promise<void>;
 }
 
 /**
@@ -252,6 +345,16 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         getPercentileRanks(options: GetPercentileRanksOptions): Promise<number[] | null> {
           return getPercentileRanks(repo, timeColumn, options);
         },
+        getTDigestPercentiles(
+          options: GetTDigestPercentilesOptions,
+        ): Promise<TDigestResult | null> {
+          return getTDigestPercentiles(repo, timeColumn, options);
+        },
+        getTDigestPercentileRanks(
+          options: GetTDigestPercentileRanksOptions,
+        ): Promise<number[] | null> {
+          return getTDigestPercentileRanks(repo, timeColumn, options);
+        },
         getCounterAgg(options: GetCounterAggOptions): Promise<CounterSummary | null> {
           return getCounterAgg(repo, timeColumn, options);
         },
@@ -288,10 +391,55 @@ export function createTimescale(dataSource: DataSource): TimescaleContext {
         isLiveAt(options: IsLiveAtOptions): Promise<boolean | null> {
           return isLiveAt(repo, timeColumn, options);
         },
+        downsampleLTTB(options: DownsampleOptions): Promise<DownsampledPoint[]> {
+          return downsampleLTTB(repo, timeColumn, options);
+        },
+        downsampleASAP(options: DownsampleOptions): Promise<DownsampledPoint[]> {
+          return downsampleASAP(repo, timeColumn, options);
+        },
       });
     },
     assertSchema(options?: AssertSchemaOptions): Promise<DriftItem[]> {
       return assertSchema(dataSource, options);
+    },
+    async refreshContinuousAggregate(
+      view: string,
+      options?: { readonly start?: Date | string; readonly end?: Date | string },
+    ): Promise<void> {
+      // Bind start/end positionally only when provided; an omitted bound is NULL (open).
+      const params: unknown[] = [];
+      const startToken = options?.start != null ? `$${params.push(options.start)}` : 'NULL';
+      const endToken = options?.end != null ? `$${params.push(options.end)}` : 'NULL';
+      // Plain query() runs on a pooled connection in autocommit (no BEGIN/COMMIT), which
+      // is required — refresh_continuous_aggregate() cannot run inside a transaction block.
+      await dataSource.query(refreshContinuousAggregateSQL(view, startToken, endToken), params);
+    },
+    listHypertables(): Promise<HypertableInfo[]> {
+      return listHypertables(dataSource);
+    },
+    listChunks(options?: ListChunksOptions): Promise<ChunkInfo[]> {
+      return listChunks(dataSource, options);
+    },
+    listContinuousAggregates(): Promise<ContinuousAggregateInfo[]> {
+      return listContinuousAggregates(dataSource);
+    },
+    listJobs(options?: ListJobsOptions): Promise<JobInfo[]> {
+      return listJobs(dataSource, options);
+    },
+    getJobStats(jobId: number): Promise<JobStats | null> {
+      return getJobStats(dataSource, jobId);
+    },
+    runJob(jobId: number): Promise<void> {
+      return runJob(dataSource, jobId);
+    },
+    addJob(proc: string, options: AddJobOptions): Promise<number> {
+      return addJob(dataSource, proc, options);
+    },
+    alterJob(jobId: number, changes: AlterJobChanges): Promise<void> {
+      return alterJob(dataSource, jobId, changes);
+    },
+    deleteJob(jobId: number): Promise<void> {
+      return deleteJob(dataSource, jobId);
     },
   };
 }

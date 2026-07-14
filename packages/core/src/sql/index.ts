@@ -2,7 +2,19 @@ export {
   createHypertableSQL,
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
+  TIMESCALEDB_PRESENCE_SQL,
 } from './hypertable.js';
+export {
+  createContinuousAggregateSQL,
+  refreshContinuousAggregateSQL,
+  addContinuousAggregatePolicySQL,
+} from './continuous-aggregate.js';
+export type {
+  CreateContinuousAggregateInput,
+  ContinuousAggregateColumn,
+  ContinuousAggregateFn,
+  ContinuousAggregatePolicyInput,
+} from './continuous-aggregate.js';
 export type {
   MigrationStatement,
   CreateHypertableInput,
@@ -57,6 +69,10 @@ export {
   heartbeatLiveAtExpr,
   heartbeatLiveRangesExpr,
   heartbeatDeadRangesExpr,
+  lttbExpr,
+  asapSmoothExpr,
+  tdigestExpr,
+  tdigestAccessorExpr,
 } from './toolkit.js';
 export type {
   CandlestickAccessor,
@@ -64,6 +80,7 @@ export type {
   Stats1DAccessor,
   Stats2DAccessor,
   PercentileSketchAccessor,
+  TDigestAccessor,
   CounterAccessor,
   TimeWeightMethod,
   TimeWeightAccessor,

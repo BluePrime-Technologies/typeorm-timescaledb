@@ -24,6 +24,8 @@ interface CatalogState {
   hypertable: boolean;
   dims: string[];
   procs: string[];
+  /** Whether `pg_extension` reports `timescaledb` installed. Defaults to `true`. */
+  extensionPresent?: boolean;
 }
 
 function stubDataSource(
@@ -35,6 +37,9 @@ function stubDataSource(
     isInitialized: initialized,
     entityMetadatas: [{ target: Metric, tableName: 'metric', columns }],
     query: async (sql: string): Promise<unknown[]> => {
+      if (sql.includes('pg_extension')) {
+        return state.extensionPresent === false ? [] : [{ ok: 1 }];
+      }
       if (sql.includes('timescaledb_information.hypertables')) {
         return state.hypertable ? [{ ok: 1 }] : [];
       }
@@ -89,6 +94,19 @@ describe('assertSchema', () => {
       expect((e as InstanceType<typeof TimescaleError>).code).toBe(
         TimescaleErrorCode.INVALID_ARGUMENT,
       );
+    }
+  });
+
+  it('throws TimescaleError(TIMESCALEDB_MISSING) when the timescaledb extension is absent', async () => {
+    const ds = stubDataSource({ ...inSync, extensionPresent: false });
+    try {
+      await assertSchema(ds);
+      throw new Error('expected TIMESCALEDB_MISSING');
+    } catch (e) {
+      expect((e as InstanceType<typeof TimescaleError>).code).toBe(
+        TimescaleErrorCode.TIMESCALEDB_MISSING,
+      );
+      expect((e as Error).message).toContain('CREATE EXTENSION timescaledb');
     }
   });
 
