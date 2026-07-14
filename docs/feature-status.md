@@ -37,6 +37,9 @@ The following features may be described as shipped for the current 0.4.x scope:
 - Per-DataSource runtime access through `createTimescale(dataSource)`.
 - Schema drift detection through `assertSchema()`.
 - NestJS module support with named multi-DataSource contexts.
+- `TimescaleModule.forRootAsync()` for deferred/async DataSource configuration
+  (`useFactory` + `inject` + `imports`), including an optional no-op mode when the
+  factory resolves no configuration.
 - Dual ESM and CJS builds.
 - TypeScript declaration output.
 - Real TimescaleDB integration coverage in CI.

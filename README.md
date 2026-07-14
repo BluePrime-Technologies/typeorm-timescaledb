@@ -102,6 +102,23 @@ export class AppModule {}
 
 Multiple TimescaleDB DataSources? Pass a `name` to `forRoot` / `forFeature` / `@InjectTimescaleRepository`.
 
+Need the `DataSource` resolved asynchronously (e.g. from `ConfigService`)? Use `forRootAsync`:
+
+```ts
+TimescaleModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    dataSource: buildDataSource(config),
+    assert: 'warn',
+  }),
+});
+```
+
+Return `undefined` from `useFactory` to register a no-op context (no `DataSource`, no
+boot-time drift check) for environments where TimescaleDB isn't configured — mark any
+`@InjectTimescaleContext()` / `@InjectTimescaleRepository()` consumer `@Optional()` in that case.
+
 ## What's in 0.4.x
 
 **Works today (0.4.x):**

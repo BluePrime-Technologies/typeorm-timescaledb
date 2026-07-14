@@ -1,5 +1,12 @@
 import { Logger, Module } from '@nestjs/common';
-import type { DynamicModule, OnApplicationBootstrap, Provider, Type } from '@nestjs/common';
+import type {
+  DynamicModule,
+  FactoryProvider,
+  ModuleMetadata,
+  OnApplicationBootstrap,
+  Provider,
+  Type,
+} from '@nestjs/common';
 import type { DataSource, ObjectLiteral } from 'typeorm';
 import { createTimescale, type TimescaleContext } from '../runtime/createTimescale.js';
 import {
@@ -24,6 +31,34 @@ export interface TimescaleModuleOptions {
   readonly logger?: (message: string) => void;
   /** Register as a global module so `forFeature` works without re-importing. */
   readonly global?: boolean;
+}
+
+/**
+ * Options for {@link TimescaleModule.forRootAsync}, mirroring the standard NestJS
+ * async-module pattern (`imports` + `inject` + `useFactory`). `Args` is inferred
+ * from the `useFactory` signature so injected providers keep their real types.
+ */
+export interface TimescaleModuleAsyncOptions<Args extends unknown[] = unknown[]> extends Pick<
+  ModuleMetadata,
+  'imports'
+> {
+  /** Context name — same as `forRoot`'s `name`. Default `'default'`. */
+  readonly name?: string;
+  /** Register as a global module so `forFeature` works without re-importing. */
+  readonly global?: boolean;
+  /**
+   * Resolve the options, typically from an async source (`ConfigService`, a
+   * remote config fetch, etc.). Return `undefined` to register a **no-op**
+   * context — no `DataSource`, no bootstrap drift check — for environments
+   * where TimescaleDB isn't configured (local dev, tests). Any consumer that
+   * injects the context or repositories in that case must mark the
+   * dependency `@Optional()`, since nothing is provided under the token.
+   */
+  readonly useFactory: (
+    ...args: Args
+  ) => Promise<TimescaleModuleOptions | undefined> | TimescaleModuleOptions | undefined;
+  /** Providers injected into `useFactory`, in order — matches `Args` positionally. */
+  readonly inject?: FactoryProvider['inject'];
 }
 
 /**
@@ -79,6 +114,54 @@ export class TimescaleModule {
     return {
       module: TimescaleModule,
       global: options.global ?? false,
+      providers,
+      exports: [contextToken],
+    };
+  }
+
+  /**
+   * Register the Timescale context asynchronously — the `DataSource` (and rest of
+   * {@link TimescaleModuleOptions}) is resolved via `useFactory`/`inject`/`imports`,
+   * mirroring the standard NestJS async-module pattern. Useful when connection config
+   * comes from `ConfigService` or another async source at runtime.
+   *
+   * If `useFactory` resolves `undefined`, this registers a no-op context (no
+   * `DataSource`, no bootstrap drift check) instead of failing module construction —
+   * for environments where TimescaleDB isn't configured. Consumers must inject the
+   * context/`forFeature` repositories as `@Optional()` when a no-op is possible.
+   */
+  static forRootAsync<Args extends unknown[] = unknown[]>(
+    options: TimescaleModuleAsyncOptions<Args>,
+  ): DynamicModule {
+    const name = options.name ?? DEFAULT_TIMESCALE_NAME;
+    const contextToken = getTimescaleContextToken(name);
+    const optionsToken = getTimescaleOptionsToken(name);
+    const providers: Provider[] = [
+      {
+        provide: optionsToken,
+        useFactory: options.useFactory,
+        inject: options.inject ?? [],
+      },
+      {
+        provide: contextToken,
+        useFactory: (resolved?: TimescaleModuleOptions): TimescaleContext | undefined =>
+          resolved ? createTimescale(resolved.dataSource) : undefined,
+        inject: [optionsToken],
+      },
+      {
+        provide: getTimescaleBootstrapToken(name),
+        useFactory: (
+          context: TimescaleContext | undefined,
+          resolved: TimescaleModuleOptions | undefined,
+        ): TimescaleBootstrap | undefined =>
+          context && resolved ? new TimescaleBootstrap(context, resolved) : undefined,
+        inject: [contextToken, optionsToken],
+      },
+    ];
+    return {
+      module: TimescaleModule,
+      global: options.global ?? false,
+      imports: options.imports ?? [],
       providers,
       exports: [contextToken],
     };
