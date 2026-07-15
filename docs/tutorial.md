@@ -363,7 +363,9 @@ Confirm that `src/data-source.ts` includes the generated directory in the
 `migrations` option:
 
 ```ts
-migrations: ['src/migrations/*.{ts,js}'];
+export const AppDataSource = new DataSource({
+  migrations: ['src/migrations/*.{ts,js}'],
+});
 ```
 
 ### `function by_range(unknown, interval) does not exist`
