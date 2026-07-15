@@ -4,3 +4,4 @@ node_modules/
 pnpm-lock.yaml
 .turbo/
 docs/public-claims-audit.md
+docs/launch/

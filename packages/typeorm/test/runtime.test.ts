@@ -58,7 +58,7 @@ describe('createTimescale', () => {
     }
   });
 
-  it('augments the repository PER INSTANCE, never Repository.prototype', async () => {
+  it('augments a delegating wrapper, never the cached repo or Repository.prototype', async () => {
     const { createTimescale, Hypertable, TimeColumn, HypertablePrimaryKey } =
       await import('../src/index.js');
     class Trade {}
@@ -66,16 +66,30 @@ describe('createTimescale', () => {
     TimeColumn()(Trade.prototype, 'ts');
     HypertablePrimaryKey()(Trade.prototype, 'ts');
 
-    // Stub a DataSource whose getRepository yields a bare Repository instance (no DB needed).
+    // Stub a DataSource whose getRepository yields a cached Repository instance (no DB needed).
     const fakeRepo = Object.create(Repository.prototype) as Repository<Trade>;
+    (fakeRepo as { marker?: string }).marker = 'cached'; // an own prop to prove delegation
     const ds = { getRepository: () => fakeRepo } as unknown as DataSourceType;
 
     const repo = createTimescale(ds).getRepository(Trade);
-    expect(repo).toBe(fakeRepo); // same instance, just augmented
-    expect(repo.timescaleMetadata.timeColumn).toBe('ts'); // metadata on the instance
+
+    // NOT the cached instance — a delegating wrapper (Object.create), so the cached
+    // repo TypeORM hands out elsewhere is never polluted by our augmentation.
+    expect(repo).not.toBe(fakeRepo);
+    expect((repo as { marker?: string }).marker).toBe('cached'); // inherits via prototype chain
+    expect(repo.timescaleMetadata.timeColumn).toBe('ts'); // metadata on the wrapper
+    expect(typeof repo.getTimeBucket).toBe('function');
+
+    // the cached repo stays clean — no leakage
+    expect('timescaleMetadata' in fakeRepo).toBe(false);
+    expect('getTimeBucket' in fakeRepo).toBe(false);
+
+    // prototype untouched
     expect(Object.prototype.hasOwnProperty.call(Repository.prototype, 'timescaleMetadata')).toBe(
       false,
-    ); // prototype untouched
+    );
+    expect(Object.prototype.hasOwnProperty.call(Repository.prototype, 'getTimeBucket')).toBe(false);
+
     // call-time isolation: exercising getRepository did not patch DataSource.prototype either
     expect(DataSource.prototype.initialize).toBe(PROTO_BEFORE.initialize);
     expect(DataSource.prototype.synchronize).toBe(PROTO_BEFORE.synchronize);

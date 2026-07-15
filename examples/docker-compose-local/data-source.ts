@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm-timescaledb';
 
+// This example reads process.env. Export the variables from .env before running
+// the CLI commands, or replace this with your app's own config loader.
 const port = Number(process.env.POSTGRES_PORT ?? '5432');
 
 export const LocalTimescaleDataSource = new DataSource({

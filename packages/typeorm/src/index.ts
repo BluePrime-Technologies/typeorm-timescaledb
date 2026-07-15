@@ -8,9 +8,94 @@
 export * from './orm.js';
 
 export { Hypertable, TimeColumn, HypertablePrimaryKey } from './decorators/index.js';
+export {
+  ContinuousAggregate,
+  BucketColumn,
+  GroupColumn,
+  AggregateColumn,
+} from './decorators/index.js';
+export type {
+  ContinuousAggregateOptions,
+  AggregateColumnOptions,
+  RefreshPolicyOptions,
+} from './decorators/index.js';
 export { getTimescaleMetadata, hasTimescaleMetadata } from './decorators/index.js';
+export { getContinuousAggregateMeta, hasContinuousAggregateMeta } from './decorators/index.js';
+export type {
+  ContinuousAggregateMeta,
+  CaggAggregate,
+  CaggRefreshPolicy,
+} from './decorators/index.js';
 export { createTimescale } from './runtime/createTimescale.js';
 export type { TimescaleContext, TimescaleRepository } from './runtime/createTimescale.js';
+export type {
+  HypertableInfo,
+  ChunkInfo,
+  ContinuousAggregateInfo,
+  JobInfo,
+  JobStats,
+  ListChunksOptions,
+  ListJobsOptions,
+  AddJobOptions,
+  AlterJobChanges,
+} from './runtime/info.js';
+
+// Query layer (M2): hyperfunctions via a per-instance QueryBuilder wrapper + typed
+// raw-result coercion helpers. No prototype mutation.
+export { TimescaleQueryBuilder } from './query/TimescaleQueryBuilder.js';
+export type { TimeBucketSelectOptions } from './query/TimescaleQueryBuilder.js';
+export type {
+  GetTimeBucketOptions,
+  TimeBucketMetric,
+  TimeBucketAggFn,
+  TimeBucketRow,
+} from './query/getTimeBucket.js';
+export type { StandardAggregate } from './query/aggregate.js';
+export { assertToolkit } from './query/toolkit.js';
+export type {
+  Candle,
+  DownsampleOptions,
+  DownsampledPoint,
+  GetCandlesticksOptions,
+  ApproxCountDistinctOptions,
+  TimeRange,
+  GetStatsOptions,
+  StatsSummary,
+  GetRegressionOptions,
+  Regression,
+  GetPercentilesOptions,
+  PercentileResult,
+  GetPercentileRanksOptions,
+  TDigestResult,
+  GetTDigestPercentilesOptions,
+  GetTDigestPercentileRanksOptions,
+  GetCounterAggOptions,
+  CounterSummary,
+  GetTimeWeightOptions,
+  TimeWeight,
+  GetStateDurationsOptions,
+  StateDuration,
+  GetStateTimelineOptions,
+  StateInterval,
+  GetStateAtOptions,
+  GetStatePeriodsOptions,
+  Period,
+  GetMostCommonValuesOptions,
+  MostCommonValue,
+  GetTopNOptions,
+  HeartbeatWindow,
+  HeartbeatHealth,
+  IsLiveAtOptions,
+} from './query/toolkit.js';
+export {
+  toNumber,
+  toNumberOrNull,
+  toBigIntString,
+  toDate,
+  toNumberArray,
+  mapRawRows,
+} from './query/result-mapper.js';
+
 export { assertSchema } from './runtime/assertSchema.js';
 export type { AssertSchemaOptions } from './runtime/assertSchema.js';
 
@@ -30,6 +115,9 @@ export type { GeneratedMigration, GenerateMigrationOptions } from './migrations/
 export {
   validateHypertableMetadata,
   parseHypertableOptions,
+  createContinuousAggregateSQL,
+  refreshContinuousAggregateSQL,
+  addContinuousAggregatePolicySQL,
   TimescaleError,
   TimescaleErrorCode,
 } from '@blueprime/timescaledb-core';
@@ -40,4 +128,11 @@ export type {
   SpacePartitionOptions,
   TimescaleEntityMetadata,
   DriftItem,
+  StatsMethod,
+  TimeWeightMethod,
+  IntegralUnit,
+  CreateContinuousAggregateInput,
+  ContinuousAggregateColumn,
+  ContinuousAggregateFn,
+  ContinuousAggregatePolicyInput,
 } from '@blueprime/timescaledb-core';

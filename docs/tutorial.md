@@ -5,14 +5,16 @@ by TimescaleDB.
 
 You will:
 
-1. Start a local TimescaleDB database.
-2. Install `typeorm-timescaledb` and TypeORM dependencies.
-3. Create a TypeORM DataSource.
+1. Create a demo project.
+2. Start TimescaleDB locally.
+3. Configure TypeScript.
 4. Define a hypertable entity.
-5. Create the base table with TypeORM.
-6. Generate and run the TimescaleDB migration.
-7. Insert and query a row.
-8. Run a scoped schema sanity check.
+5. Create the DataSource.
+6. Create the base table.
+7. Generate the TimescaleDB migration.
+8. Run the TimescaleDB migration.
+9. Insert and query a row.
+10. Understand what `assertSchema()` checks here.
 
 ## Prerequisites
 
@@ -76,6 +78,23 @@ services:
       - '5432:5432'
     volumes:
       - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+```
+
+Port conflict warning: this tutorial maps PostgreSQL to local port `5432`. If
+you already have PostgreSQL running on that port and Docker reports that the
+address is already in use, change the compose mapping to another host port, for
+example:
+
+```yaml
+ports:
+  - '55432:5432'
+```
+
+If you use a different host port, use that same value in `src/data-source.ts`
+when you create the DataSource below:
+
+```ts
+port: 55432,
 ```
 
 Start the database:
@@ -228,6 +247,18 @@ Check it:
 ls src/migrations
 ```
 
+The file name includes a timestamp and will differ on each run. It should look
+similar to:
+
+```txt
+1700000000000-Timescale.ts
+```
+
+Open it: it is a standard TypeORM `MigrationInterface` containing the concrete
+TimescaleDB statements for the `reading` hypertable metadata, such as hypertable
+creation, columnstore policy setup, and retention policy setup. Treat it as a
+generated artifact you review and commit; regenerate rather than hand-editing.
+
 Generated TimescaleDB migration files are TypeScript source files. Keep the
 `run` step below on the same TypeScript-loader path unless your application build
 has compiled those migration files to JavaScript and your DataSource points at
@@ -302,6 +333,11 @@ such as expected hypertables, expected dimension columns, and expected
 columnstore/retention policy jobs. Do not rely on it to catch every changed
 chunk interval, ordering change, retention interval change, or extra policy.
 
+If any `@Hypertable` entities are registered but the `timescaledb` extension
+itself is not installed, `assertSchema()` fails fast with a clear
+`TSDB_TIMESCALEDB_MISSING` error instead of a raw
+`relation "timescaledb_information.hypertables" does not exist` error.
+
 ## Common problems
 
 ### `ERR_UNKNOWN_FILE_EXTENSION` for `src/data-source.ts`
@@ -309,6 +345,17 @@ chunk interval, ordering change, retention interval change, or extra policy.
 The CLI loads the DataSource with native dynamic `import()`. Use `tsx` or another
 TypeScript loader for `.ts` DataSource files, or point `-d` at compiled
 JavaScript only after your build emits compiled DataSource and migration files.
+
+### `Cannot find module '.../entities/Reading.js'` for `src/data-source.ts`
+
+On Node versions with native type stripping enabled by default (currently `≥
+22.18` and `≥ 23.6`), running the CLI directly with `node` (no `tsx`) against a
+`.ts` DataSource _does_ import the file — but native type stripping does not
+remap `.js`-suffixed import specifiers back to their sibling `.ts` files the way
+`tsx` does, so an import like `./entities/Reading.js` fails to resolve even
+though `Reading.ts` exists. Run the CLI through `tsx` (as in this tutorial) or
+another loader that remaps `.js` specifiers to `.ts`, or point `-d` at compiled
+JavaScript whose imports already resolve to compiled output.
 
 ### `No pending migrations`
 
@@ -321,9 +368,10 @@ export const AppDataSource = new DataSource({
 });
 ```
 
-### `create_hypertable` is missing
+### `function by_range(unknown, interval) does not exist`
 
-Confirm the target database has the extension:
+This means the target database is plain PostgreSQL, or is missing the
+`timescaledb` extension. Confirm the target database has the extension:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS timescaledb;
@@ -354,7 +402,10 @@ Remove the demo project directory when finished.
 
 ## Next
 
+- Read the [Query layer guide](query-layer.md) and [API reference](api-reference.md)
+  to query your hypertable with typed time-bucket, gap-fill, and toolkit-aggregate
+  helpers.
 - Read the [Migration guide](migration-guide.md) before using this in a real app.
 - Read the [Production guide](production-guide.md) before relying on generated
   migrations in production.
-- Read [Limitations](limitations.md) to understand what is not shipped in 0.1.x.
+- Read [Limitations](limitations.md) to understand what is not shipped yet.

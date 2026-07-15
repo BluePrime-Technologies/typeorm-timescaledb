@@ -41,6 +41,7 @@ function stubDataSource(state: CatalogState): { ds: DataSource; queries: string[
     getRepository: () => Object.create(Repository.prototype) as Repository<Metric>,
     query: async (sql: string): Promise<unknown[]> => {
       queries.push(sql);
+      if (sql.includes('pg_extension')) return [{ x: 1 }];
       if (sql.includes('timescaledb_information.hypertables'))
         return state.hypertable ? [{ x: 1 }] : [];
       if (sql.includes('timescaledb_information.dimensions'))

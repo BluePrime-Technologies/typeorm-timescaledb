@@ -12,6 +12,7 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "test:unit": "turbo run test:unit",
+    "test:package-smoke": "node scripts/package-smoke-test.mjs",
     "typecheck": "turbo run typecheck",
     "lint": "eslint .",
     "format": "prettier --write .",

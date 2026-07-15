@@ -3,12 +3,23 @@
 `typeorm-timescaledb` is a pre-1.0 foundation release. It is useful today for the
 supported scope, but it is not a complete TimescaleDB abstraction yet.
 
-## Not shipped in 0.1.x
+This page focuses on structural/design limitations that are not primarily a
+matter of unshipped features. See [Feature status](feature-status.md) for the
+full, version-tracked breakdown of what is currently shipped versus planned.
+
+## Not yet shipped
 
 The following features are planned or future scope, not shipped functionality:
 
-- Continuous aggregates.
-- Hyperfunction query expressions.
+- `@RollupColumn` ergonomic sugar for hierarchical continuous aggregates.
+  (Continuous aggregates themselves — including hierarchical CAGGs and refresh
+  policies — shipped in 0.4.0; hierarchical rollups are already expressible via
+  `@AggregateColumn`.)
+- `gauge_agg`, `freq_agg`, and `compact_state_agg` — these currently live in the
+  `timescaledb_toolkit`'s `toolkit_experimental` schema, so they are not yet
+  surfaced as stable constructs.
+- Stable Toolkit aggregates not yet covered by the typed query layer. (T-Digest
+  percentiles shipped in 0.4.0.)
 - Safer entity-to-database diff improvements.
 - Validated cross-store references.
 - Complete TimescaleDB feature coverage.

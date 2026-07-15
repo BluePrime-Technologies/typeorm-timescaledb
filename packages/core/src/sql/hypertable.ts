@@ -17,6 +17,13 @@ import { TimescaleError, TimescaleErrorCode } from '../errors.js';
  * position with {@link quoteLiteral}; intervals are validated with {@link assertInterval}.
  */
 
+/**
+ * Catalog query: number of rows is the `timescaledb`-installed flag (0 = missing).
+ * Mirrors {@link import('./toolkit.js').TOOLKIT_PRESENCE_SQL} but for the base
+ * `timescaledb` extension rather than `timescaledb_toolkit`.
+ */
+export const TIMESCALEDB_PRESENCE_SQL = "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'";
+
 /** A reversible, inspectable unit of hypertable DDL. */
 export interface MigrationStatement {
   /**
@@ -43,7 +50,8 @@ export interface MigrationStatement {
   readonly inspect: string;
 }
 
-interface ParsedTable {
+/** @internal — shared across core SQL builders; not part of the public API surface. */
+export interface ParsedTable {
   /** Schema name; defaults to `public` when the table is unqualified. */
   readonly schema: string;
   /** Bare table name. */
@@ -59,7 +67,8 @@ interface ParsedTable {
  * deterministic, so an unqualified name is pinned to the `public` schema rather
  * than left to `search_path`.
  */
-function parseTable(table: string): ParsedTable {
+/** @internal — shared across core SQL builders; not part of the public API surface. */
+export function parseTable(table: string): ParsedTable {
   if (typeof table !== 'string' || table.length === 0) {
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,
