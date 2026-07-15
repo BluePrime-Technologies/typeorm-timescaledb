@@ -24,7 +24,7 @@ It's built on one hard rule:
 npm install typeorm-timescaledb typeorm pg reflect-metadata
 ```
 
-Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 \|\| ^1.0.0`, Node `^20.19.0 \|\| >=22.12.0`.
+Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 || ^1.0.0`, Node `^20.19.0 || >=22.12.0`.
 
 ## Quick start
 
@@ -70,7 +70,7 @@ Generate and run a migration with the CLI (point `-d` at your DataSource module)
 # 1. your DataSource/TypeORM creates the plain table (synchronize or a TypeORM migration)
 # 2. generate the TimescaleDB migration from your @Hypertable entities:
 npx typeorm-timescaledb generate -d src/data-source.ts -o src/migrations
-# 3. apply it (also: revert \| status):
+# 3. apply it (also: revert | status):
 npx typeorm-timescaledb run -d src/data-source.ts
 ```
 
@@ -107,7 +107,7 @@ Multiple TimescaleDB DataSources? Pass a `name` to `forRoot` / `forFeature` / `@
 **Works today (0.4.x):**
 
 - `@Hypertable` / `@TimeColumn` / `@HypertablePrimaryKey` — hypertables with chunk interval, **columnstore** (segmentby/orderby + policy), **retention** policy, and **space (hash) partitioning**.
-- **Migration generation + CLI** (`generate \| run \| revert \| status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
+- **Migration generation + CLI** (`generate | run | revert | status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
 - **Per-DataSource repositories** (`createTimescale`) and **boot-time drift detection** (`assertSchema`).
 - **Base typed query layer** — `repo.getTimeBucket(...)` and a fluent `repo.timescaleQueryBuilder()` covering `time_bucket` (timezone/origin/offset), `first`/`last`, `histogram`, and the gap-filling family (`time_bucket_gapfill` + `locf` / `interpolate`). Results come back through typed coercion helpers.
 - **Stable `timescaledb_toolkit` aggregate helpers** — `repo.getCandlesticks(...)`, `repo.approxCountDistinct(...)`, `repo.getStats(...)`, `repo.getRegression(...)`, `repo.getPercentiles(...)`, `repo.getPercentileRanks(...)`, `repo.getCounterAgg(...)`, `repo.getTimeWeight(...)`, `repo.getStateDurations(...)`, `repo.getStateTimeline(...)`, `repo.getStateAt(...)`, `repo.getStatePeriods(...)`, `repo.getMostCommonValues(...)`, `repo.getTopN(...)`, `repo.getHeartbeatHealth(...)`, `repo.getLiveRanges(...)`, `repo.getDeadRanges(...)`, and `repo.isLiveAt(...)`, all with a presence check that fails fast (`TSDB_TOOLKIT_MISSING`) when the extension is not installed.
@@ -138,7 +138,7 @@ percentiles, counters, time-weight, state tracking, MCV/top-N, heartbeat/livenes
 ## Packages
 
 | Package                       | Description                                                                      |
-| ----------------------------- | -------------------------------------------------------------------------------- |
+| ------------------------------ | ---------------------------------------------------------------------------------- |
 | `typeorm-timescaledb`         | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module. |
 | `@blueprime/timescaledb-core` | ORM-agnostic SQL/DDL generation, metadata model, identifier safety.              |
 
