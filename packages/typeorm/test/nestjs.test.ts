@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { describe, expect, it } from 'vitest';
 import { Test } from '@nestjs/testing';
-import { Module } from '@nestjs/common';
+import { Injectable, Module } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 import { Hypertable, TimeColumn, HypertablePrimaryKey, TimescaleErrorCode } from '../src/index.js';
 import {
@@ -156,5 +156,140 @@ describe('TimescaleModule', () => {
     const { ds } = stubDataSource(inSync);
     await buildModule(ds, false);
     expect(DataSource.prototype.initialize).toBe(before);
+  });
+});
+
+describe('TimescaleModule.forRootAsync', () => {
+  it('provides the Timescale context from a synchronous useFactory', async () => {
+    const { ds } = stubDataSource(inSync);
+    const ref = await Test.createTestingModule({
+      imports: [
+        TimescaleModule.forRootAsync({
+          useFactory: () => ({ dataSource: ds, assert: false }),
+          global: true,
+        }),
+        TimescaleModule.forFeature([Metric]),
+      ],
+    }).compile();
+    const ctx = ref.get<TimescaleContext>(getTimescaleContextToken(), { strict: false });
+    expect(ctx.dataSource).toBe(ds);
+    const repo = ref.get(getTimescaleRepositoryToken(Metric), { strict: false });
+    expect(repo).toBeInstanceOf(Repository);
+  });
+
+  it('provides the Timescale context from an async (Promise-returning) useFactory', async () => {
+    const { ds } = stubDataSource(inSync);
+    const ref = await Test.createTestingModule({
+      imports: [
+        TimescaleModule.forRootAsync({
+          useFactory: async () => {
+            await Promise.resolve();
+            return { dataSource: ds, assert: false };
+          },
+        }),
+      ],
+    }).compile();
+    const ctx = ref.get<TimescaleContext>(getTimescaleContextToken(), { strict: false });
+    expect(ctx.dataSource).toBe(ds);
+  });
+
+  it('resolves useFactory args from inject + imports, keeping their real types', async () => {
+    const { ds } = stubDataSource(inSync);
+
+    @Injectable()
+    class FakeConfigService {
+      getDataSource(): DataSource {
+        return ds;
+      }
+    }
+
+    @Module({
+      providers: [FakeConfigService],
+      exports: [FakeConfigService],
+    })
+    class FakeConfigModule {}
+
+    const ref = await Test.createTestingModule({
+      imports: [
+        TimescaleModule.forRootAsync({
+          imports: [FakeConfigModule],
+          inject: [FakeConfigService],
+          useFactory: (cfg: FakeConfigService) => ({
+            dataSource: cfg.getDataSource(),
+            assert: false,
+          }),
+        }),
+      ],
+    }).compile();
+    const ctx = ref.get<TimescaleContext>(getTimescaleContextToken(), { strict: false });
+    expect(ctx.dataSource).toBe(ds);
+  });
+
+  it('runs the boot-time drift check for an async-resolved context', async () => {
+    const { ds } = stubDataSource({ hypertable: false, dims: [], procs: [] });
+    const ref = await Test.createTestingModule({
+      imports: [
+        TimescaleModule.forRootAsync({ useFactory: () => ({ dataSource: ds, assert: 'assert' }) }),
+      ],
+    }).compile();
+    const boot = ref.get<TimescaleBootstrap>(getTimescaleBootstrapToken(), { strict: false });
+    await expect(boot.onApplicationBootstrap()).rejects.toMatchObject({
+      code: TimescaleErrorCode.SCHEMA_DRIFT,
+    });
+  });
+
+  it('registers a no-op context when useFactory resolves undefined, without failing bootstrap', async () => {
+    const ref = await Test.createTestingModule({
+      imports: [TimescaleModule.forRootAsync({ useFactory: () => undefined, global: true })],
+    }).compile();
+
+    expect(ref.get(getTimescaleContextToken(), { strict: false })).toBeUndefined();
+    expect(ref.get(getTimescaleBootstrapToken(), { strict: false })).toBeUndefined();
+
+    // the full application lifecycle (which calls onApplicationBootstrap on every
+    // provider that implements it) must not throw when the bootstrap provider is nil
+    await expect(ref.init()).resolves.not.toThrow();
+    await ref.close();
+  });
+
+  it('forFeature resolves from a separate module when a global forRootAsync is used', async () => {
+    const { ds } = stubDataSource(inSync);
+    @Module({ imports: [TimescaleModule.forFeature([Metric])] })
+    class FeatureModule {}
+    const ref = await Test.createTestingModule({
+      imports: [
+        TimescaleModule.forRootAsync({
+          useFactory: () => ({ dataSource: ds, assert: false }),
+          global: true,
+        }),
+        FeatureModule,
+      ],
+    }).compile();
+    const repo = ref.get(getTimescaleRepositoryToken(Metric), { strict: false });
+    expect(repo).toBeInstanceOf(Repository);
+  });
+
+  it('binds a named async context to its own DataSource (multi-DataSource)', async () => {
+    const { ds: dsA } = stubDataSource(inSync);
+    const { ds: dsB } = stubDataSource(inSync);
+    const ref = await Test.createTestingModule({
+      imports: [
+        TimescaleModule.forRootAsync({
+          name: 'a',
+          global: true,
+          useFactory: () => ({ dataSource: dsA, name: 'a', assert: false }),
+        }),
+        TimescaleModule.forRootAsync({
+          name: 'b',
+          global: true,
+          useFactory: () => ({ dataSource: dsB, name: 'b', assert: false }),
+        }),
+      ],
+    }).compile();
+
+    const ctxA = ref.get<TimescaleContext>(getTimescaleContextToken('a'), { strict: false });
+    const ctxB = ref.get<TimescaleContext>(getTimescaleContextToken('b'), { strict: false });
+    expect(ctxA.dataSource).toBe(dsA);
+    expect(ctxB.dataSource).toBe(dsB);
   });
 });

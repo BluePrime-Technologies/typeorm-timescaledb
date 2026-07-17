@@ -1,5 +1,5 @@
 export { TimescaleModule } from './timescale.module.js';
-export type { TimescaleModuleOptions } from './timescale.module.js';
+export type { TimescaleModuleOptions, TimescaleModuleAsyncOptions } from './timescale.module.js';
 export {
   InjectTimescaleRepository,
   InjectTimescaleContext,
