@@ -84,6 +84,16 @@ describe('DataSourceAdapter', () => {
       'connection refused',
     );
   });
+
+  it('throws — never silently returns [] — when the driver resolves to a non-array (all-or-throw)', async () => {
+    const dataSource = { query: () => Promise.resolve('not an array') } as unknown as DataSource;
+    const adapter = new DataSourceAdapter({ store: 'canonical', dataSource });
+    // A non-array result must reject (→ ADAPTER_UNAVAILABLE upstream), never be read as an
+    // empty/"nothing matched" result (→ a false REFERENCE_NOT_FOUND).
+    await expect(adapter.findMany({ table: TABLE, column: COLUMN, ids: ['a'] })).rejects.toThrow(
+      /expected an array/,
+    );
+  });
 });
 
 defineAdapterConformanceSuite('DataSourceAdapter (fake DataSource)', async () => {

@@ -28,6 +28,15 @@ describe('buildFindManySql', () => {
     expect(params).toEqual([['a', 'b']]);
   });
 
+  it('builds a well-defined (matches-nothing) query for an empty id batch — the builder itself does not short-circuit', () => {
+    // DataSourceAdapter short-circuits an empty batch before ever calling this builder, but a
+    // direct caller of buildFindManySql gets no such guard — it must still produce valid,
+    // safely-bound SQL (`= ANY($1)` on an empty array is well-defined in Postgres: no rows).
+    const { sql, params } = buildFindManySql({ table: 't', column: 'id', ids: [] });
+    expect(sql).toBe('SELECT * FROM "t" WHERE "id" = ANY($1)');
+    expect(params).toEqual([[]]);
+  });
+
   it('quotes a schema-qualified table part-by-part', () => {
     const { sql } = buildFindManySql({ table: 'public.canonical_records', column: 'id', ids: [1] });
     expect(sql).toBe('SELECT * FROM "public"."canonical_records" WHERE "id" = ANY($1)');

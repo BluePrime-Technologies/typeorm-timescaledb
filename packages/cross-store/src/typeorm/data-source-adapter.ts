@@ -39,6 +39,16 @@ export class DataSourceAdapter implements CrossStoreAdapter {
     if (input.ids.length === 0) return [];
     const { sql, params } = buildFindManySql(input);
     const rows: unknown = await this.dataSource.query(sql, [...params]);
+    // Belt-and-suspenders on the all-or-throw contract: a well-behaved driver always resolves
+    // a SELECT to an array. A non-array result (a misconfigured/unexpected driver return) must
+    // THROW here rather than being coerced/indexed — silently treating it as `[]` would read to
+    // the engine as every id being genuinely absent (REFERENCE_NOT_FOUND) instead of the adapter
+    // being unavailable, which is exactly the false-negative issue #124 fix #5 forbids.
+    if (!Array.isArray(rows)) {
+      throw new Error(
+        `DataSourceAdapter: expected an array result from dataSource.query, got ${typeof rows}`,
+      );
+    }
     return rows as SnapshotRow[];
   }
 }
