@@ -7,13 +7,22 @@
  * the app already holds. Best-effort with documented caveats (there is a TOCTOU window
  * across instances) — which is why this is a package apart from the zero-bug ORM core.
  *
- * M3.1 ships the foundation: the anti-injection {@link ReferenceRegistry}, the stable
+ * M3.1 shipped the foundation: the anti-injection {@link ReferenceRegistry}, the stable
  * {@link CrossStoreError} taxonomy, and the ORM-agnostic {@link CrossStoreAdapter} contract.
- * The batch resolve engine, adapters, and the `@Resolve` decorator land in later slices.
+ * M3.2 adds the batch {@link resolveReferences} engine. Adapters and the `@Resolve` decorator
+ * land in later slices.
  */
 export { CrossStoreError, CrossStoreErrorCode } from './errors.js';
 export { ReferenceRegistry } from './registry.js';
 export type { ReferenceRegistryEntry } from './registry.js';
+export { resolveReferences, assertAllResolved } from './engine.js';
+export type {
+  Validator,
+  ValidatorMap,
+  ResolveOptions,
+  ResolveStatus,
+  ResolveVerdict,
+} from './engine.js';
 export type {
   ResolveRef,
   ReferenceCheck,
