@@ -11,9 +11,22 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./typeorm": {
+      "import": {
+        "types": "./dist/typeorm/index.d.ts",
+        "default": "./dist/typeorm/index.js"
+      }
     }
   },
   "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "typeorm": [
+        "./dist/typeorm/index.d.ts"
+      ]
+    }
+  },
   "files": [
     "dist",
     "LICENSE",
@@ -23,11 +36,24 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b",
-    "test:unit": "vitest run --passWithNoTests",
+    "test:unit": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts'",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@blueprime/timescaledb-core": "workspace:*"
+  },
+  "peerDependencies": {
+    "typeorm": "^0.3.20 || ^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "typeorm": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "pg": "^8.21.0",
+    "testcontainers": "^12.0.1",
+    "typeorm": "^1.0.0"
   },
   "publishConfig": {
     "access": "public"

@@ -9,13 +9,17 @@
  *
  * M3.1 shipped the foundation: the anti-injection {@link ReferenceRegistry}, the stable
  * {@link CrossStoreError} taxonomy, and the ORM-agnostic {@link CrossStoreAdapter} contract.
- * M3.2 adds the batch {@link resolveReferences} engine. Adapters and the `@Resolve` decorator
- * land in later slices.
+ * M3.2 adds the batch {@link resolveReferences} engine. M3.3a adds the shared
+ * {@link buildFindManySql} SQL builder and the first real adapter (`./typeorm` subpath,
+ * `DataSourceAdapter`, over a TypeORM `DataSource`). The `@Resolve` decorator lands in a
+ * later slice.
  */
 export { CrossStoreError, CrossStoreErrorCode } from './errors.js';
 export { ReferenceRegistry } from './registry.js';
 export type { ReferenceRegistryEntry } from './registry.js';
 export { resolveReferences, assertAllResolved } from './engine.js';
+export { buildFindManySql } from './sql.js';
+export type { BuildFindManySqlInput, BuiltFindManySql } from './sql.js';
 export type {
   Validator,
   ValidatorMap,

@@ -13,7 +13,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "env": ["TIMESCALE_IMAGE"],
+      "env": ["TIMESCALE_IMAGE", "POSTGRES_IMAGE"],
       "cache": false
     }
   }

@@ -58,16 +58,23 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Override the version on the package that imports typeorm (not the root), so the
-      # matrix actually exercises 0.3.20 — a root -w add leaves the package's own devDep.
-      - run: pnpm --filter typeorm-timescaledb add -D typeorm@${{ matrix.typeorm }}
+      # Override the version on every package that imports typeorm (not the root), so the
+      # matrix actually exercises 0.3.20 — a root -w add leaves each package's own devDep.
+      # @blueprime/cross-store's ./typeorm subpath (DataSourceAdapter) needs this too, or its
+      # peerDependencies "^0.3.20 || ^1.0.0" claim would go untested on the 0.3.20 leg.
+      - run: pnpm --filter typeorm-timescaledb --filter @blueprime/cross-store add -D typeorm@${{ matrix.typeorm }}
       # Fail loud if the wrong version resolved (guards the matrix from silently no-op'ing).
       - name: Verify resolved TypeORM version
         run: |
           # read the file by path (typeorm's exports map doesn't expose ./package.json)
-          RESOLVED=$(node -p "require('./packages/typeorm/node_modules/typeorm/package.json').version")
-          echo "Resolved typeorm: $RESOLVED (expected ${{ matrix.typeorm }})"
-          case "$RESOLVED" in ${{ matrix.typeorm }}*) ;; *) echo "::error::typeorm $RESOLVED != ${{ matrix.typeorm }}"; exit 1 ;; esac
+          for pkg in packages/typeorm packages/cross-store; do
+            RESOLVED=$(node -p "require('./$pkg/node_modules/typeorm/package.json').version")
+            echo "Resolved typeorm in $pkg: $RESOLVED (expected ${{ matrix.typeorm }})"
+            case "$RESOLVED" in
+              ${{ matrix.typeorm }}*) ;;
+              *) echo "::error::$pkg: typeorm $RESOLVED != ${{ matrix.typeorm }}"; exit 1 ;;
+            esac
+          done
       - run: pnpm build
       # Pre-pull the image with retries so a transient Docker Hub 500 doesn't fail the
       # suite (Testcontainers reuses the cached image instead of pulling mid-test).
@@ -78,10 +85,20 @@ jobs:
             echo "pull attempt $i failed; retrying in $((i*10))s..."; sleep $((i*10))
           done
           echo "::error::could not pull timescale/timescaledb:${{ matrix.timescaledb }} after retries"; exit 1
+      # The cross-store two-DataSource integration test also boots a plain-Postgres "canonical"
+      # instance (a genuinely separate container from the TimescaleDB "events" one above).
+      - name: Pre-pull Postgres image (cross-store canonical store)
+        run: |
+          for i in 1 2 3 4 5; do
+            docker pull "postgres:17-alpine" && exit 0
+            echo "pull attempt $i failed; retrying in $((i*10))s..."; sleep $((i*10))
+          done
+          echo "::error::could not pull postgres:17-alpine after retries"; exit 1
       - run: pnpm test
         env:
           # Testcontainers boots TimescaleDB itself; image selected per matrix cell.
           TIMESCALE_IMAGE: timescale/timescaledb:${{ matrix.timescaledb }}
+          POSTGRES_IMAGE: postgres:17-alpine
 
   integration-toolkit:
     name: integration (timescaledb_toolkit)
