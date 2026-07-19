@@ -76,6 +76,12 @@ jobs:
             esac
           done
       - run: pnpm build
+      # @blueprime/cross-store's Prisma integration test dynamic-imports @prisma/client, so the
+      # generated client must exist. pnpm skips the package's build scripts, so generate explicitly.
+      - name: Generate Prisma client (cross-store)
+        run: pnpm --filter @blueprime/cross-store exec prisma generate
+        env:
+          CROSS_STORE_DATABASE_URL: postgresql://x:x@localhost:5432/x
       # Pre-pull the image with retries so a transient Docker Hub 500 doesn't fail the
       # suite (Testcontainers reuses the cached image instead of pulling mid-test).
       - name: Pre-pull TimescaleDB image

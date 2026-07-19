@@ -155,6 +155,16 @@ describe.skipIf(!IMAGE)('deep E2E against real TimescaleDB', () => {
     try {
       await applyUp(ds);
 
+      // Pause this hypertable's policy background jobs so the MANUAL compress_chunk / drop_chunks
+      // assertions below are deterministic. All data is from 2020, so every chunk is immediately
+      // policy-eligible; if the scheduler fires policy_retention/policy_compression concurrently
+      // with a manual op, a bgw dropping a chunk mid-compress raises 55P03 "chunk deleted by other
+      // transaction" (a flaky failure). The jobs still exist in the catalog (asserted below) and
+      // down() still removes them — we only stop them from running during the test.
+      await ds.query(
+        `SELECT alter_job(job_id, scheduled => false) FROM timescaledb_information.jobs WHERE hypertable_name = 'reading'`,
+      );
+
       // hypertable + both policies recorded in the catalog
       expect(
         await ds.query(
