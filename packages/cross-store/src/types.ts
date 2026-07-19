@@ -19,7 +19,15 @@ export interface ResolveRef {
  */
 export interface ReferenceCheck {
   readonly ref: ResolveRef;
-  /** The referencing value (e.g. a foreign id on the row being written). */
+  /**
+   * The referencing value (e.g. a foreign id on the row being written). Must be a scalar id
+   * (`string | number | bigint`) in the **canonical string form** the store renders — because the
+   * resolver compares by `String(value)` (which dissolves the bigint/number/string driver
+   * ambiguity). A value that stringifies differently from the stored column's text form resolves
+   * to `not_found`: e.g. an UPPERCASE uuid (Postgres renders `uuid` lowercase) or a trailing-zero
+   * numeric. This is adapter-agnostic — it holds for both the TypeORM and Prisma adapters. Use the
+   * value exactly as the referencing FK column holds it (drivers already return canonical form).
+   */
   readonly value: unknown;
   /** Optional scope filter (tenant isolation): scope-column name → value (values are bound). */
   readonly scope?: Readonly<Record<string, unknown>>;

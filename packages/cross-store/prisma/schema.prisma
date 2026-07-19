@@ -1,0 +1,12 @@
+// Minimal, raw-only Prisma schema for the @blueprime/cross-store Prisma adapter's integration
+// test. No models are declared: the PrismaAdapter uses only `$queryRawUnsafe`, and the test
+// creates its tables via raw SQL — so `prisma generate` produces a client with just the
+// raw-query API. The url is read from env only at runtime (generate does not connect).
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CROSS_STORE_DATABASE_URL")
+}
