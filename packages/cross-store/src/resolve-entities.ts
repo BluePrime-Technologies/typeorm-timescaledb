@@ -47,6 +47,31 @@ function scopeValues(entity: object, field: ResolveFieldMeta): Record<string, un
   return out;
 }
 
+/**
+ * Resolve an entity instance's class — **failing closed** for anything that isn't a real class
+ * instance. `@Resolve` metadata lives only on a class, so a `null`/non-object or a detached plain
+ * object (a spread `{...entity}`, an `Object.create(null)`, a POJO from `JSON.parse`) carries no
+ * metadata: keying off `entity.constructor` there silently yields `[]` and skips EVERY reference —
+ * including `required` ones — a fail-open that defeats the whole point of `required`. Derived via
+ * `Object.getPrototypeOf` so a column literally named `constructor` can't shadow the class.
+ */
+function entityClassOf(entity: unknown): EntityClass {
+  if (entity === null || typeof entity !== 'object') {
+    throw new CrossStoreError(
+      CrossStoreErrorCode.INVALID_ARGUMENT,
+      `resolveEntities: each entity must be a non-null object, got ${entity === null ? 'null' : typeof entity}`,
+    );
+  }
+  const ctor = (Object.getPrototypeOf(entity) as { constructor?: EntityClass } | null)?.constructor;
+  if (!ctor || ctor === (Object as unknown as EntityClass)) {
+    throw new CrossStoreError(
+      CrossStoreErrorCode.INVALID_ARGUMENT,
+      'resolveEntities requires class instances — a plain/spread object carries no @Resolve metadata, so its references (including required ones) would be silently unchecked. Pass entity instances, not detached/spread objects.',
+    );
+  }
+  return ctor;
+}
+
 function buildCheck(entity: object, field: ResolveFieldMeta, value: unknown): ReferenceCheck {
   return {
     ref: field.ref,
@@ -71,7 +96,7 @@ export async function resolveEntities(
   const checks: ReferenceCheck[] = [];
   const origins: Array<{ entity: object; property: string }> = [];
   for (const entity of entities) {
-    const meta = getResolveMetadata(entity.constructor as EntityClass);
+    const meta = getResolveMetadata(entityClassOf(entity));
     for (const field of meta) {
       const value = (entity as Record<string, unknown>)[field.property];
       if (value === null || value === undefined) {

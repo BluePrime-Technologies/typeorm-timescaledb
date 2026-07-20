@@ -117,6 +117,46 @@ describe('resolveEntities', () => {
     expect(r?.verdict.ok).toBe(true);
   });
 
+  it('FAILS CLOSED on a spread/plain-object DTO — does NOT silently skip a required ref', async () => {
+    const { registry, adapter, validators } = fixture();
+    const instance = new RequiredEntry();
+    instance.accountId = 'a';
+    const pojo = { ...instance }; // detached: constructor is Object → no metadata
+    await expect(
+      resolveEntities([pojo], { registry, adapters: [adapter], validators }),
+    ).rejects.toMatchObject({ code: CrossStoreErrorCode.INVALID_ARGUMENT });
+    expect(adapter.calls).toHaveLength(0);
+  });
+
+  it('throws INVALID_ARGUMENT (not a raw TypeError) for a null/non-object entity', async () => {
+    const { registry, adapter, validators } = fixture();
+    for (const bad of [null, undefined, 42, 'x']) {
+      await expect(
+        resolveEntities([bad as unknown as object], { registry, adapters: [adapter], validators }),
+      ).rejects.toMatchObject({ code: CrossStoreErrorCode.INVALID_ARGUMENT });
+    }
+  });
+
+  it('accepts a class instance with no @Resolve fields (returns [], does not throw)', async () => {
+    const { registry, adapter, validators } = fixture();
+    class Plain {}
+    const results = await resolveEntities([new Plain()], {
+      registry,
+      adapters: [adapter],
+      validators,
+    });
+    expect(results).toEqual([]);
+  });
+
+  it('accepts an Object.create(Class.prototype) instance (real prototype → class recovered)', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = Object.create(LedgerEntry.prototype) as LedgerEntry;
+    e.accountId = 'a';
+    e.workspaceId = 'w1';
+    const [r] = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    expect(r?.verdict.ok).toBe(true);
+  });
+
   it('throws with entity/field context when a scope sibling property is unset', async () => {
     const { registry, adapter, validators } = fixture();
     const entity = new LedgerEntry('a');
