@@ -9,8 +9,8 @@
  *
  * M3.1 shipped the foundation: the anti-injection {@link ReferenceRegistry}, the stable
  * {@link CrossStoreError} taxonomy, and the ORM-agnostic {@link CrossStoreAdapter} contract.
- * M3.2 adds the batch {@link resolveReferences} engine. Adapters and the `@Resolve` decorator
- * land in later slices.
+ * M3.2 added the batch {@link resolveReferences} engine; M3.3 the TypeORM + Prisma adapters
+ * (`./typeorm`, `./prisma` subpaths). M3.4 adds the {@link Resolve} decorator + {@link resolveEntities}.
  */
 export { CrossStoreError, CrossStoreErrorCode } from './errors.js';
 export { ReferenceRegistry } from './registry.js';
@@ -23,6 +23,14 @@ export type {
   ResolveStatus,
   ResolveVerdict,
 } from './engine.js';
+export { Resolve, getResolveMetadata } from './resolve-decorator.js';
+export type { ResolveFieldOptions, ResolveFieldMeta, EntityClass } from './resolve-decorator.js';
+export {
+  resolveEntities,
+  assertEntitiesResolved,
+  assertEntitiesRegistered,
+} from './resolve-entities.js';
+export type { EntityFieldVerdict } from './resolve-entities.js';
 export type {
   ResolveRef,
   ReferenceCheck,
