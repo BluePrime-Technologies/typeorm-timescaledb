@@ -339,7 +339,9 @@ export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]):
  * the write, restoring every property already locked in this same call first. A protection that
  * silently doesn't apply to some fields would be a false sense of safety; refusing to write is the
  * fail-closed alternative used everywhere else in this module (e.g. `assertEntitiesUnchanged`'s
- * "cannot re-verify scope" case). A property referenced by more than one result (e.g. a scope
+ * "cannot re-verify scope" case — mirrored here too: a verdict validated WITH a scope whose class
+ * metadata no longer declares one aborts the write rather than silently locking zero scope
+ * siblings). A property referenced by more than one result (e.g. a scope
  * sibling shared by two `@Resolve`d fields) is locked/restored exactly once. The lock preserves the
  * property's original `configurable: true` (needed to restore it afterward), so it stops an ordinary
  * assignment (`entity.prop = x`, the TOCTOU threat this targets) but not a deliberate
@@ -411,7 +413,21 @@ export function lockValidatedFields(results: readonly EntityFieldVerdict[]): () 
     const scope = verdict.check.scope;
     if (scope === undefined) continue;
     const field = getResolveMetadata(entityClassOf(entity)).find((f) => f.property === property);
-    for (const scopeProperty of Object.values(field?.scope ?? {})) lock(entity, scopeProperty);
+    if (field?.scope === undefined) {
+      // Mirrors `assertEntitiesUnchanged`'s identical "cannot re-verify scope" case: a verdict
+      // validated WITH a scope whose class metadata no longer declares one. Failing OPEN here (by
+      // simply locking nothing for the scope) would contradict this function's own "FAILS CLOSED"
+      // guarantee — refuse the write instead, same as the re-check that already ran before this.
+      unlockAlreadyLocked();
+      const name = className(entity);
+      throw new CrossStoreError(
+        CrossStoreErrorCode.INVALID_ARGUMENT,
+        `${name}.${property}: cannot lock the scope siblings for the save-time TOCTOU re-check ` +
+          `(metadata no longer declares a scope) — refusing to write`,
+        { entity: name, property },
+      );
+    }
+    for (const scopeProperty of Object.values(field.scope)) lock(entity, scopeProperty);
   }
   return unlockAlreadyLocked;
 }

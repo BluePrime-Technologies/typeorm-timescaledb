@@ -524,6 +524,62 @@ describe('lockValidatedFields (write-path re-check→save non-atomicity, issue #
     e.accountId = 'z';
     expect(e.accountId).toBe('z');
   });
+
+  it('fails CLOSED (not open) when a verdict carries a scope but the class metadata no longer declares one', () => {
+    // Mirrors assertEntitiesUnchanged's identical "cannot re-verify scope" test: locking must not
+    // silently lock zero scope siblings for a verdict that was validated WITH a scope — that would
+    // contradict this function's own "FAILS CLOSED" guarantee.
+    const e = new RequiredEntry();
+    e.accountId = 'a';
+    const results: EntityFieldVerdict[] = [
+      {
+        entity: e,
+        property: 'accountId',
+        verdict: {
+          check: { ref: REF, value: 'a', scope: { workspace_id: 'w1' } },
+          ok: true,
+          status: 'found',
+        },
+      },
+    ];
+    try {
+      lockValidatedFields(results);
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect((err as CrossStoreError).code).toBe(CrossStoreErrorCode.INVALID_ARGUMENT);
+      expect((err as CrossStoreError).message).toContain('cannot lock the scope siblings');
+    }
+    // the accountId lock taken before the scope-metadata check failed must have been undone too
+    e.accountId = 'z';
+    expect(e.accountId).toBe('z');
+  });
+
+  it('rejects a concurrent mutation across a REAL async tick, not just a synchronous same-turn write', async () => {
+    // The earlier createManyResolved integration test mutates synchronously inside the fake
+    // save(); this proves the lock survives genuine event-loop interleaving (a separate
+    // microtask/macrotask actually getting scheduled between validation and the mutation attempt).
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry('a');
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    assertEntitiesUnchanged(results);
+    const unlock = lockValidatedFields(results);
+    try {
+      const concurrentWrite = new Promise<void>((resolve, reject) => {
+        setTimeout(() => {
+          try {
+            e.accountId = 'ghost'; // a genuinely separate task, not the same synchronous turn
+            resolve();
+          } catch (err) {
+            reject(err as Error);
+          }
+        }, 0);
+      });
+      await expect(concurrentWrite).rejects.toThrow(TypeError);
+      expect(e.accountId).toBe('a');
+    } finally {
+      unlock();
+    }
+  });
 });
 
 describe('assertEntitiesRegistered (boot-time wiring)', () => {
