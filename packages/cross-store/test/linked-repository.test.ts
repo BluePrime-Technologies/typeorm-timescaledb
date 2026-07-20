@@ -41,6 +41,15 @@ class RequiredLedgerEntry {
 }
 Resolve('canonical.accounts.id', { required: true })(RequiredLedgerEntry.prototype, 'accountId');
 
+class ScopedEntry {
+  accountId = 'a';
+  workspaceId = 'w1';
+}
+Resolve('canonical.accounts.id', { scope: { workspace_id: 'workspaceId' } })(
+  ScopedEntry.prototype,
+  'accountId',
+);
+
 function fixture() {
   const registry = new ReferenceRegistry().register({ ...REF, targetIsAppendOnly: true });
   const adapter = new InMemoryAdapter('canonical', [{ id: 'a' }, { id: 'b' }]);
@@ -92,6 +101,45 @@ describe('createManyResolved', () => {
       createManyResolved(writer, [e], { registry, adapters: [mutating] }),
     ).rejects.toMatchObject({ code: CrossStoreErrorCode.INVALID_ARGUMENT });
     expect(writer.saved).toHaveLength(0); // never written
+  });
+
+  it('refuses to save when a SCOPE sibling is mutated between validation and save (tenant isolation)', async () => {
+    const registry = new ReferenceRegistry().register({ ...REF, scopeColumns: ['workspace_id'] });
+    const writer = new FakeWriter();
+    const e = new ScopedEntry(); // accountId 'a', workspaceId 'w1'
+    // validated under w1; a concurrent tick flips the tenant to w2 while the fetch awaits
+    const mutating: CrossStoreAdapter = {
+      store: 'canonical',
+      findMany: (input) => {
+        const row = {
+          id: 'a',
+          workspace_id: (input.scope as { workspace_id: string }).workspace_id,
+        };
+        e.workspaceId = 'w2'; // FK value unchanged, but the scope drifts to another tenant
+        return Promise.resolve([row]);
+      },
+    };
+    await expect(
+      createManyResolved(writer, [e], { registry, adapters: [mutating] }),
+    ).rejects.toMatchObject({ code: CrossStoreErrorCode.INVALID_ARGUMENT });
+    expect(writer.saved).toHaveLength(0);
+  });
+
+  it('saves a scoped entity whose scope is UNCHANGED (no false positive on the scope re-check)', async () => {
+    const registry = new ReferenceRegistry().register({ ...REF, scopeColumns: ['workspace_id'] });
+    const writer = new FakeWriter();
+    const e = new ScopedEntry(); // accountId 'a', workspaceId 'w1' — never mutated
+    // an adapter that returns a matching, correctly-scoped row and leaves the entity untouched
+    const scoped: CrossStoreAdapter = {
+      store: 'canonical',
+      findMany: (input) =>
+        Promise.resolve([
+          { id: 'a', workspace_id: (input.scope as { workspace_id: string }).workspace_id },
+        ]),
+    };
+    const saved = await createManyResolved(writer, [e], { registry, adapters: [scoped] });
+    expect(saved).toEqual([e]); // the re-check passes; the write happens
+    expect(writer.saved).toEqual([e]);
   });
 
   it('throws if the writer returns a different number of entities than given', async () => {

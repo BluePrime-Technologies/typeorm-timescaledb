@@ -4,10 +4,12 @@ import {
   ReferenceRegistry,
   resolveEntities,
   assertEntitiesResolved,
+  assertEntitiesUnchanged,
   assertEntitiesRegistered,
   CrossStoreError,
   CrossStoreErrorCode,
 } from '../src/index.js';
+import type { EntityFieldVerdict } from '../src/index.js';
 import type { CrossStoreAdapter, FindManyInput, SnapshotRow, ValidatorMap } from '../src/index.js';
 
 class InMemoryAdapter implements CrossStoreAdapter {
@@ -228,6 +230,82 @@ describe('assertEntitiesResolved', () => {
       validators,
     });
     expect(assertEntitiesResolved(results)).toBe(results);
+  });
+
+  it('does NOT collapse a malformed unavailable verdict into REFERENCE_NOT_FOUND (fix #5)', () => {
+    // a hand-built failed verdict missing its error must surface as INVALID_ARGUMENT, never
+    // an invented not_found (mirrors the engine's assertAllResolved hardening)
+    const bogus = [
+      {
+        entity: new LedgerEntry('a'),
+        property: 'accountId',
+        verdict: { check: { ref: REF, value: 'a' }, ok: false, status: 'unavailable' as const },
+      },
+    ];
+    try {
+      assertEntitiesResolved(bogus);
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as CrossStoreError).code).toBe(CrossStoreErrorCode.INVALID_ARGUMENT);
+      expect((e as CrossStoreError).code).not.toBe(CrossStoreErrorCode.REFERENCE_NOT_FOUND);
+    }
+  });
+});
+
+describe('assertEntitiesUnchanged (write-path TOCTOU re-check)', () => {
+  it('passes when a scoped field is unchanged between validation and save', async () => {
+    const { registry, adapter, validators } = fixture();
+    const results = await resolveEntities([new LedgerEntry('a')], {
+      registry,
+      adapters: [adapter],
+      validators,
+    });
+    expect(() => assertEntitiesUnchanged(results)).not.toThrow();
+  });
+
+  it('throws when the validated value changed under the same instance', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry('a');
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    e.accountId = 'ghost'; // swap in an unvalidated reference after validation
+    expect(() => assertEntitiesUnchanged(results)).toThrow(
+      expect.objectContaining({ code: CrossStoreErrorCode.INVALID_ARGUMENT }),
+    );
+  });
+
+  it('throws when the validated scope drifted under the same instance', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry('a', 'w1');
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    e.workspaceId = 'w2'; // FK unchanged, tenant scope drifted
+    expect(() => assertEntitiesUnchanged(results)).toThrow(
+      expect.objectContaining({ code: CrossStoreErrorCode.INVALID_ARGUMENT }),
+    );
+  });
+
+  it('fails CLOSED when a verdict carries a scope but the class metadata no longer declares one', () => {
+    // The o3 MAJOR case: a validated-with-scope verdict re-checked against an entity whose class
+    // has NO scope metadata (RequiredEntry) must throw rather than silently skip the scope check.
+    const e = new RequiredEntry();
+    e.accountId = 'a';
+    const results: EntityFieldVerdict[] = [
+      {
+        entity: e,
+        property: 'accountId',
+        verdict: {
+          check: { ref: REF, value: 'a', scope: { workspace_id: 'w1' } },
+          ok: true,
+          status: 'found',
+        },
+      },
+    ];
+    try {
+      assertEntitiesUnchanged(results);
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect((err as CrossStoreError).code).toBe(CrossStoreErrorCode.INVALID_ARGUMENT);
+      expect((err as CrossStoreError).message).toContain('cannot re-verify scope');
+    }
   });
 });
 

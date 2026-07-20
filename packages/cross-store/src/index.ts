@@ -28,6 +28,7 @@ export type { ResolveFieldOptions, ResolveFieldMeta, EntityClass } from './resol
 export {
   resolveEntities,
   assertEntitiesResolved,
+  assertEntitiesUnchanged,
   assertEntitiesRegistered,
 } from './resolve-entities.js';
 export type { EntityFieldVerdict, ResolveEntitiesOptions } from './resolve-entities.js';

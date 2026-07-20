@@ -31,15 +31,11 @@ function scopeValues(entity: object, field: ResolveFieldMeta): Record<string, un
   for (const [scopeColumn, property] of Object.entries(field.scope ?? {})) {
     const value = row[property];
     if (value === null || value === undefined) {
+      const name = className(entity);
       throw new CrossStoreError(
         CrossStoreErrorCode.INVALID_ARGUMENT,
-        `${entity.constructor.name}.${field.property}: scope value for "${scopeColumn}" (property "${property}") is ${value === null ? 'null' : 'undefined'}`,
-        {
-          entity: entity.constructor.name,
-          property: field.property,
-          scopeColumn,
-          scopeProperty: property,
-        },
+        `${name}.${field.property}: scope value for "${scopeColumn}" (property "${property}") is ${value === null ? 'null' : 'undefined'}`,
+        { entity: name, property: field.property, scopeColumn, scopeProperty: property },
       );
     }
     out[scopeColumn] = value;
@@ -70,6 +66,18 @@ function entityClassOf(entity: unknown): EntityClass {
     );
   }
   return ctor;
+}
+
+/**
+ * The entity's class name for diagnostics — derived via the prototype (like {@link entityClassOf}),
+ * NOT `entity.constructor.name`, so a column literally named `constructor` can't shadow it and turn
+ * an error message into a secondary `TypeError`. Falls back to `'entity'`.
+ */
+function className(entity: object): string {
+  const ctor = (Object.getPrototypeOf(entity) as { constructor?: { name?: string } } | null)
+    ?.constructor;
+  // `||` not `??`: an anonymous class has name `''`, which must fall back to 'entity' too.
+  return ctor?.name || 'entity';
 }
 
 function buildCheck(entity: object, field: ResolveFieldMeta, value: unknown): ReferenceCheck {
@@ -131,10 +139,11 @@ export async function resolveEntities(
       if (value === null || value === undefined) {
         if (field.required) {
           // A required reference must have a value. Write path: fail closed (throw). Sweep: report.
+          const name = className(entity);
           const error = new CrossStoreError(
             CrossStoreErrorCode.INVALID_ARGUMENT,
-            `${entity.constructor.name}.${field.property}: required cross-store reference is ${value === null ? 'null' : 'undefined'}`,
-            { entity: entity.constructor.name, property: field.property, required: true },
+            `${name}.${field.property}: required cross-store reference is ${value === null ? 'null' : 'undefined'}`,
+            { entity: name, property: field.property, required: true },
           );
           if (!report) throw error;
           invalid.push(invalidVerdict(entity, field.property, value, field.ref, error));
@@ -181,19 +190,76 @@ export function assertEntitiesResolved(
 ): readonly EntityFieldVerdict[] {
   for (const result of results) {
     if (!result.verdict.ok) {
+      // A well-formed failed verdict always carries its error. The fallback must NOT invent a code
+      // — a hardcoded REFERENCE_NOT_FOUND would collapse an `unavailable` verdict into not_found,
+      // the one thing issue #124 fix #5 forbids (mirrors the engine's assertAllResolved).
       const base =
         result.verdict.error ??
-        new CrossStoreError(CrossStoreErrorCode.REFERENCE_NOT_FOUND, 'reference not resolved');
+        new CrossStoreError(
+          CrossStoreErrorCode.INVALID_ARGUMENT,
+          `verdict with status "${result.verdict.status}" is missing its error`,
+          { status: result.verdict.status },
+        );
+      const name = className(result.entity);
       throw new CrossStoreError(
         base.code,
-        `${result.entity.constructor.name}.${result.property}: ${base.message}`,
+        `${name}.${result.property}: ${base.message}`,
         // explicit identity wins — a future engine error context carrying `entity`/`property` must
         // not clobber the attribution this helper exists to add.
-        { ...base.context, entity: result.entity.constructor.name, property: result.property },
+        { ...base.context, entity: name, property: result.property },
       );
     }
   }
   return results;
+}
+
+/**
+ * Assert each resolved field on its entity STILL holds the value (and scope) it was validated with —
+ * the write path's guarantee that "what is written is what was validated". Between reading a field
+ * for validation and the ORM re-reading it at save time, concurrent code holding the same instance
+ * could swap in an unvalidated reference OR a different scope (a mid-flight `workspaceId` change
+ * would persist a cross-tenant reference — the scope dimension matters as much as the value). Throws
+ * `INVALID_ARGUMENT` on any change (fail closed; rolls back the caller's transaction). A nullable FK
+ * flipped null→value is not covered (it produced no verdict) — "do not mutate an in-flight entity"
+ * remains the precondition; this closes the value AND scope windows for every VALIDATED field.
+ */
+export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]): void {
+  for (const { entity, property, verdict } of results) {
+    const row = entity as Record<string, unknown>;
+    const name = className(entity);
+    if (row[property] !== verdict.check.value) {
+      throw new CrossStoreError(
+        CrossStoreErrorCode.INVALID_ARGUMENT,
+        `${name}.${property} changed between validation and save — refusing to write an unvalidated reference`,
+        { entity: name, property },
+      );
+    }
+    const validatedScope = verdict.check.scope;
+    if (validatedScope === undefined) continue;
+    // Recompute the current scope from the field's sibling properties and compare to the validated
+    // snapshot (scopeValues throws if a sibling is now null/undefined — also fail-closed).
+    const field = getResolveMetadata(entityClassOf(entity)).find((f) => f.property === property);
+    if (field?.scope === undefined) {
+      // The field was validated WITH a scope, so its metadata must still carry one. If it doesn't
+      // (the class was unregistered/mutated mid-flight — should never happen), we cannot re-verify
+      // the scope, so fail closed rather than skip the check.
+      throw new CrossStoreError(
+        CrossStoreErrorCode.INVALID_ARGUMENT,
+        `${name}.${property}: cannot re-verify scope at save time (metadata no longer declares a scope) — refusing to write`,
+        { entity: name, property },
+      );
+    }
+    const current = scopeValues(entity, field);
+    for (const col of Object.keys(validatedScope)) {
+      if (current[col] !== validatedScope[col]) {
+        throw new CrossStoreError(
+          CrossStoreErrorCode.INVALID_ARGUMENT,
+          `${name}.${property} scope "${col}" changed between validation and save — refusing to write a reference validated under a different scope`,
+          { entity: name, property, scopeColumn: col },
+        );
+      }
+    }
+  }
 }
 
 /**
