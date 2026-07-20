@@ -219,6 +219,20 @@ describe('resolveEntities', () => {
     expect(results.map((r) => r.entity)).toEqual(es);
     expect(adapter.calls).toHaveLength(1); // one batched round-trip
   });
+
+  it('preserves ORIGINAL input order even when null-baseline fields are interleaved with checked ones', async () => {
+    const { registry, adapter, validators } = fixture();
+    const es = [new LedgerEntry(null), new LedgerEntry('a'), new LedgerEntry(null)];
+    const results = await resolveEntities(es, { registry, adapters: [adapter], validators });
+    // a not_referenced verdict is no longer appended after every checked verdict — each result
+    // sits at the same position as its entity in the input, not grouped by kind.
+    expect(results.map((r) => r.entity)).toEqual(es);
+    expect(results.map((r) => r.verdict.status)).toEqual([
+      'not_referenced',
+      'resolved',
+      'not_referenced',
+    ]);
+  });
 });
 
 describe('assertEntitiesResolved', () => {
@@ -355,6 +369,14 @@ describe('assertEntitiesUnchanged (write-path TOCTOU re-check)', () => {
       expect.objectContaining({ code: CrossStoreErrorCode.INVALID_ARGUMENT }),
     );
   });
+
+  it('does NOT reject a null↔undefined flip on a nullable field (both mean "no reference")', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry(undefined as unknown as null);
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    e.accountId = null; // still no reference — just the other nullish flavor
+    expect(() => assertEntitiesUnchanged(results)).not.toThrow();
+  });
 });
 
 describe('lockValidatedFields (write-path re-check→save non-atomicity, issue #140 window #2)', () => {
@@ -443,6 +465,59 @@ describe('lockValidatedFields (write-path re-check→save non-atomicity, issue #
       e.workspaceId = 'w3'; // fully restored — not left locked by the duplicate lock
     }).not.toThrow();
     expect(e.workspaceId).toBe('w3');
+  });
+
+  it('fails CLOSED (throws INVALID_ARGUMENT) on a @Resolve field backed by an accessor, not a plain data property', async () => {
+    // A getter/setter has no own descriptor with `value` to lock — rather than silently skipping
+    // protection for it (a false sense of safety), lockValidatedFields must refuse to proceed.
+    class AccessorEntry {
+      private _accountId = 'a';
+      get accountId(): string {
+        return this._accountId;
+      }
+      set accountId(v: string) {
+        this._accountId = v;
+      }
+    }
+    Resolve('canonical.accounts.id')(AccessorEntry.prototype, 'accountId');
+    const { registry, adapter, validators } = fixture();
+    const e = new AccessorEntry();
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    try {
+      lockValidatedFields(results);
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect((err as CrossStoreError).code).toBe(CrossStoreErrorCode.INVALID_ARGUMENT);
+      expect((err as CrossStoreError).message).toContain('AccessorEntry.accountId');
+    }
+    // and the accessor is left fully functional — no partial/broken lock state
+    e.accountId = 'z';
+    expect(e.accountId).toBe('z');
+  });
+
+  it('restores fields already locked earlier in the same call before failing on a later unlockable field', async () => {
+    class MixedEntry {
+      accountId = 'a';
+      get otherId(): string {
+        return 'a';
+      }
+      set otherId(_v: string) {
+        /* accessor: cannot be locked */
+      }
+    }
+    Resolve('canonical.accounts.id')(MixedEntry.prototype, 'accountId');
+    Resolve('canonical.accounts.id')(MixedEntry.prototype, 'otherId');
+    const { registry, adapter, validators } = fixture();
+    const e = new MixedEntry();
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    expect(results.map((r) => r.property)).toEqual(['accountId', 'otherId']);
+    expect(() => lockValidatedFields(results)).toThrow(
+      expect.objectContaining({ code: CrossStoreErrorCode.INVALID_ARGUMENT }),
+    );
+    // accountId was locked first, then the call failed on otherId — it must have been unlocked
+    // again rather than left permanently read-only.
+    e.accountId = 'z';
+    expect(e.accountId).toBe('z');
   });
 });
 

@@ -163,7 +163,7 @@ describe('createManyResolved', () => {
     };
     await expect(
       createManyResolved(mutatingWriter, [e], { registry, adapters: [adapter] }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toMatchObject({ code: CrossStoreErrorCode.INVALID_ARGUMENT }); // wrapped, not a bare TypeError
     expect(e.accountId).toBe('a'); // the locked property could not actually be overwritten
     // the field is unlocked again afterward (the `finally` ran despite the throw)
     e.accountId = 'z';

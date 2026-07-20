@@ -147,6 +147,15 @@ function notReferencedVerdict(
   };
 }
 
+/** A slot awaiting its engine verdict, keyed by index into `checks`/`origins`. */
+interface PendingSlot {
+  readonly pendingCheckIndex: number;
+}
+
+function isPendingSlot(slot: EntityFieldVerdict | PendingSlot): slot is PendingSlot {
+  return 'pendingCheckIndex' in slot;
+}
+
 export async function resolveEntities(
   entities: readonly object[],
   options: ResolveOptions,
@@ -155,8 +164,10 @@ export async function resolveEntities(
   const report = entityOptions.reportInvalidAsVerdict === true;
   const checks: ReferenceCheck[] = [];
   const origins: Array<{ entity: object; property: string }> = [];
-  const invalid: EntityFieldVerdict[] = [];
-  const unreferenced: EntityFieldVerdict[] = [];
+  // One slot per decorated field, in the SAME order the fields were scanned — an `invalid` or
+  // `not_referenced` verdict is known immediately; a real check is a placeholder until the engine
+  // returns, so the final result preserves input order regardless of which fields short-circuited.
+  const slots: Array<EntityFieldVerdict | PendingSlot> = [];
   for (const entity of entities) {
     const meta = getResolveMetadata(entityClassOf(entity));
     for (const field of meta) {
@@ -171,11 +182,11 @@ export async function resolveEntities(
             { entity: name, property: field.property, required: true },
           );
           if (!report) throw error;
-          invalid.push(invalidVerdict(entity, field.property, value, field.ref, error));
+          slots.push(invalidVerdict(entity, field.property, value, field.ref, error));
         } else {
           // Not required: still no reference to check, but record the null/undefined baseline
           // (issue #140 window #1) so the write path's TOCTOU re-check can catch a later flip.
-          unreferenced.push(notReferencedVerdict(entity, field.property, field.ref, value));
+          slots.push(notReferencedVerdict(entity, field.property, field.ref, value));
         }
         continue; // nullable FK → no reference to resolve via the engine
       }
@@ -184,11 +195,13 @@ export async function resolveEntities(
         check = buildCheck(entity, field, value); // scopeValues throws on an unset scope sibling
       } catch (e) {
         if (!report || !(e instanceof CrossStoreError)) throw e;
-        invalid.push(invalidVerdict(entity, field.property, value, field.ref, e));
+        slots.push(invalidVerdict(entity, field.property, value, field.ref, e));
         continue;
       }
+      const pendingCheckIndex = checks.length;
       checks.push(check);
       origins.push({ entity, property: field.property });
+      slots.push({ pendingCheckIndex });
     }
   }
   const verdicts = await resolveReferences(checks, options);
@@ -202,12 +215,11 @@ export async function resolveEntities(
       { verdicts: verdicts.length, checks: origins.length },
     );
   }
-  const resolved = verdicts.map((verdict, i) => ({
-    entity: origins[i]!.entity,
-    property: origins[i]!.property,
-    verdict,
-  }));
-  return report ? [...resolved, ...invalid, ...unreferenced] : [...resolved, ...unreferenced];
+  return slots.map((slot) => {
+    if (!isPendingSlot(slot)) return slot;
+    const { entity, property } = origins[slot.pendingCheckIndex]!;
+    return { entity, property, verdict: verdicts[slot.pendingCheckIndex]! };
+  });
 }
 
 /**
@@ -251,15 +263,25 @@ export function assertEntitiesResolved(
  * `INVALID_ARGUMENT` on any change (fail closed; rolls back the caller's transaction). A nullable FK
  * flipped null→value IS covered (issue #140 window #1): `resolveEntities` now returns a
  * `not_referenced` baseline verdict for it, so the value comparison below rejects the flip like any
- * other. This closes the value AND scope windows for every field `resolveEntities` returned —
- * checked or not. It still only re-checks up to the *instant it runs*; see {@link lockValidatedFields}
- * for closing the gap between this re-check and the write itself (issue #140 window #2).
+ * other — except `null`↔`undefined` itself, which both mean "no reference" everywhere else in this
+ * module (see {@link resolveEntities}'s nullable-FK test) and so are treated as equivalent, not a
+ * change, here too. This closes the value window for every field `resolveEntities` returned —
+ * checked or not — and the scope window for every field that had a scope to validate in the first
+ * place (a field with no reference has no scope binding to re-check until it acquires one, and any
+ * such acquisition is itself rejected by the value check above). It still only re-checks up to the
+ * *instant it runs*; see {@link lockValidatedFields} for closing the gap between this re-check and
+ * the write itself (issue #140 window #2).
  */
 export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]): void {
   for (const { entity, property, verdict } of results) {
     const row = entity as Record<string, unknown>;
     const name = className(entity);
-    if (row[property] !== verdict.check.value) {
+    const currentValue = row[property];
+    const validatedValue = verdict.check.value;
+    const bothNullish =
+      (currentValue === null || currentValue === undefined) &&
+      (validatedValue === null || validatedValue === undefined);
+    if (!bothNullish && currentValue !== validatedValue) {
       throw new CrossStoreError(
         CrossStoreErrorCode.INVALID_ARGUMENT,
         `${name}.${property} changed between validation and save — refusing to write an unvalidated reference`,
@@ -301,16 +323,26 @@ export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]):
  * mutable instance can still mutate it during `save`'s own internal await points). This package is
  * ESM (always strict mode), so an assignment to a locked property throws immediately instead of
  * silently landing an unvalidated reference — turning the violation of the documented "do not
- * mutate an in-flight entity" precondition into a loud failure instead of a silent one.
+ * mutate an in-flight entity" precondition into a loud failure instead of a silent one. This is a
+ * best-effort, same-process mitigation: it cannot stop a rewrite issued by the ORM/driver itself
+ * from a DIFFERENT process or connection (e.g. a DB-side trigger or default), only a concurrent
+ * mutation of this same JS object from other code sharing the process.
  *
  * Deliberately narrower than freezing the whole entity (`Object.freeze` was rejected in the M3.4b
  * review — it breaks TypeORM's `save`, which needs to write other columns, e.g. a generated id):
  * only the exact validated properties are locked, so `save` can still do everything else it needs
- * to. Only an own, configurable data property can be locked this way; an inherited getter/setter
- * (no own descriptor to safely restore) is left alone — a documented limitation, not a silent gap,
- * since such an entity never had a plain data property for this re-check to protect in the first
- * place. A property referenced by more than one result (e.g. a scope sibling shared by two
- * `@Resolve`d fields) is locked/restored exactly once.
+ * to — **except** re-write those same validated properties itself (e.g. a subscriber or column
+ * transformer that reassigns the very `@Resolve`d column during save would now also throw; for such
+ * an entity, this locking mitigation and that ORM feature are incompatible).
+ *
+ * FAILS CLOSED, not silently degraded: only an own, configurable data property can actually be
+ * locked this way, so an inherited getter/setter or a non-configurable field (no own descriptor to
+ * safely restore) is not "left alone" — it makes this function throw `INVALID_ARGUMENT` and abort
+ * the write, restoring every property already locked in this same call first. A protection that
+ * silently doesn't apply to some fields would be a false sense of safety; refusing to write is the
+ * fail-closed alternative used everywhere else in this module (e.g. `assertEntitiesUnchanged`'s
+ * "cannot re-verify scope" case). A property referenced by more than one result (e.g. a scope
+ * sibling shared by two `@Resolve`d fields) is locked/restored exactly once.
  *
  * Returns an `unlock` function that restores every original property descriptor. **Always** call
  * it — in a `finally` around the write — so entities are left fully mutable again whether the
@@ -319,6 +351,20 @@ export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]):
 export function lockValidatedFields(results: readonly EntityFieldVerdict[]): () => void {
   const lockedByEntity = new Map<object, Set<string>>();
   const restores: Array<() => void> = [];
+  const unlockAlreadyLocked = (): void => {
+    for (let i = restores.length - 1; i >= 0; i--) restores[i]!();
+  };
+  const failToLock = (entity: object, property: string, cause?: unknown): never => {
+    unlockAlreadyLocked(); // don't leave earlier fields in this same call permanently locked
+    const name = className(entity);
+    throw new CrossStoreError(
+      CrossStoreErrorCode.INVALID_ARGUMENT,
+      `${name}.${property}: cannot lock this field for the save-time TOCTOU re-check (not an own, ` +
+        `configurable data property — an inherited getter/setter or a non-configurable field) — ` +
+        `refusing to write`,
+      { entity: name, property, ...(cause !== undefined && { cause: String(cause) }) },
+    );
+  };
   const lock = (entity: object, property: string): void => {
     let locked = lockedByEntity.get(entity);
     if (!locked) {
@@ -328,10 +374,19 @@ export function lockValidatedFields(results: readonly EntityFieldVerdict[]): () 
     if (locked.has(property)) return; // already locked (e.g. a shared scope sibling)
     locked.add(property);
     const target = entity as Record<string, unknown>;
-    const descriptor = Object.getOwnPropertyDescriptor(target, property);
-    if (!descriptor || !('value' in descriptor) || descriptor.configurable === false) return;
-    Object.defineProperty(target, property, { ...descriptor, writable: false });
-    restores.push(() => Object.defineProperty(target, property, descriptor));
+    const found = Object.getOwnPropertyDescriptor(target, property);
+    if (!found || !('value' in found) || found.configurable === false) {
+      failToLock(entity, property);
+      return; // unreachable — failToLock always throws; satisfies the type checker below
+    }
+    const original: PropertyDescriptor = found;
+    try {
+      Object.defineProperty(target, property, { ...original, writable: false });
+    } catch (cause) {
+      failToLock(entity, property, cause);
+      return; // unreachable — failToLock always throws
+    }
+    restores.push(() => Object.defineProperty(target, property, original));
   };
   for (const { entity, property, verdict } of results) {
     lock(entity, property);
@@ -340,9 +395,7 @@ export function lockValidatedFields(results: readonly EntityFieldVerdict[]): () 
     const field = getResolveMetadata(entityClassOf(entity)).find((f) => f.property === property);
     for (const scopeProperty of Object.values(field?.scope ?? {})) lock(entity, scopeProperty);
   }
-  return () => {
-    for (let i = restores.length - 1; i >= 0; i--) restores[i]!();
-  };
+  return unlockAlreadyLocked;
 }
 
 /**

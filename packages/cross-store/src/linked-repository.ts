@@ -51,12 +51,25 @@ export async function createManyResolved<T extends object>(
   // change (rolls back the caller's transaction). Do not mutate `entities` until this resolves.
   assertEntitiesUnchanged(results);
   // Close the gap between the re-check above and the write itself (issue #140 window #2): lock the
-  // just-checked fields read-only for the save call, so a concurrent mutation during save's own
-  // awaits throws instead of silently landing. Always unlocked afterward, success or throw.
+  // just-checked fields (and, for a scoped field, its scope siblings) read-only for the save call —
+  // see `lockValidatedFields` for what is and isn't lockable. Always unlocked afterward, success or
+  // throw. A concurrent mutation during save's own awaits now throws a raw `TypeError` (the locked
+  // assignment itself failing, in strict-mode ESM) rather than landing silently; re-thrown below as
+  // a `CrossStoreError` so every failure out of this function — TOCTOU or otherwise — carries the
+  // module's stable `.code` instead of leaking an assignment-failure implementation detail.
   const unlockValidatedFields = lockValidatedFields(results);
   let saved: T[];
   try {
     saved = await writer.save(entities);
+  } catch (cause) {
+    if (cause instanceof TypeError) {
+      throw new CrossStoreError(
+        CrossStoreErrorCode.INVALID_ARGUMENT,
+        'a validated reference or its scope sibling was mutated during writer.save — refusing to write',
+        { cause: String(cause) },
+      );
+    }
+    throw cause;
   } finally {
     unlockValidatedFields();
   }
