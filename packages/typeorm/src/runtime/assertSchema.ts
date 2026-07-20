@@ -17,6 +17,7 @@ import {
   getTimescaleMetadata,
   hasTimescaleMetadata,
   getContinuousAggregateMeta,
+  assertTypeOrmPrimaryKeyIncludesPartitioning,
 } from '../decorators/index.js';
 
 type Ctor = abstract new (...args: never[]) => unknown;
@@ -171,6 +172,12 @@ export async function assertSchema(
 
     const timeColumn = meta.timeColumn ?? meta.options.timeColumn;
     if (timeColumn === undefined) continue; // validateHypertableMetadata already guarantees this
+    // A plain TypeORM @PrimaryColumn key that omits a partitioning column is caught here at boot,
+    // not at first write with a raw Postgres error (partitioning columns are property names).
+    assertTypeOrmPrimaryKeyIncludesPartitioning(em, [
+      timeColumn,
+      ...(meta.options.spacePartition ? [meta.options.spacePartition.column] : []),
+    ]);
 
     const schema = em.schema ?? 'public';
     const expected: ExpectedHypertable = {

@@ -12,7 +12,11 @@ export type {
   AggregateColumnOptions,
   RefreshPolicyOptions,
 } from './ContinuousAggregate.js';
-export { getTimescaleMetadata, hasTimescaleMetadata } from './metadata-store.js';
+export {
+  getTimescaleMetadata,
+  hasTimescaleMetadata,
+  assertTypeOrmPrimaryKeyIncludesPartitioning,
+} from './metadata-store.js';
 export { getContinuousAggregateMeta, hasContinuousAggregateMeta } from './metadata-store.js';
 export type {
   ContinuousAggregateMeta,
