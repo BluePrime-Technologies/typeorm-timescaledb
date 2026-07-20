@@ -84,21 +84,24 @@ A dense info strip below the fold — six short boxes, each pointing somewhere r
 [Release notes](/release_notes) · [Documentation](/user_guide)
 
 **Latest in the changelog**
+
 - _v0.4.0_ — completes the continuous-aggregate story; adds downsampling, operational introspection, and T-Digest percentiles.
 - _v0.3.0_ — expands typed `timescaledb_toolkit` aggregate coverage (stats, percentiles, counters, state tracking, heartbeat/liveness).
-[More release notes →](/release_notes)
+  [More release notes →](/release_notes)
 
 **New to typeorm-timescaledb?**
+
 - [Installation](/getting_started)
 - [Define your first hypertable](/getting_started)
-[Getting started →](/getting_started)
+  [Getting started →](/getting_started)
 
 **What's inside**
+
 - [Hypertables, columnstore & retention](/user_guide)
 - [Continuous aggregates](/user_guide)
 - [Toolkit aggregate query layer](/user_guide)
 - [Migration CLI](/user_guide)
-[Explore the user guide →](/user_guide)
+  [Explore the user guide →](/user_guide)
 
 **Get involved**
 [Issue tracker](https://github.com/BluePrime-Technologies/typeorm-timescaledb/issues) — report bugs, request features
@@ -417,8 +420,14 @@ Complete public surface for `typeorm-timescaledb`, current as of v0.4.0. Assumes
 
 ```ts
 import {
-  Column, DataSource, Entity, Hypertable, HypertablePrimaryKey,
-  PrimaryColumn, TimeColumn, createTimescale,
+  Column,
+  DataSource,
+  Entity,
+  Hypertable,
+  HypertablePrimaryKey,
+  PrimaryColumn,
+  TimeColumn,
+  createTimescale,
 } from 'typeorm-timescaledb';
 
 import { TimescaleModule } from 'typeorm-timescaledb/nestjs';
