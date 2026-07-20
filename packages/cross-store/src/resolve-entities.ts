@@ -368,6 +368,11 @@ export function lockValidatedFields(results: readonly EntityFieldVerdict[]): () 
     }
   };
   const failToLock = (entity: object, property: string, cause?: unknown): never => {
+    // Unwinds synchronously (nothing awaits between a field's lock() and this call), so a restore
+    // genuinely cannot fail here today — the swallow above exists for the *post-write* `finally`
+    // unlock, where save() has run in between. If this loop ever gains an async step, re-check
+    // whether a swallowed failure here needs its own signal (unlike the post-write case, this path
+    // is the only chance to undo an otherwise-permanent lock on an aborted write).
     unlockAlreadyLocked(); // don't leave earlier fields in this same call permanently locked
     const name = className(entity);
     throw new CrossStoreError(
