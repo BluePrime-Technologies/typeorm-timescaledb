@@ -1,6 +1,7 @@
 import {
   resolveEntities,
   assertEntitiesResolved,
+  assertEntitiesUnchanged,
   type EntityFieldVerdict,
 } from './resolve-entities.js';
 import { CrossStoreError, CrossStoreErrorCode } from './errors.js';
@@ -43,21 +44,11 @@ export async function createManyResolved<T extends object>(
   options: ResolveOptions,
 ): Promise<T[]> {
   const results = assertEntitiesResolved(await resolveEntities(entities, options));
-  // Consistency: the value WRITTEN must be the value VALIDATED. Between reading a field for
-  // validation and writer.save re-reading it, concurrent code holding the same entity instance
-  // could swap in an unvalidated reference. Re-check each validated field against its snapshot and
-  // fail closed on a mismatch (rolls back the caller's transaction). Do not mutate `entities` until
-  // this resolves. (A nullable field flipped null→value between the two reads is not covered — it
-  // produced no verdict to compare; treat "do not mutate an in-flight entity" as a precondition.)
-  for (const { entity, property, verdict } of results) {
-    if ((entity as Record<string, unknown>)[property] !== verdict.check.value) {
-      throw new CrossStoreError(
-        CrossStoreErrorCode.INVALID_ARGUMENT,
-        `${entity.constructor.name}.${property} changed between validation and save — refusing to write an unvalidated reference`,
-        { entity: entity.constructor.name, property },
-      );
-    }
-  }
+  // Consistency: the value AND scope WRITTEN must be what was VALIDATED. Between reading a field for
+  // validation and writer.save re-reading it, concurrent code holding the same instance could swap
+  // in an unvalidated reference or a different scope (a mid-flight tenant change). Fail closed on any
+  // change (rolls back the caller's transaction). Do not mutate `entities` until this resolves.
+  assertEntitiesUnchanged(results);
   const saved = await writer.save(entities);
   if (saved.length !== entities.length) {
     throw new CrossStoreError(

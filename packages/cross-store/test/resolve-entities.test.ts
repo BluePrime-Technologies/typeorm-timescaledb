@@ -229,6 +229,25 @@ describe('assertEntitiesResolved', () => {
     });
     expect(assertEntitiesResolved(results)).toBe(results);
   });
+
+  it('does NOT collapse a malformed unavailable verdict into REFERENCE_NOT_FOUND (fix #5)', () => {
+    // a hand-built failed verdict missing its error must surface as INVALID_ARGUMENT, never
+    // an invented not_found (mirrors the engine's assertAllResolved hardening)
+    const bogus = [
+      {
+        entity: new LedgerEntry('a'),
+        property: 'accountId',
+        verdict: { check: { ref: REF, value: 'a' }, ok: false, status: 'unavailable' as const },
+      },
+    ];
+    try {
+      assertEntitiesResolved(bogus);
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as CrossStoreError).code).toBe(CrossStoreErrorCode.INVALID_ARGUMENT);
+      expect((e as CrossStoreError).code).not.toBe(CrossStoreErrorCode.REFERENCE_NOT_FOUND);
+    }
+  });
 });
 
 describe('assertEntitiesRegistered (boot-time wiring)', () => {
