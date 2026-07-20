@@ -204,6 +204,16 @@ describe('addColumnstorePolicySQL', () => {
       addColumnstorePolicySQL({ table: 'metrics', orderBy: [{ column: 'x)' }], after: '1 day' }),
     ).toThrow(TimescaleError);
   });
+
+  it('rejects an orderBy direction outside the ASC/DESC allow-list (runtime any-caller)', () => {
+    expect(() =>
+      addColumnstorePolicySQL({
+        table: 'metrics',
+        // a JS/any caller can pass an arbitrary direction despite the 'ASC'|'DESC' type
+        orderBy: [{ column: 'time', direction: 'DESC; DROP' as unknown as 'ASC' }],
+      }),
+    ).toThrowError(/ASC.*DESC/);
+  });
 });
 
 describe('addRetentionPolicySQL', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertInterval,
+  assertPositiveInterval,
   INTERVAL_PATTERN,
   parseHypertableOptions,
   TimescaleError,
@@ -42,6 +43,33 @@ describe('assertInterval', () => {
     ]) {
       expect(() => assertInterval(v)).toThrow(TimescaleError);
     }
+  });
+
+  it('rejects non-ASCII-space separators (tab/newline/NBSP/line-sep) — `\\s` would wrongly accept them', () => {
+    for (const v of ['7\tdays', '7\ndays', '7\u00A0days', '7\u2028days', '7\u3000days']) {
+      expect(() => assertInterval(v), JSON.stringify(v)).toThrow(TimescaleError);
+    }
+  });
+
+  it('accepts multiple ASCII spaces between magnitude and unit', () => {
+    expect(assertInterval('7  days')).toBe('7  days');
+  });
+});
+
+describe('assertPositiveInterval', () => {
+  it('accepts a positive interval and returns it unchanged', () => {
+    expect(assertPositiveInterval('1 day')).toBe('1 day');
+    expect(assertPositiveInterval('007 days')).toBe('007 days'); // magnitude read via parseInt → 7
+  });
+
+  it('rejects a zero interval', () => {
+    expect(() => assertPositiveInterval('0 days')).toThrowError(/greater than zero/);
+    expect(() => assertPositiveInterval('0 seconds')).toThrow(TimescaleError);
+  });
+
+  it('rejects a malformed interval (delegates shape to assertInterval)', () => {
+    expect(() => assertPositiveInterval('soon')).toThrow(TimescaleError);
+    expect(() => assertPositiveInterval('7\tdays')).toThrow(TimescaleError);
   });
 
   it('throws INVALID_ARGUMENT with the role in context', () => {

@@ -67,8 +67,10 @@ describe('quoteQualified', () => {
     expect(quoteQualified('public.canonical_records')).toBe('"public"."canonical_records"');
   });
 
-  it('does not let a malicious part smuggle qualification', () => {
-    // The dot splits parts; an injected dot just yields more quoted parts, never raw SQL.
-    expect(quoteQualified('a.b.c')).toBe('"a"."b"."c"');
+  it('rejects 3+ parts (no object is more qualified than schema.name)', () => {
+    // A dot never smuggles raw SQL (each part is quoted), but 3+ parts is a malformed identifier
+    // and is rejected outright — mirroring parseTable's cap.
+    expect(() => quoteQualified('a.b.c')).toThrowError(/schema\.name/);
+    expect(() => quoteQualified('a.b.c')).toThrowError(TimescaleError);
   });
 });

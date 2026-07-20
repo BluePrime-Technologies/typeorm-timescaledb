@@ -7,9 +7,14 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * to a conservative `<n> <unit>` shape rather than accepting arbitrary interval
  * strings. This is the single source of truth for interval validation — the Zod
  * metadata schema and the SQL builders both use it.
+ *
+ * The separator is a literal ASCII space (` +`), NOT `\s` — `\s` would also admit
+ * tabs, newlines, and Unicode whitespace (NBSP ` `, ` `, …), which are not
+ * control chars and would flow unescaped into `INTERVAL '7<nbsp>days'`, failing at PG
+ * with a confusing error.
  */
 export const INTERVAL_PATTERN =
-  /^\d+\s+(microsecond|millisecond|second|minute|hour|day|week|month|year)s?$/i;
+  /^\d+ +(microsecond|millisecond|second|minute|hour|day|week|month|year)s?$/i;
 
 /**
  * Validate a PostgreSQL interval string (`<n> <unit>`), returning it unchanged.

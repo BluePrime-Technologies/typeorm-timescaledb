@@ -1,6 +1,7 @@
 import { safeIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
 import { assertInterval } from '../interval.js';
+import { numericLiteral } from './numeric.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /**
@@ -21,38 +22,17 @@ import { TimescaleError, TimescaleErrorCode } from '../errors.js';
  * Target: TimescaleDB ≥ 2.18 (verified against 2.27).
  */
 
-/** A finite, non-exponent numeric literal safe to inline into SQL. */
-function numericLiteral(value: number, role: string): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
+function positiveIntLiteral(value: number, role: string): string {
+  // isSafeInteger (not isInteger) so a huge non-safe integer like 1e21 is rejected here — the
+  // shared numericLiteral deliberately permits exponent forms, so this is the bound for integer args.
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,
-      `${role} must be a finite number, got: ${String(value)}`,
+      `${role} must be a positive integer, got: ${String(value)}`,
       { role, value: String(value) },
     );
   }
-  // String(1e21) === "1e+21"; reject exponent/again-nonstandard forms so we only
-  // ever emit a plain decimal literal PostgreSQL parses unambiguously.
-  const text = String(value);
-  if (!/^-?\d+(\.\d+)?$/.test(text)) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      `${role} is out of the supported range for a plain SQL numeric literal: ${text}`,
-      { role, value: text },
-    );
-  }
-  return text;
-}
-
-function positiveIntLiteral(value: number, role: string): string {
-  const text = numericLiteral(value, role);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      `${role} must be a positive integer, got: ${text}`,
-      { role, value: text },
-    );
-  }
-  return text;
+  return numericLiteral(value, role);
 }
 
 export interface TimeBucketExprInput {

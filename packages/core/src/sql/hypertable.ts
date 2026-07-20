@@ -4,6 +4,24 @@ import { assertInterval, assertPositiveInterval } from '../interval.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /**
+ * Validate a columnstore `orderby` direction against the `ASC`/`DESC` allow-list. The value is
+ * typed `'ASC'|'DESC'` but these builders are the standalone runtime boundary (a JS/`any` caller
+ * can pass anything), and the direction is inlined into the reloption — so an arbitrary string
+ * would emit a malformed `timescaledb.orderby` that fails opaquely at PG. Fail fast instead.
+ */
+function orderByDirection(direction: string | undefined): 'ASC' | 'DESC' {
+  const value = direction ?? 'ASC';
+  if (value !== 'ASC' && value !== 'DESC') {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `orderBy direction must be "ASC" or "DESC", got: ${String(direction)}`,
+      { role: 'orderBy direction', value: String(direction) },
+    );
+  }
+  return value;
+}
+
+/**
  * Pure SQL builders for TimescaleDB hypertable DDL. No database access — each
  * function returns ready-to-run SQL. They are the single source of truth for the
  * exact DDL the migration generator (T4b) and CLI (T4c) emit.
@@ -210,7 +228,8 @@ export function addColumnstorePolicySQL(input: ColumnstorePolicyInput): Migratio
   if (input.orderBy && input.orderBy.length > 0) {
     const cols = input.orderBy
       .map(
-        (o) => `${quoteIdent(assertSafeIdentifier(o.column, 'orderBy'))} ${o.direction ?? 'ASC'}`,
+        (o) =>
+          `${quoteIdent(assertSafeIdentifier(o.column, 'orderBy'))} ${orderByDirection(o.direction)}`,
       )
       .join(', ');
     options.push(`timescaledb.orderby = ${quoteLiteral(cols)}`);
@@ -240,7 +259,14 @@ export function addColumnstorePolicySQL(input: ColumnstorePolicyInput): Migratio
 export interface RetentionPolicyInput {
   /** Table name, optionally `schema.table`. */
   readonly table: string;
-  /** Drop chunks older than this interval, e.g. `'90 days'`. */
+  /**
+   * Drop chunks older than this interval, e.g. `'90 days'`.
+   *
+   * ⚠️ A zero interval (`'0 days'`) is a valid shape and is accepted here — it installs a policy
+   * that drops every chunk older than *now*, i.e. effectively all data on each run. This is a
+   * deliberate footgun (zero is meaningful for other policies), so pass a positive interval unless
+   * you truly intend continuous full-drop.
+   */
   readonly dropAfter: string;
   /** `if_not_exists` on the policy — make `up` idempotent. Default `true`. */
   readonly ifNotExists?: boolean;
