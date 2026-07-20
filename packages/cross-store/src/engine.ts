@@ -25,14 +25,20 @@ export interface ResolveOptions {
   readonly validators?: ValidatorMap;
 }
 
-/** The disposition of a single reference check. `resolved` is the only success. */
+/**
+ * The disposition of a single reference check. `resolved` is the only success. `resolveReferences`
+ * itself never emits `invalid`; that status is produced only by the entity layer
+ * (`resolveEntities` in report mode) for a check that could not even be formed — a `required`
+ * field that is null/undefined, or an unset scope sibling.
+ */
 export type ResolveStatus =
   | 'resolved'
   | 'not_found'
   | 'not_allowed'
   | 'scope_violation'
   | 'unavailable'
-  | 'validator_failed';
+  | 'validator_failed'
+  | 'invalid';
 
 /** The verdict for one input check — always returned (the engine never throws per-check). */
 export interface ResolveVerdict {
