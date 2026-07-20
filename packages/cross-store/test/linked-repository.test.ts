@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Resolve, ReferenceRegistry, CrossStoreErrorCode } from '../src/index.js';
+import { Resolve, ReferenceRegistry, CrossStoreError, CrossStoreErrorCode } from '../src/index.js';
 import type { CrossStoreAdapter, FindManyInput, SnapshotRow, ValidatorMap } from '../src/index.js';
 import {
   createManyResolved,
@@ -179,6 +179,27 @@ describe('createManyResolved', () => {
     // fields are fully mutable again once the call returns
     e.accountId = 'z';
     expect(e.accountId).toBe('z');
+  });
+
+  it('does NOT misattribute an UNRELATED TypeError from writer.save to the lock', async () => {
+    // a bug in the writer itself (nothing to do with a locked field) must propagate as-is, not
+    // get relabeled as a TOCTOU mutation.
+    const { registry, adapter } = fixture();
+    const e = new LedgerEntry('a');
+    const buggyWriter: EntityWriter = {
+      save: () => {
+        throw new TypeError("Cannot read properties of undefined (reading 'foo')");
+      },
+    };
+    let caught: unknown;
+    try {
+      await createManyResolved(buggyWriter, [e], { registry, adapters: [adapter] });
+      throw new Error('should have thrown');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(caught).not.toBeInstanceOf(CrossStoreError);
   });
 });
 

@@ -370,12 +370,17 @@ describe('assertEntitiesUnchanged (write-path TOCTOU re-check)', () => {
     );
   });
 
-  it('does NOT reject a null↔undefined flip on a nullable field (both mean "no reference")', async () => {
+  it('rejects a null↔undefined flip too — no exceptions to "do not mutate in-flight"', async () => {
+    // ORMs can give null and undefined different write semantics (e.g. TypeORM skips `undefined`
+    // in a partial update but writes an explicit NULL for `null`), so this re-check does not treat
+    // the two as interchangeable even though both mean "no reference" elsewhere in this module.
     const { registry, adapter, validators } = fixture();
     const e = new LedgerEntry(undefined as unknown as null);
     const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
-    e.accountId = null; // still no reference — just the other nullish flavor
-    expect(() => assertEntitiesUnchanged(results)).not.toThrow();
+    e.accountId = null;
+    expect(() => assertEntitiesUnchanged(results)).toThrow(
+      expect.objectContaining({ code: CrossStoreErrorCode.INVALID_ARGUMENT }),
+    );
   });
 });
 

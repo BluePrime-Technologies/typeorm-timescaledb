@@ -263,25 +263,23 @@ export function assertEntitiesResolved(
  * `INVALID_ARGUMENT` on any change (fail closed; rolls back the caller's transaction). A nullable FK
  * flipped null→value IS covered (issue #140 window #1): `resolveEntities` now returns a
  * `not_referenced` baseline verdict for it, so the value comparison below rejects the flip like any
- * other — except `null`↔`undefined` itself, which both mean "no reference" everywhere else in this
- * module (see {@link resolveEntities}'s nullable-FK test) and so are treated as equivalent, not a
- * change, here too. This closes the value window for every field `resolveEntities` returned —
- * checked or not — and the scope window for every field that had a scope to validate in the first
- * place (a field with no reference has no scope binding to re-check until it acquires one, and any
- * such acquisition is itself rejected by the value check above). It still only re-checks up to the
- * *instant it runs*; see {@link lockValidatedFields} for closing the gap between this re-check and
- * the write itself (issue #140 window #2).
+ * other. This is intentionally strict about `null` vs `undefined` too, even though both mean "no
+ * reference" elsewhere in this module: some ORMs give them different write semantics (e.g. TypeORM
+ * skips an `undefined` column in a partial update but writes an explicit `NULL` for `null`), so
+ * treating a null↔undefined toggle as harmless could mask a real change in what gets written. "Do
+ * not mutate an in-flight entity" is the precondition; this re-check has no exceptions to it. This
+ * closes the value window for every field `resolveEntities` returned — checked or not — and the
+ * scope window for every field that had a scope to validate in the first place (a field with no
+ * reference has no scope binding to re-check until it acquires one, and any such acquisition is
+ * itself rejected by the value check above). It still only re-checks up to the *instant it runs*;
+ * see {@link lockValidatedFields} for closing the gap between this re-check and the write itself
+ * (issue #140 window #2).
  */
 export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]): void {
   for (const { entity, property, verdict } of results) {
     const row = entity as Record<string, unknown>;
     const name = className(entity);
-    const currentValue = row[property];
-    const validatedValue = verdict.check.value;
-    const bothNullish =
-      (currentValue === null || currentValue === undefined) &&
-      (validatedValue === null || validatedValue === undefined);
-    if (!bothNullish && currentValue !== validatedValue) {
+    if (row[property] !== verdict.check.value) {
       throw new CrossStoreError(
         CrossStoreErrorCode.INVALID_ARGUMENT,
         `${name}.${property} changed between validation and save — refusing to write an unvalidated reference`,
@@ -342,17 +340,32 @@ export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]):
  * silently doesn't apply to some fields would be a false sense of safety; refusing to write is the
  * fail-closed alternative used everywhere else in this module (e.g. `assertEntitiesUnchanged`'s
  * "cannot re-verify scope" case). A property referenced by more than one result (e.g. a scope
- * sibling shared by two `@Resolve`d fields) is locked/restored exactly once.
+ * sibling shared by two `@Resolve`d fields) is locked/restored exactly once. The lock preserves the
+ * property's original `configurable: true` (needed to restore it afterward), so it stops an ordinary
+ * assignment (`entity.prop = x`, the TOCTOU threat this targets) but not a deliberate
+ * `Object.defineProperty` redefinition — a documented, deliberately accepted residual, since the
+ * alternative (`configurable: false`) can never be undone and would leave every written entity
+ * permanently reshaped.
  *
  * Returns an `unlock` function that restores every original property descriptor. **Always** call
  * it — in a `finally` around the write — so entities are left fully mutable again whether the
- * write succeeded or threw.
+ * write succeeded or threw. Restoring is itself best-effort: a single property that fails to
+ * restore (e.g. something else made it non-configurable during the write) is swallowed rather than
+ * thrown, so a cleanup failure can never mask the write's real outcome or stop the rest of the
+ * batch from being restored.
  */
 export function lockValidatedFields(results: readonly EntityFieldVerdict[]): () => void {
   const lockedByEntity = new Map<object, Set<string>>();
   const restores: Array<() => void> = [];
   const unlockAlreadyLocked = (): void => {
-    for (let i = restores.length - 1; i >= 0; i--) restores[i]!();
+    for (let i = restores.length - 1; i >= 0; i--) {
+      try {
+        restores[i]!();
+      } catch {
+        // best-effort: a failed restore must not mask the write's real outcome, nor stop the rest
+        // of the batch from being restored.
+      }
+    }
   };
   const failToLock = (entity: object, property: string, cause?: unknown): never => {
     unlockAlreadyLocked(); // don't leave earlier fields in this same call permanently locked
