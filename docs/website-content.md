@@ -16,7 +16,7 @@ Getting Started · User Guide · API Reference · Development · Release Notes �
 
 ## Hero
 
-*Time-series data, typed like everything else in your app.*
+_Time-series data, typed like everything else in your app._
 
 [Get started](/getting_started)
 
@@ -84,8 +84,8 @@ A dense info strip below the fold — six short boxes, each pointing somewhere r
 [Release notes](/release_notes) · [Documentation](/user_guide)
 
 **Latest in the changelog**
-- *v0.4.0* — completes the continuous-aggregate story; adds downsampling, operational introspection, and T-Digest percentiles.
-- *v0.3.0* — expands typed `timescaledb_toolkit` aggregate coverage (stats, percentiles, counters, state tracking, heartbeat/liveness).
+- _v0.4.0_ — completes the continuous-aggregate story; adds downsampling, operational introspection, and T-Digest percentiles.
+- _v0.3.0_ — expands typed `timescaledb_toolkit` aggregate coverage (stats, percentiles, counters, state tracking, heartbeat/liveness).
 [More release notes →](/release_notes)
 
 **New to typeorm-timescaledb?**
@@ -293,17 +293,17 @@ Supported metric functions: `avg`, `sum`, `min`, `max`, `count`, `first`, `last`
 
 Typed helpers over the stable `timescaledb_toolkit` aggregate families:
 
-| Family | Methods |
-|---|---|
-| Candlesticks | `getCandlesticks()` |
-| Approximate distinct count | `approxCountDistinct()` |
-| Statistics | `getStats()`, `getRegression()` |
-| Percentiles | `getPercentiles()`, `getPercentileRanks()` (UddSketch); `getTDigestPercentiles()`, `getTDigestPercentileRanks()` (T-Digest) |
-| Counters | `getCounterAgg()` |
-| Time-weighted average | `getTimeWeight()` |
-| State tracking | `getStateDurations()`, `getStateTimeline()`, `getStateAt()`, `getStatePeriods()` |
-| Most-common-values | `getMostCommonValues()`, `getTopN()` |
-| Liveness / uptime | `getHeartbeatHealth()`, `getLiveRanges()`, `getDeadRanges()`, `isLiveAt()` |
+| Family                     | Methods                                                                                                                     |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Candlesticks               | `getCandlesticks()`                                                                                                         |
+| Approximate distinct count | `approxCountDistinct()`                                                                                                     |
+| Statistics                 | `getStats()`, `getRegression()`                                                                                             |
+| Percentiles                | `getPercentiles()`, `getPercentileRanks()` (UddSketch); `getTDigestPercentiles()`, `getTDigestPercentileRanks()` (T-Digest) |
+| Counters                   | `getCounterAgg()`                                                                                                           |
+| Time-weighted average      | `getTimeWeight()`                                                                                                           |
+| State tracking             | `getStateDurations()`, `getStateTimeline()`, `getStateAt()`, `getStatePeriods()`                                            |
+| Most-common-values         | `getMostCommonValues()`, `getTopN()`                                                                                        |
+| Liveness / uptime          | `getHeartbeatHealth()`, `getLiveRanges()`, `getDeadRanges()`, `isLiveAt()`                                                  |
 
 ```ts
 const candles = await readings.getCandlesticks({
@@ -395,15 +395,15 @@ Multiple TimescaleDB DataSources are supported by passing a `name` to `forRoot` 
 
 TypeORM plus hand-written SQL migrations can already get TimescaleDB working. Here's what this library adds on top.
 
-| Capability | Raw TypeORM + hand-written SQL | typeorm-timescaledb |
-|---|---|---|
-| Hypertable creation | Manual `create_hypertable()` SQL, undocumented per project | Declarative `@Hypertable()` decorator |
-| Columnstore / retention | Hand-written SQL, easy to drift from entity definitions | Declared alongside the entity, versioned with it |
-| Continuous aggregates | Raw SQL views managed outside TypeORM | Typed `@ContinuousAggregate` classes with migration codegen |
-| Query layer | Hand-written hyperfunction SQL | Typed `time_bucket`, gap-filling, toolkit aggregates, downsampling |
-| Migration model | Whatever convention each team invents | One documented, additive, desired-state model |
-| Multi-DataSource safety | No enforced guarantee | No global mutation — CI-gated |
-| Cross-store references | Manual, unvalidated | Planned, not shipped yet |
+| Capability              | Raw TypeORM + hand-written SQL                             | typeorm-timescaledb                                                |
+| ----------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------ |
+| Hypertable creation     | Manual `create_hypertable()` SQL, undocumented per project | Declarative `@Hypertable()` decorator                              |
+| Columnstore / retention | Hand-written SQL, easy to drift from entity definitions    | Declared alongside the entity, versioned with it                   |
+| Continuous aggregates   | Raw SQL views managed outside TypeORM                      | Typed `@ContinuousAggregate` classes with migration codegen        |
+| Query layer             | Hand-written hyperfunction SQL                             | Typed `time_bucket`, gap-filling, toolkit aggregates, downsampling |
+| Migration model         | Whatever convention each team invents                      | One documented, additive, desired-state model                      |
+| Multi-DataSource safety | No enforced guarantee                                      | No global mutation — CI-gated                                      |
+| Cross-store references  | Manual, unvalidated                                        | Planned, not shipped yet                                           |
 
 `typeorm-timescaledb` is a pre-1.0, actively maintained package, tested against real TimescaleDB in CI.
 
@@ -489,10 +489,10 @@ Built and maintained by **Miracle Adebunmi** ([@madebunmi-prime](https://github.
 
 ## Packages
 
-| Package | Description |
-|---|---|
-| `typeorm-timescaledb` | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module. |
-| `@blueprime/timescaledb-core` | ORM-agnostic SQL/DDL generation, metadata model, identifier safety. |
+| Package                       | Description                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| `typeorm-timescaledb`         | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module. |
+| `@blueprime/timescaledb-core` | ORM-agnostic SQL/DDL generation, metadata model, identifier safety.              |
 
 ---
 
