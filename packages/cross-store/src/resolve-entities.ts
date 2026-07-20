@@ -76,7 +76,8 @@ function entityClassOf(entity: unknown): EntityClass {
 function className(entity: object): string {
   const ctor = (Object.getPrototypeOf(entity) as { constructor?: { name?: string } } | null)
     ?.constructor;
-  return ctor?.name ?? 'entity';
+  // `||` not `??`: an anonymous class has name `''`, which must fall back to 'entity' too.
+  return ctor?.name || 'entity';
 }
 
 function buildCheck(entity: object, field: ResolveFieldMeta, value: unknown): ReferenceCheck {
@@ -238,7 +239,16 @@ export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]):
     // Recompute the current scope from the field's sibling properties and compare to the validated
     // snapshot (scopeValues throws if a sibling is now null/undefined — also fail-closed).
     const field = getResolveMetadata(entityClassOf(entity)).find((f) => f.property === property);
-    if (field?.scope === undefined) continue;
+    if (field?.scope === undefined) {
+      // The field was validated WITH a scope, so its metadata must still carry one. If it doesn't
+      // (the class was unregistered/mutated mid-flight — should never happen), we cannot re-verify
+      // the scope, so fail closed rather than skip the check.
+      throw new CrossStoreError(
+        CrossStoreErrorCode.INVALID_ARGUMENT,
+        `${name}.${property}: cannot re-verify scope at save time (metadata no longer declares a scope) — refusing to write`,
+        { entity: name, property },
+      );
+    }
     const current = scopeValues(entity, field);
     for (const col of Object.keys(validatedScope)) {
       if (current[col] !== validatedScope[col]) {

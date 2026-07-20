@@ -125,6 +125,23 @@ describe('createManyResolved', () => {
     expect(writer.saved).toHaveLength(0);
   });
 
+  it('saves a scoped entity whose scope is UNCHANGED (no false positive on the scope re-check)', async () => {
+    const registry = new ReferenceRegistry().register({ ...REF, scopeColumns: ['workspace_id'] });
+    const writer = new FakeWriter();
+    const e = new ScopedEntry(); // accountId 'a', workspaceId 'w1' — never mutated
+    // an adapter that returns a matching, correctly-scoped row and leaves the entity untouched
+    const scoped: CrossStoreAdapter = {
+      store: 'canonical',
+      findMany: (input) =>
+        Promise.resolve([
+          { id: 'a', workspace_id: (input.scope as { workspace_id: string }).workspace_id },
+        ]),
+    };
+    const saved = await createManyResolved(writer, [e], { registry, adapters: [scoped] });
+    expect(saved).toEqual([e]); // the re-check passes; the write happens
+    expect(writer.saved).toEqual([e]);
+  });
+
   it('throws if the writer returns a different number of entities than given', async () => {
     const { registry, adapter } = fixture();
     const shortWriter: EntityWriter = { save: () => Promise.resolve([]) };
