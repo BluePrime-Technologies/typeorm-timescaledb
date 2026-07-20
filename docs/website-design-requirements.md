@@ -26,13 +26,13 @@ Blue as the base, plus where I'd deviate and why.
 
 ### Primary palette
 
-| Role | Name | Hex | Use |
-|---|---|---|---|
-| Base background (dark, primary theme) | Chunk Ink | `#0B1220` | Default page background — deep navy-black, not pure black |
-| Base background (light, secondary theme) | Paper | `#F5F7FA` | Light-mode background, cool-toned, not warm cream |
-| Primary text | Signal White | `#E7EAF0` | Body text on dark backgrounds |
-| Primary brand blue | Hypertable Blue | `#2F5AA8` | Links, primary buttons, focus rings, active nav state |
-| Deep blue (structure) | Deep Chunk | `#16233F` | Card backgrounds, code block chrome, table headers on dark theme |
+| Role                                     | Name            | Hex       | Use                                                              |
+| ---------------------------------------- | --------------- | --------- | ---------------------------------------------------------------- |
+| Base background (dark, primary theme)    | Chunk Ink       | `#0B1220` | Default page background — deep navy-black, not pure black        |
+| Base background (light, secondary theme) | Paper           | `#F5F7FA` | Light-mode background, cool-toned, not warm cream                |
+| Primary text                             | Signal White    | `#E7EAF0` | Body text on dark backgrounds                                    |
+| Primary brand blue                       | Hypertable Blue | `#2F5AA8` | Links, primary buttons, focus rings, active nav state            |
+| Deep blue (structure)                    | Deep Chunk      | `#16233F` | Card backgrounds, code block chrome, table headers on dark theme |
 
 ### Accent — where I'd deviate from "just blue"
 
@@ -40,8 +40,8 @@ A single-blue palette on a dark background tends to look cold and generic
 (this is the default a lot of dev-tool sites land on). One warm accent gives
 the site a pulse and doubles as the color of the signature element (§5):
 
-| Role | Name | Hex | Use |
-|---|---|---|---|
+| Role   | Name         | Hex       | Use                                                                                                    |
+| ------ | ------------ | --------- | ------------------------------------------------------------------------------------------------------ |
 | Accent | Candle Amber | `#D98E32` | CTA highlights, the signature chunk-strip motif, hover accents — used sparingly, never as a background |
 
 Amber against navy blue is a deliberate, slightly unusual pairing for a
@@ -58,13 +58,13 @@ labels: **Shipped**, **Release scope**, **Planned**, **Unsupported**,
 capability, and each should have a consistent, restrained color so a reader
 can scan a page and instantly tell what's real:
 
-| Label | Name | Hex | Feel |
-|---|---|---|---|
-| Shipped | Live Teal | `#2BA37A` | Confident, not neon-green |
-| Release scope | Candle Amber | `#D98E32` | Same as the accent — "almost here" |
-| Planned | Slate | `#8B94A3` | Deliberately unexciting — this is the point |
-| Unsupported | Clay | `#B65C4B` | Muted warning, not alarm-red |
-| Manual | Muted Violet | `#7C6FA0` | Distinct, calm |
+| Label         | Name         | Hex       | Feel                                        |
+| ------------- | ------------ | --------- | ------------------------------------------- |
+| Shipped       | Live Teal    | `#2BA37A` | Confident, not neon-green                   |
+| Release scope | Candle Amber | `#D98E32` | Same as the accent — "almost here"          |
+| Planned       | Slate        | `#8B94A3` | Deliberately unexciting — this is the point |
+| Unsupported   | Clay         | `#B65C4B` | Muted warning, not alarm-red                |
+| Manual        | Muted Violet | `#7C6FA0` | Distinct, calm                              |
 
 This system should appear as a small pill/badge component, used consistently
 across the User Guide, API Reference, and Release Notes.
@@ -103,14 +103,14 @@ for the designer.
 
 ### Scale (starting point — designer should refine)
 
-| Level | Size (desktop) | Weight | Face |
-|---|---|---|---|
-| Hero H1 | 56–64px | Bold | IBM Plex Mono |
-| Section H2 | 32–36px | Semi-bold | IBM Plex Mono |
-| Subsection H3 | 22–24px | Semi-bold | IBM Plex Mono |
-| Body | 16–17px | Regular | IBM Plex Sans |
-| Small / caption | 13–14px | Medium | IBM Plex Mono, uppercase, tracked |
-| Code | 14–15px | Regular | IBM Plex Mono |
+| Level           | Size (desktop) | Weight    | Face                              |
+| --------------- | -------------- | --------- | --------------------------------- |
+| Hero H1         | 56–64px        | Bold      | IBM Plex Mono                     |
+| Section H2      | 32–36px        | Semi-bold | IBM Plex Mono                     |
+| Subsection H3   | 22–24px        | Semi-bold | IBM Plex Mono                     |
+| Body            | 16–17px        | Regular   | IBM Plex Sans                     |
+| Small / caption | 13–14px        | Medium    | IBM Plex Mono, uppercase, tracked |
+| Code            | 14–15px        | Regular   | IBM Plex Mono                     |
 
 Line height: generous for body (1.6–1.7), tighter for headings (1.1–1.2).
 
