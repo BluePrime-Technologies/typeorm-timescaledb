@@ -172,6 +172,7 @@ a time axis.**
 Candle Amber against the dark background.
 
 Where it appears:
+
 - As a subtle, low-opacity ambient texture behind the hero section.
 - As the divider between major landing-page sections, replacing a plain
   horizontal rule.
@@ -209,6 +210,7 @@ which is exactly the point.
 ## 7. Motion
 
 Minimal and purposeful:
+
 - One orchestrated moment on the landing page (the chunk strip settling on
   load).
 - Subtle hover states on links and cards — color shift and/or underline
