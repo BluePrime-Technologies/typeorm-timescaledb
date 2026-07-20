@@ -21,6 +21,11 @@ describe('toNumber', () => {
   it('coerces bigint', () => {
     expect(toNumber(7n)).toBe(7);
   });
+  it('rejects a bigint beyond safe precision (no silent rounding, matches the string path)', () => {
+    expect(() => toNumber(9007199254740993n)).toThrowError(TimescaleError);
+    expect(() => toNumber(-9007199254740993n)).toThrowError(TimescaleError);
+    expect(toNumber(9007199254740991n)).toBe(9007199254740991); // 2^53 - 1 is still safe
+  });
   it('rejects NaN, non-numeric strings, and null', () => {
     expect(() => toNumber(Number.NaN)).toThrowError(TimescaleError);
     expect(() => toNumber('abc')).toThrowError(TimescaleError);
@@ -52,6 +57,11 @@ describe('toBigIntString', () => {
   it('rejects non-integers', () => {
     expect(() => toBigIntString('1.5')).toThrowError(TimescaleError);
     expect(() => toBigIntString(2.5)).toThrowError(TimescaleError);
+  });
+  it('rejects a non-safe-integer number (String(1e21)="1e+21" is not an exact integer literal)', () => {
+    expect(() => toBigIntString(1e21)).toThrowError(TimescaleError);
+    expect(() => toBigIntString(9007199254740993)).toThrowError(TimescaleError);
+    expect(toBigIntString(9007199254740991)).toBe('9007199254740991'); // 2^53 - 1 safe
   });
   it('normalizes negative zero', () => {
     expect(toBigIntString('-0')).toBe('0');

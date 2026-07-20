@@ -39,6 +39,14 @@ export function toNumber(value: unknown, role = 'value'): number {
     }
   }
   if (typeof value === 'bigint') {
+    // Same silent-precision-loss guard as the string path: Number(9007199254740993n) rounds.
+    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `${role} bigint ${value} exceeds safe integer precision — use toBigIntString to keep it exact`,
+        { role, value: value.toString() },
+      );
+    }
     return Number(value);
   }
   throw new TimescaleError(
@@ -65,6 +73,16 @@ export function toBigIntString(value: unknown, role = 'value'): string {
     return value.toString();
   }
   if (typeof value === 'number' && Number.isInteger(value)) {
+    // The purpose is EXACT preservation; String(1e21) === "1e+21" (not a valid exact-integer
+    // string), and any integer past 2^53 already lost precision as a JS number. Reject and
+    // point the caller at a bigint/string source.
+    if (!Number.isSafeInteger(value)) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `${role} number ${value} is not a safe integer — pass a bigint or a string to keep it exact`,
+        { role, value: String(value) },
+      );
+    }
     return String(value);
   }
   throw new TimescaleError(

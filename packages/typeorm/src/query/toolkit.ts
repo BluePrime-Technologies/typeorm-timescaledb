@@ -1100,6 +1100,15 @@ export async function getTopN<T extends ObjectLiteral>(
   defaultTimeColumn: string,
   options: GetTopNOptions,
 ): Promise<string[]> {
+  // Validate `n` up front: a NaN/float `n` makes `count < options.n` false, silently bypassing
+  // the capacity guard so the error only surfaces later with a less clear message.
+  if (!Number.isInteger(options.n) || options.n < 1) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `getTopN: n must be a positive integer, got ${String(options.n)}`,
+      { n: options.n },
+    );
+  }
   // `count` is the Space-Saving sketch capacity; asking for the top `n` with a smaller
   // capacity can silently drop real top-N values. Require count >= n (fail fast, no DB).
   const count = options.count ?? options.n;

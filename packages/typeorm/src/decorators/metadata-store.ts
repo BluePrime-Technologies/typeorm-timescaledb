@@ -88,6 +88,41 @@ export function hasTimescaleMetadata(ctor: Ctor): boolean {
   return resolve(ctor) !== undefined;
 }
 
+/**
+ * Cross-check the entity's ACTUAL TypeORM primary key against the hypertable's partitioning
+ * columns. `validateHypertableMetadata` only sees columns marked with `@HypertablePrimaryKey`, so a
+ * user who declares their key with plain TypeORM `@PrimaryColumn`/`@PrimaryGeneratedColumn` would
+ * pass validation and only fail at migration-run time with a raw Postgres error ("cannot create a
+ * unique index without the column ... used for partitioning"). This catches it at codegen/boot.
+ *
+ * Only enforced when the entity HAS a primary key — a hypertable with no unique constraint is legal
+ * (TimescaleDB just needs any unique/primary key to contain every partitioning column). Compares
+ * property names (both sides are entity property names, before the DB-name mapping).
+ *
+ * @throws {TimescaleError} `TSDB_INVALID_HYPERTABLE_PK` if the PK omits a partitioning column.
+ */
+export function assertTypeOrmPrimaryKeyIncludesPartitioning(
+  em: {
+    readonly tableName: string;
+    readonly primaryColumns?: ReadonlyArray<{ readonly propertyName: string }>;
+  },
+  partitioningColumns: readonly string[],
+): void {
+  // `?? []`: real TypeORM EntityMetadata always exposes primaryColumns, but tolerate metadata
+  // shapes that don't (→ treat as no PK, i.e. no enforcement — never crash on partial metadata).
+  const columns = em.primaryColumns ?? [];
+  if (columns.length === 0) return; // no PK constraint → create_hypertable is unconstrained
+  const pk = new Set(columns.map((c) => c.propertyName));
+  const missing = partitioningColumns.filter((c) => !pk.has(c));
+  if (missing.length > 0) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_HYPERTABLE_PK,
+      `hypertable ${em.tableName}: its primary key [${[...pk].join(', ')}] must include every partitioning column; missing: ${missing.join(', ')}. TimescaleDB requires every unique/primary key to contain the time (and space) partition column(s) — add them to the PK or mark them with @HypertablePrimaryKey.`,
+      { table: em.tableName, missing, primaryKey: [...pk] },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Continuous-aggregate metadata (M2.5b) — a separate WeakMap store, same rules:
 // keyed by the entity constructor, never a prototype / global mutation.
@@ -224,6 +259,11 @@ export function addAggregateColumn(
  * Read `@ContinuousAggregate` metadata for a constructor, or `undefined` if the class
  * is not a continuous aggregate. Throws `TimescaleError(INVALID_ARGUMENT)` if it is
  * declared but structurally incomplete (missing source/bucket/@BucketColumn/aggregates).
+ *
+ * NOTE: unlike hypertable metadata (which merges the prototype chain), CAGG metadata is read
+ * off the exact constructor and is NOT inherited — a `@ContinuousAggregate` class is a concrete
+ * view definition, not a base to subclass. A subclass without its own `@ContinuousAggregate`
+ * resolves to `undefined`.
  */
 export function getContinuousAggregateMeta(ctor: Ctor): ContinuousAggregateMeta | undefined {
   const m = caggStore.get(ctor);

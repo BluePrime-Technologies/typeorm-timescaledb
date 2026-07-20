@@ -16,6 +16,7 @@ import {
   hasContinuousAggregateMeta,
   getTimescaleMetadata,
   hasTimescaleMetadata,
+  assertTypeOrmPrimaryKeyIncludesPartitioning,
 } from '../decorators/index.js';
 
 type Ctor = abstract new (...args: never[]) => unknown;
@@ -141,6 +142,9 @@ export function generateTimescaleMigration(
 
     const table = em.schema ? `${em.schema}.${em.tableName}` : em.tableName;
     const space = meta.options.spacePartition;
+    // Catch a plain TypeORM @PrimaryColumn key that omits a partitioning column at codegen time,
+    // not at migration-run time with a raw Postgres error (partitioning columns are property names).
+    assertTypeOrmPrimaryKeyIncludesPartitioning(em, [timeColumn, ...(space ? [space.column] : [])]);
     const statements: MigrationStatement[] = [
       createHypertableSQL({
         table,
