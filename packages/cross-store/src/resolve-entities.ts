@@ -6,7 +6,7 @@ import {
   type ResolveFieldMeta,
 } from './resolve-decorator.js';
 import type { ReferenceRegistry } from './registry.js';
-import type { ReferenceCheck } from './types.js';
+import type { ReferenceCheck, ResolveRef } from './types.js';
 
 /** The verdict for one `@Resolve`d field of one entity instance. */
 export interface EntityFieldVerdict {
@@ -89,29 +89,67 @@ function buildCheck(entity: object, field: ResolveFieldMeta, value: unknown): Re
  * entity/field failed. Pure and ORM-agnostic; the TypeORM write path (`createManyResolved`) layers
  * the caller-transaction TOCTOU mitigation on top in M3.4b.
  */
+export interface ResolveEntitiesOptions {
+  /**
+   * How to treat a check that can't even be FORMED — a `required` field that is null/undefined, or
+   * an unset scope sibling. `false` (default): throw `INVALID_ARGUMENT` — the fail-closed behavior
+   * the write path (`createManyResolved`) wants (reject the write). `true`: emit an `invalid`
+   * verdict instead — what a reconciliation SWEEP (`verifyReferences`) needs, so one drifted row
+   * (an FK later set to NULL out-of-band) is reported rather than aborting the whole paged sweep.
+   */
+  readonly reportInvalidAsVerdict?: boolean;
+}
+
+/** Synthesize an `invalid` verdict for a check that could not be formed (report mode). */
+function invalidVerdict(
+  entity: object,
+  property: string,
+  value: unknown,
+  ref: ResolveRef,
+  error: CrossStoreError,
+): EntityFieldVerdict {
+  return {
+    entity,
+    property,
+    verdict: { check: { ref, value }, ok: false, status: 'invalid', error },
+  };
+}
+
 export async function resolveEntities(
   entities: readonly object[],
   options: ResolveOptions,
+  entityOptions: ResolveEntitiesOptions = {},
 ): Promise<readonly EntityFieldVerdict[]> {
+  const report = entityOptions.reportInvalidAsVerdict === true;
   const checks: ReferenceCheck[] = [];
   const origins: Array<{ entity: object; property: string }> = [];
+  const invalid: EntityFieldVerdict[] = [];
   for (const entity of entities) {
     const meta = getResolveMetadata(entityClassOf(entity));
     for (const field of meta) {
       const value = (entity as Record<string, unknown>)[field.property];
       if (value === null || value === undefined) {
         if (field.required) {
-          // A required reference must have a value — a null/undefined here is fail-closed (an
-          // un-hydrated relation or partial DTO must NOT slip through unchecked).
-          throw new CrossStoreError(
+          // A required reference must have a value. Write path: fail closed (throw). Sweep: report.
+          const error = new CrossStoreError(
             CrossStoreErrorCode.INVALID_ARGUMENT,
             `${entity.constructor.name}.${field.property}: required cross-store reference is ${value === null ? 'null' : 'undefined'}`,
             { entity: entity.constructor.name, property: field.property, required: true },
           );
+          if (!report) throw error;
+          invalid.push(invalidVerdict(entity, field.property, value, field.ref, error));
         }
         continue; // nullable FK → no reference
       }
-      checks.push(buildCheck(entity, field, value));
+      let check: ReferenceCheck;
+      try {
+        check = buildCheck(entity, field, value); // scopeValues throws on an unset scope sibling
+      } catch (e) {
+        if (!report || !(e instanceof CrossStoreError)) throw e;
+        invalid.push(invalidVerdict(entity, field.property, value, field.ref, e));
+        continue;
+      }
+      checks.push(check);
       origins.push({ entity, property: field.property });
     }
   }
@@ -126,11 +164,12 @@ export async function resolveEntities(
       { verdicts: verdicts.length, checks: origins.length },
     );
   }
-  return verdicts.map((verdict, i) => ({
+  const resolved = verdicts.map((verdict, i) => ({
     entity: origins[i]!.entity,
     property: origins[i]!.property,
     verdict,
   }));
+  return report ? [...resolved, ...invalid] : resolved;
 }
 
 /**

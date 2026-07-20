@@ -30,7 +30,7 @@ export {
   assertEntitiesResolved,
   assertEntitiesRegistered,
 } from './resolve-entities.js';
-export type { EntityFieldVerdict } from './resolve-entities.js';
+export type { EntityFieldVerdict, ResolveEntitiesOptions } from './resolve-entities.js';
 export type {
   ResolveRef,
   ReferenceCheck,

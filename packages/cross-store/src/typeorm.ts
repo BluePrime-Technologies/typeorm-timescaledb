@@ -10,3 +10,10 @@ export { DataSourceAdapter } from './adapters/data-source.js';
 export type { DataSourceAdapterOptions, SqlRunner } from './adapters/data-source.js';
 export { buildFindManySql } from './sql/find-many.js';
 export type { FindManySql } from './sql/find-many.js';
+export {
+  createManyResolved,
+  createResolved,
+  verifyReferences,
+  warnNonAppendOnlyTargets,
+} from './linked-repository.js';
+export type { EntityWriter, ReconciliationResult } from './linked-repository.js';
