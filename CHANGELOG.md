@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [0.5.0] - 2026-07-20
+
+Minor release: adds async/deferred NestJS configuration and a fail-fast
+TimescaleDB-presence check, and lands a correctness/hardening pass across the
+core SQL builders and the TypeORM result/CLI layers. No breaking API changes.
+
+### Added
+
+- **`TimescaleModule.forRootAsync(...)`** — deferred/async DataSource configuration
+  for NestJS (`useFactory` + `inject` + `imports`), including an optional no-op mode
+  when the factory resolves no configuration (register an `@Optional()` context for
+  environments where TimescaleDB isn't wired).
+- **Fail-fast TimescaleDB presence check** — `assertSchema()` now raises the stable
+  `TSDB_TIMESCALEDB_MISSING` error when the `timescaledb` extension is not installed,
+  instead of surfacing a confusing downstream failure. The underlying
+  `TIMESCALEDB_PRESENCE_SQL` catalog check is exported from `@blueprime/timescaledb-core`.
+
+### Fixed
+
+- **CLI DataSource loading** — `generate` / `run` / `revert` / `status` now discriminate a
+  missing `-d` file/path and a missing npm dependency from Node's native TypeScript
+  type-stripping `ERR_MODULE_NOT_FOUND`, so the reported error points at the real cause
+  instead of misclassifying it as a type-stripping problem.
+- **Numeric result coercion (typeorm)** — the result mapper now throws on a value that would
+  silently lose precision (a `bigint` outside JavaScript's safe-integer range, or a
+  non-safe-integer number where a bigint string is expected) instead of returning a wrong
+  number.
+- **Hardening (core SQL builders)** — interval strings accept only a single ASCII space
+  between the count and unit (a tab, non-breaking space, or Unicode line separator no longer
+  slips through); positive-integer inputs such as histogram `nbuckets` are validated with
+  `Number.isSafeInteger` (values like `1e21` are rejected); `orderBy` direction is restricted
+  to `ASC` / `DESC`; qualified identifiers reject three-or-more parts; and numeric-literal
+  emission is shared and injection-safe across the hyperfunction and toolkit builders.
+- **Hardening (typeorm)** — `getTopN(n)` validates that `n` is a positive integer before use,
+  and `@Hypertable` migration generation / `assertSchema()` cross-check that the entity's
+  primary key includes the time (and space) partitioning column.
+
+### Notes
+
+- The validation tightenings above can surface as errors on inputs that were previously
+  accepted but were already incorrect (e.g. an interval separated by a tab, or an
+  out-of-safe-range numeric result). This is intentional pre-1.0 correctness hardening, not
+  a behavioral regression.
+- `@blueprime/cross-store` (validated cross-database `@Resolve` references) is developed in
+  this repository but remains **unpublished / private** and is not part of this release.
+
 ## [0.4.0] - 2026-07-09
 
 Minor release: completes the continuous-aggregate story and adds downsampling,
@@ -160,6 +206,7 @@ Initial public release — the schema foundation (M1).
 - `@blueprime/timescaledb-core` — ORM-agnostic SQL/DDL generation, metadata model, and
   identifier safety.
 
+[0.5.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.1.1...v0.2.0

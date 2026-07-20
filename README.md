@@ -2,7 +2,7 @@
 
 > A pre-1.0, multi-DataSource-safe [TimescaleDB](https://www.tigerdata.com/) integration for [TypeORM](https://typeorm.io/) — define hypertables, columnstore, and retention as typed entities, and generate/apply reviewable migrations for them.
 
-**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.2.x** introduced the query layer (time buckets, gap-filling, candlesticks); **0.3.0** expanded the stable `timescaledb_toolkit` aggregate coverage; **0.4.0** completes continuous aggregates (typed decorators, refresh policies, hierarchical, drift) and adds downsampling, informational views + jobs, and T-Digest percentiles. Cross-store references and a full safe diff engine come later.
+**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.2.x** introduced the query layer (time buckets, gap-filling, candlesticks); **0.3.0** expanded the stable `timescaledb_toolkit` aggregate coverage; **0.4.0** completes continuous aggregates (typed decorators, refresh policies, hierarchical, drift) and adds downsampling, informational views + jobs, and T-Digest percentiles; **0.5.0** adds async/deferred NestJS configuration (`forRootAsync`) and a fail-fast TimescaleDB-presence check, with a correctness/hardening pass across the core SQL builders and the TypeORM result/CLI layers. Cross-store references and a full safe diff engine come later.
 
 ## Status and scope
 
@@ -119,21 +119,30 @@ Return `undefined` from `useFactory` to register a no-op context (no `DataSource
 boot-time drift check) for environments where TimescaleDB isn't configured — mark any
 `@InjectTimescaleContext()` / `@InjectTimescaleRepository()` consumer `@Optional()` in that case.
 
-## What's in 0.4.x
+## What's in 0.5.x
 
-**Works today (0.4.x):**
+**Works today (0.5.x):**
 
 - `@Hypertable` / `@TimeColumn` / `@HypertablePrimaryKey` — hypertables with chunk interval, **columnstore** (segmentby/orderby + policy), **retention** policy, and **space (hash) partitioning**.
 - **Migration generation + CLI** (`generate | run | revert | status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
-- **Per-DataSource repositories** (`createTimescale`) and **boot-time drift detection** (`assertSchema`).
+- **Per-DataSource repositories** (`createTimescale`) and **boot-time drift detection** (`assertSchema`), which **fails fast** (`TSDB_TIMESCALEDB_MISSING`) when the `timescaledb` extension isn't installed.
 - **Base typed query layer** — `repo.getTimeBucket(...)` and a fluent `repo.timescaleQueryBuilder()` covering `time_bucket` (timezone/origin/offset), `first`/`last`, `histogram`, and the gap-filling family (`time_bucket_gapfill` + `locf` / `interpolate`). Results come back through typed coercion helpers.
 - **Stable `timescaledb_toolkit` aggregate helpers** — `repo.getCandlesticks(...)`, `repo.approxCountDistinct(...)`, `repo.getStats(...)`, `repo.getRegression(...)`, `repo.getPercentiles(...)`, `repo.getPercentileRanks(...)`, `repo.getCounterAgg(...)`, `repo.getTimeWeight(...)`, `repo.getStateDurations(...)`, `repo.getStateTimeline(...)`, `repo.getStateAt(...)`, `repo.getStatePeriods(...)`, `repo.getMostCommonValues(...)`, `repo.getTopN(...)`, `repo.getHeartbeatHealth(...)`, `repo.getLiveRanges(...)`, `repo.getDeadRanges(...)`, and `repo.isLiveAt(...)`, all with a presence check that fails fast (`TSDB_TOOLKIT_MISSING`) when the extension is not installed.
 - **Continuous aggregates** — `@ContinuousAggregate` / `@BucketColumn` / `@GroupColumn` / `@AggregateColumn` decorators with migration codegen, **automatic refresh policies** (`@ContinuousAggregate({ refresh })`), **hierarchical** CAGGs (a CAGG whose `source` is another CAGG), runtime `refreshContinuousAggregate(...)`, and **drift detection** for CAGGs + policies via `assertSchema()`.
 - **Downsampling** — `repo.downsampleLTTB(...)` / `repo.downsampleASAP(...)` (toolkit `lttb` / `asap_smooth`), typed `{ time, value }[]`.
 - **Informational views + jobs** — `createTimescale(ds).listHypertables(...)`, `listChunks(...)`, `listContinuousAggregates(...)`, `listJobs(...)`, `getJobStats(...)`, `runJob(...)`, and the action jobs API `addJob(...)` / `alterJob(...)` / `deleteJob(...)`.
 - **T-Digest percentiles** — `repo.getTDigestPercentiles(...)` / `repo.getTDigestPercentileRanks(...)` (toolkit `tdigest`).
-- **NestJS module** with optional-peer wiring and named multi-DataSource contexts.
+- **NestJS module** with optional-peer wiring, named multi-DataSource contexts, and **async/deferred configuration** (`TimescaleModule.forRootAsync` — `useFactory` + `inject` + `imports`, with an optional no-op mode).
 - Unified import surface (one package, never raw `typeorm`); dual ESM + CJS.
+
+## 0.5.0 release scope
+
+The 0.5.0 release adds **`TimescaleModule.forRootAsync`** (deferred/async DataSource
+configuration for NestJS) and a **fail-fast TimescaleDB-presence check** in `assertSchema()`
+(`TSDB_TIMESCALEDB_MISSING`), plus a correctness/hardening pass across the core SQL builders
+(interval whitespace, safe-integer bounds, `orderBy`/identifier validation) and the TypeORM
+result mapper and CLI DataSource loader. No breaking API changes. It builds on the 0.4.0
+continuous-aggregate, downsampling, introspection, and T-Digest work below.
 
 ## 0.4.0 release scope
 
