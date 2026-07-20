@@ -2,6 +2,7 @@ import {
   resolveEntities,
   assertEntitiesResolved,
   assertEntitiesUnchanged,
+  lockValidatedFields,
   type EntityFieldVerdict,
 } from './resolve-entities.js';
 import { CrossStoreError, CrossStoreErrorCode } from './errors.js';
@@ -49,7 +50,16 @@ export async function createManyResolved<T extends object>(
   // in an unvalidated reference or a different scope (a mid-flight tenant change). Fail closed on any
   // change (rolls back the caller's transaction). Do not mutate `entities` until this resolves.
   assertEntitiesUnchanged(results);
-  const saved = await writer.save(entities);
+  // Close the gap between the re-check above and the write itself (issue #140 window #2): lock the
+  // just-checked fields read-only for the save call, so a concurrent mutation during save's own
+  // awaits throws instead of silently landing. Always unlocked afterward, success or throw.
+  const unlockValidatedFields = lockValidatedFields(results);
+  let saved: T[];
+  try {
+    saved = await writer.save(entities);
+  } finally {
+    unlockValidatedFields();
+  }
   if (saved.length !== entities.length) {
     throw new CrossStoreError(
       CrossStoreErrorCode.INVALID_ARGUMENT,

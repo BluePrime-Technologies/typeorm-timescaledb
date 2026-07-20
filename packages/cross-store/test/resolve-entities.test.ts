@@ -6,6 +6,7 @@ import {
   assertEntitiesResolved,
   assertEntitiesUnchanged,
   assertEntitiesRegistered,
+  lockValidatedFields,
   CrossStoreError,
   CrossStoreErrorCode,
 } from '../src/index.js';
@@ -81,15 +82,30 @@ describe('resolveEntities', () => {
     expect(r?.verdict.ok).toBe(true);
   });
 
-  it('skips a null/undefined FK (no reference to check)', async () => {
+  it('does NOT fetch a null/undefined FK, but records a not_referenced baseline (issue #140 window #1)', async () => {
     const { registry, adapter, validators } = fixture();
     const results = await resolveEntities([new LedgerEntry(null)], {
       registry,
       adapters: [adapter],
       validators,
     });
-    expect(results).toHaveLength(0);
-    expect(adapter.calls).toHaveLength(0);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.verdict.ok).toBe(true);
+    expect(results[0]?.verdict.status).toBe('not_referenced');
+    expect(results[0]?.verdict.check.value).toBe(null);
+    expect(adapter.calls).toHaveLength(0); // still no fetch — not a real reference
+  });
+
+  it('records a not_referenced baseline for an undefined FK too', async () => {
+    const { registry, adapter, validators } = fixture();
+    const results = await resolveEntities([new LedgerEntry(undefined as unknown as null)], {
+      registry,
+      adapters: [adapter],
+      validators,
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]?.verdict.status).toBe('not_referenced');
+    expect(results[0]?.verdict.check.value).toBe(undefined);
   });
 
   it('does NOT skip a falsy-but-present FK ("" is a real id, only null/undefined skip)', async () => {
@@ -306,6 +322,127 @@ describe('assertEntitiesUnchanged (write-path TOCTOU re-check)', () => {
       expect((err as CrossStoreError).code).toBe(CrossStoreErrorCode.INVALID_ARGUMENT);
       expect((err as CrossStoreError).message).toContain('cannot re-verify scope');
     }
+  });
+
+  it('passes when a nullable field stays null between validation and save', async () => {
+    const { registry, adapter, validators } = fixture();
+    const results = await resolveEntities([new LedgerEntry(null)], {
+      registry,
+      adapters: [adapter],
+      validators,
+    });
+    expect(() => assertEntitiesUnchanged(results)).not.toThrow();
+  });
+
+  it('rejects a null→value flip on a nullable field (issue #140 window #1)', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry(null);
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    e.accountId = 'a'; // mid-flight: a null FK acquires a value after validation
+    expect(() => assertEntitiesUnchanged(results)).toThrow(
+      expect.objectContaining({ code: CrossStoreErrorCode.INVALID_ARGUMENT }),
+    );
+  });
+
+  it('rejects a null→foreign-tenant-id flip even though no scope was validated for it', async () => {
+    const { registry, adapter, validators } = fixture();
+    // the mid-flight value is a real account, just in the wrong tenant — the fix rejects ANY
+    // null→value flip regardless of what the new value is, per "do not mutate in-flight".
+    const e = new LedgerEntry(null, 'w1');
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    e.accountId = 'c'; // account 'c' belongs to workspace w2
+    expect(() => assertEntitiesUnchanged(results)).toThrow(
+      expect.objectContaining({ code: CrossStoreErrorCode.INVALID_ARGUMENT }),
+    );
+  });
+});
+
+describe('lockValidatedFields (write-path re-check→save non-atomicity, issue #140 window #2)', () => {
+  it('throws on a concurrent value mutation while locked', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry('a');
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    assertEntitiesUnchanged(results);
+    const unlock = lockValidatedFields(results);
+    try {
+      expect(() => {
+        e.accountId = 'ghost';
+      }).toThrow(TypeError);
+      expect(e.accountId).toBe('a'); // the locked value was never overwritten
+    } finally {
+      unlock();
+    }
+  });
+
+  it('throws on a concurrent scope-sibling mutation while locked', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry('a', 'w1');
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    assertEntitiesUnchanged(results);
+    const unlock = lockValidatedFields(results);
+    try {
+      expect(() => {
+        e.workspaceId = 'w2';
+      }).toThrow(TypeError);
+      expect(e.workspaceId).toBe('w1');
+    } finally {
+      unlock();
+    }
+  });
+
+  it('also locks a not_referenced (null-baseline) field, so window #1 stays closed during save too', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry(null);
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    const unlock = lockValidatedFields(results);
+    try {
+      expect(() => {
+        e.accountId = 'a';
+      }).toThrow(TypeError);
+    } finally {
+      unlock();
+    }
+  });
+
+  it('restores full mutability after unlock, even for a field that was never mutated', async () => {
+    const { registry, adapter, validators } = fixture();
+    const e = new LedgerEntry('a');
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    const unlock = lockValidatedFields(results);
+    unlock();
+    expect(() => {
+      e.accountId = 'z';
+    }).not.toThrow();
+    expect(e.accountId).toBe('z');
+  });
+
+  it('dedupes a scope sibling shared by two validated fields on the same entity (locks/restores once)', async () => {
+    class TwoRefEntry {
+      accountId = 'a';
+      otherId = 'a';
+      workspaceId = 'w1';
+    }
+    Resolve('canonical.accounts.id', { scope: { workspace_id: 'workspaceId' } })(
+      TwoRefEntry.prototype,
+      'accountId',
+    );
+    Resolve('canonical.accounts.id', { scope: { workspace_id: 'workspaceId' } })(
+      TwoRefEntry.prototype,
+      'otherId',
+    );
+    const { registry, adapter, validators } = fixture();
+    const e = new TwoRefEntry();
+    const results = await resolveEntities([e], { registry, adapters: [adapter], validators });
+    expect(results).toHaveLength(2); // both fields resolved, sharing the workspaceId sibling
+    const unlock = lockValidatedFields(results);
+    expect(() => {
+      e.workspaceId = 'w2';
+    }).toThrow(TypeError);
+    unlock();
+    expect(() => {
+      e.workspaceId = 'w3'; // fully restored — not left locked by the duplicate lock
+    }).not.toThrow();
+    expect(e.workspaceId).toBe('w3');
   });
 });
 

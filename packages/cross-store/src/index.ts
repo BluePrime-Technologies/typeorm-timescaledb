@@ -30,6 +30,7 @@ export {
   assertEntitiesResolved,
   assertEntitiesUnchanged,
   assertEntitiesRegistered,
+  lockValidatedFields,
 } from './resolve-entities.js';
 export type { EntityFieldVerdict, ResolveEntitiesOptions } from './resolve-entities.js';
 export type {

@@ -91,11 +91,13 @@ function buildCheck(entity: object, field: ResolveFieldMeta, value: unknown): Re
 
 /**
  * Resolve every `@Resolve`d reference on a batch of entity instances. Reads each decorated
- * property (skipping `null`/`undefined` — a nullable FK is simply "no reference"), builds the
- * batched {@link ReferenceCheck}s (scope values pulled from sibling properties), runs the engine,
- * and returns one {@link EntityFieldVerdict} per checked field — so a caller knows exactly which
- * entity/field failed. Pure and ORM-agnostic; the TypeORM write path (`createManyResolved`) layers
- * the caller-transaction TOCTOU mitigation on top in M3.4b.
+ * property — a `null`/`undefined` value is "no reference" and is not sent to the engine, but is
+ * still returned as a `not_referenced` baseline verdict (issue #140 window #1) rather than
+ * dropped, so a write-path re-check can catch a later flip away from null. Non-null values build
+ * the batched {@link ReferenceCheck}s (scope values pulled from sibling properties) and run the
+ * engine. Returns one {@link EntityFieldVerdict} per decorated field (checked or not) — so a
+ * caller knows exactly which entity/field failed. Pure and ORM-agnostic; the TypeORM write path
+ * (`createManyResolved`) layers the caller-transaction TOCTOU mitigation on top in M3.4b.
  */
 export interface ResolveEntitiesOptions {
   /**
@@ -123,6 +125,28 @@ function invalidVerdict(
   };
 }
 
+/**
+ * Synthesize a baseline verdict for a nullable field that was `null`/`undefined` at validation
+ * time (issue #140 window #1). Unlike a bare `continue`, recording this — instead of skipping the
+ * field entirely — gives {@link assertEntitiesUnchanged} something to compare: its existing
+ * `row[property] !== verdict.check.value` check already rejects any mid-flight flip away from
+ * `null`/`undefined` (to a value, or the other nullish), because no engine fetch is needed to know
+ * what "still has no reference" means. `ok: true` so {@link assertEntitiesResolved} never trips on
+ * it; `status: 'not_referenced'` keeps it distinguishable from an actually-resolved reference.
+ */
+function notReferencedVerdict(
+  entity: object,
+  property: string,
+  ref: ResolveRef,
+  value: null | undefined,
+): EntityFieldVerdict {
+  return {
+    entity,
+    property,
+    verdict: { check: { ref, value }, ok: true, status: 'not_referenced' },
+  };
+}
+
 export async function resolveEntities(
   entities: readonly object[],
   options: ResolveOptions,
@@ -132,6 +156,7 @@ export async function resolveEntities(
   const checks: ReferenceCheck[] = [];
   const origins: Array<{ entity: object; property: string }> = [];
   const invalid: EntityFieldVerdict[] = [];
+  const unreferenced: EntityFieldVerdict[] = [];
   for (const entity of entities) {
     const meta = getResolveMetadata(entityClassOf(entity));
     for (const field of meta) {
@@ -147,8 +172,12 @@ export async function resolveEntities(
           );
           if (!report) throw error;
           invalid.push(invalidVerdict(entity, field.property, value, field.ref, error));
+        } else {
+          // Not required: still no reference to check, but record the null/undefined baseline
+          // (issue #140 window #1) so the write path's TOCTOU re-check can catch a later flip.
+          unreferenced.push(notReferencedVerdict(entity, field.property, field.ref, value));
         }
-        continue; // nullable FK → no reference
+        continue; // nullable FK → no reference to resolve via the engine
       }
       let check: ReferenceCheck;
       try {
@@ -178,7 +207,7 @@ export async function resolveEntities(
     property: origins[i]!.property,
     verdict,
   }));
-  return report ? [...resolved, ...invalid] : resolved;
+  return report ? [...resolved, ...invalid, ...unreferenced] : [...resolved, ...unreferenced];
 }
 
 /**
@@ -220,8 +249,11 @@ export function assertEntitiesResolved(
  * could swap in an unvalidated reference OR a different scope (a mid-flight `workspaceId` change
  * would persist a cross-tenant reference — the scope dimension matters as much as the value). Throws
  * `INVALID_ARGUMENT` on any change (fail closed; rolls back the caller's transaction). A nullable FK
- * flipped null→value is not covered (it produced no verdict) — "do not mutate an in-flight entity"
- * remains the precondition; this closes the value AND scope windows for every VALIDATED field.
+ * flipped null→value IS covered (issue #140 window #1): `resolveEntities` now returns a
+ * `not_referenced` baseline verdict for it, so the value comparison below rejects the flip like any
+ * other. This closes the value AND scope windows for every field `resolveEntities` returned —
+ * checked or not. It still only re-checks up to the *instant it runs*; see {@link lockValidatedFields}
+ * for closing the gap between this re-check and the write itself (issue #140 window #2).
  */
 export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]): void {
   for (const { entity, property, verdict } of results) {
@@ -260,6 +292,57 @@ export function assertEntitiesUnchanged(results: readonly EntityFieldVerdict[]):
       }
     }
   }
+}
+
+/**
+ * Lock every field `assertEntitiesUnchanged` just re-checked — plus, for a scoped field, its scope
+ * sibling properties — read-only for the duration of the write itself (issue #140 window #2:
+ * `assertEntitiesUnchanged` then `writer.save` is not atomic; a concurrent holder of the same
+ * mutable instance can still mutate it during `save`'s own internal await points). This package is
+ * ESM (always strict mode), so an assignment to a locked property throws immediately instead of
+ * silently landing an unvalidated reference — turning the violation of the documented "do not
+ * mutate an in-flight entity" precondition into a loud failure instead of a silent one.
+ *
+ * Deliberately narrower than freezing the whole entity (`Object.freeze` was rejected in the M3.4b
+ * review — it breaks TypeORM's `save`, which needs to write other columns, e.g. a generated id):
+ * only the exact validated properties are locked, so `save` can still do everything else it needs
+ * to. Only an own, configurable data property can be locked this way; an inherited getter/setter
+ * (no own descriptor to safely restore) is left alone — a documented limitation, not a silent gap,
+ * since such an entity never had a plain data property for this re-check to protect in the first
+ * place. A property referenced by more than one result (e.g. a scope sibling shared by two
+ * `@Resolve`d fields) is locked/restored exactly once.
+ *
+ * Returns an `unlock` function that restores every original property descriptor. **Always** call
+ * it — in a `finally` around the write — so entities are left fully mutable again whether the
+ * write succeeded or threw.
+ */
+export function lockValidatedFields(results: readonly EntityFieldVerdict[]): () => void {
+  const lockedByEntity = new Map<object, Set<string>>();
+  const restores: Array<() => void> = [];
+  const lock = (entity: object, property: string): void => {
+    let locked = lockedByEntity.get(entity);
+    if (!locked) {
+      locked = new Set();
+      lockedByEntity.set(entity, locked);
+    }
+    if (locked.has(property)) return; // already locked (e.g. a shared scope sibling)
+    locked.add(property);
+    const target = entity as Record<string, unknown>;
+    const descriptor = Object.getOwnPropertyDescriptor(target, property);
+    if (!descriptor || !('value' in descriptor) || descriptor.configurable === false) return;
+    Object.defineProperty(target, property, { ...descriptor, writable: false });
+    restores.push(() => Object.defineProperty(target, property, descriptor));
+  };
+  for (const { entity, property, verdict } of results) {
+    lock(entity, property);
+    const scope = verdict.check.scope;
+    if (scope === undefined) continue;
+    const field = getResolveMetadata(entityClassOf(entity)).find((f) => f.property === property);
+    for (const scopeProperty of Object.values(field?.scope ?? {})) lock(entity, scopeProperty);
+  }
+  return () => {
+    for (let i = restores.length - 1; i >= 0; i--) restores[i]!();
+  };
 }
 
 /**
