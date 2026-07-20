@@ -294,7 +294,7 @@ Supported metric functions: `avg`, `sum`, `min`, `max`, `count`, `first`, `last`
 Typed helpers over the stable `timescaledb_toolkit` aggregate families:
 
 | Family                     | Methods                                                                                                                     |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Candlesticks               | `getCandlesticks()`                                                                                                         |
 | Approximate distinct count | `approxCountDistinct()`                                                                                                     |
 | Statistics                 | `getStats()`, `getRegression()`                                                                                             |
