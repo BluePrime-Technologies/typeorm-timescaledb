@@ -8,7 +8,7 @@
 
 `typeorm-timescaledb` is an actively maintained **pre-1.0** package for TypeORM users who want typed TimescaleDB hypertables, columnstore, retention, reviewable migrations, DataSource-scoped repositories, drift detection, NestJS integration, a typed hyperfunction query layer, and stable toolkit aggregate helpers.
 
-It is **not** a complete TimescaleDB abstraction yet. Continuous aggregates, validated cross-store references, experimental toolkit aggregates, stable Toolkit aggregates not yet implemented (including T-Digest), and a full entity-to-database diff engine are planned but not shipped. Removing or altering existing TimescaleDB configuration still requires a hand-written migration. The base `CREATE TABLE` remains TypeORM's responsibility; this package adds the TimescaleDB layer on top.
+It is **not** a complete TimescaleDB abstraction yet. Validated cross-store references, experimental (non-stable) toolkit aggregates, and a full entity-to-database diff engine are planned but not shipped. (Continuous aggregates and stable Toolkit aggregates including T-Digest shipped in 0.4.0 — see below.) Removing or altering existing TimescaleDB configuration still requires a hand-written migration. The base `CREATE TABLE` remains TypeORM's responsibility; this package adds the TimescaleDB layer on top.
 
 ## Why this exists
 

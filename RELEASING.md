@@ -61,5 +61,7 @@ ever hit it manually, the fix is the same one-liner, authenticated as the publis
 - The published `typeorm-timescaledb` README is the repo root `README.md` (copied in via the
   package `prepack` step); `@blueprime/timescaledb-core` ships its own README.
 - Pre-publish quality is already validated on every PR (lint, typecheck, unit, the integration
-  matrix on TimescaleDB 2.18 + latest, `publint`, `attw`). The release workflow assumes the
-  tagged commit passed CI.
+  matrix on TimescaleDB 2.18 + latest, and the `test:package-smoke` script that imports every
+  built entrypoint). The release workflow assumes the tagged commit passed CI. (Adding `publint`
+  and `@arethetypeswrong/cli` to catch exports-map regressions the smoke test can miss is a
+  tracked follow-up — they are NOT wired yet.)
