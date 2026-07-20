@@ -83,13 +83,20 @@ export function quoteIdent(identifier: string, role = 'identifier'): string {
 /**
  * Quotes a possibly-qualified identifier (`schema.table`) part-by-part.
  * Each part is validated/quoted independently so a dot inside a part cannot
- * smuggle extra qualification.
+ * smuggle extra qualification. Rejects 3+ parts: no PostgreSQL object in this
+ * library is more qualified than `schema.table`, so `a.b.c` is a malformed input,
+ * not a valid identifier (mirrors the cap in `parseTable`).
  */
 export function quoteQualified(qualified: string, role = 'identifier'): string {
-  return qualified
-    .split('.')
-    .map((part) => quoteIdent(part, role))
-    .join('.');
+  const parts = qualified.split('.');
+  if (parts.length > 2) {
+    throw new TimescaleError(
+      TimescaleErrorCode.UNSAFE_IDENTIFIER,
+      `${role} must be "name" or "schema.name", got: ${qualified}`,
+      { role, identifier: qualified },
+    );
+  }
+  return parts.map((part) => quoteIdent(part, role)).join('.');
 }
 
 /**

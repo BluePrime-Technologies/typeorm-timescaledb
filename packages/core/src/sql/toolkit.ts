@@ -1,5 +1,6 @@
 import { safeIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
+import { numericLiteral } from './numeric.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /**
@@ -268,25 +269,7 @@ export function statsAccessor2DExpr(
 // ---------------------------------------------------------------------------
 // percentile_agg — approximate percentiles (uddsketch)
 // ---------------------------------------------------------------------------
-
-/**
- * Validate and render a finite number as a SQL numeric literal. A finite JS number's
- * decimal/exponent string form is always a valid PostgreSQL numeric literal and
- * carries zero injection surface (it is a number, never user text).
- */
-function numericLiteral(value: number, role: string): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      `${role} must be a finite number`,
-      {
-        role,
-        value: String(value),
-      },
-    );
-  }
-  return String(value);
-}
+// numericLiteral is shared with the base hyperfunction builders — see ./numeric.ts.
 
 /** `percentile_agg(value)` — the uddsketch percentile intermediate. */
 export function percentileAggExpr(valueColumn: string): string {

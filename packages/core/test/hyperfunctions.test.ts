@@ -148,6 +148,20 @@ describe('histogramExpr', () => {
       `histogram("v", 0.5, 99.5, 10)`,
     );
   });
+  it('accepts tiny/large finite bounds that stringify with an exponent (PG parses 1e-7)', () => {
+    // regression: the old numericLiteral rejected any exponent form, wrongly refusing 1e-7 / 1e21
+    expect(histogramExpr({ column: 'v', min: 0.0000001, max: 1, nbuckets: 5 })).toBe(
+      `histogram("v", 1e-7, 1, 5)`,
+    );
+    expect(histogramExpr({ column: 'v', min: 0, max: 1e21, nbuckets: 5 })).toBe(
+      `histogram("v", 0, 1e+21, 5)`,
+    );
+  });
+  it('still rejects a non-safe-integer nbuckets (bound is isSafeInteger, not the literal shape)', () => {
+    expect(() => histogramExpr({ column: 'v', min: 0, max: 1, nbuckets: 1e21 })).toThrowError(
+      TimescaleError,
+    );
+  });
   it('rejects min >= max', () => {
     expect(() => histogramExpr({ column: 'v', min: 100, max: 0, nbuckets: 5 })).toThrowError(
       expect.objectContaining({ code: TimescaleErrorCode.INVALID_ARGUMENT }),
