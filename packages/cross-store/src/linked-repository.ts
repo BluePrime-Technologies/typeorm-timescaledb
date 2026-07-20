@@ -2,6 +2,7 @@ import {
   resolveEntities,
   assertEntitiesResolved,
   assertEntitiesUnchanged,
+  lockValidatedFields,
   type EntityFieldVerdict,
 } from './resolve-entities.js';
 import { CrossStoreError, CrossStoreErrorCode } from './errors.js';
@@ -49,7 +50,31 @@ export async function createManyResolved<T extends object>(
   // in an unvalidated reference or a different scope (a mid-flight tenant change). Fail closed on any
   // change (rolls back the caller's transaction). Do not mutate `entities` until this resolves.
   assertEntitiesUnchanged(results);
-  const saved = await writer.save(entities);
+  // Close the gap between the re-check above and the write itself (issue #140 window #2): lock the
+  // just-checked fields (and, for a scoped field, its scope siblings) read-only for the save call —
+  // see `lockValidatedFields` for what is and isn't lockable. Always unlocked afterward, success or
+  // throw. A concurrent mutation during save's own awaits now throws a raw `TypeError` (the locked
+  // assignment itself failing, in strict-mode ESM) rather than landing silently; recognized below by
+  // its engine message and re-thrown as a `CrossStoreError` so this specific failure carries the
+  // module's stable `.code` instead of leaking an assignment-failure implementation detail — any
+  // OTHER `TypeError` (an unrelated bug in `writer.save`) is left alone, not misattributed to this
+  // re-check.
+  const unlockValidatedFields = lockValidatedFields(results);
+  let saved: T[];
+  try {
+    saved = await writer.save(entities);
+  } catch (cause) {
+    if (cause instanceof TypeError && /assign to read.only property/i.test(cause.message)) {
+      throw new CrossStoreError(
+        CrossStoreErrorCode.INVALID_ARGUMENT,
+        'a validated reference or its scope sibling was mutated during writer.save — refusing to write',
+        { cause: String(cause) },
+      );
+    }
+    throw cause;
+  } finally {
+    unlockValidatedFields();
+  }
   if (saved.length !== entities.length) {
     throw new CrossStoreError(
       CrossStoreErrorCode.INVALID_ARGUMENT,

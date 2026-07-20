@@ -26,10 +26,13 @@ export interface ResolveOptions {
 }
 
 /**
- * The disposition of a single reference check. `resolved` is the only success. `resolveReferences`
- * itself never emits `invalid`; that status is produced only by the entity layer
- * (`resolveEntities` in report mode) for a check that could not even be formed — a `required`
- * field that is null/undefined, or an unset scope sibling.
+ * The disposition of a single reference check. `resolved` and `not_referenced` are the only
+ * success (`ok: true`) statuses. `resolveReferences` itself never emits `invalid` or
+ * `not_referenced`; both are produced only by the entity layer (`resolveEntities`) for a check
+ * that never reached the engine: `invalid` for a check that could not even be FORMED (report mode
+ * only — a `required` field that is null/undefined, or an unset scope sibling), `not_referenced`
+ * for a nullable field that was null/undefined at validation time (issue #140 window #1 baseline —
+ * see {@link EntityFieldVerdict} in `resolve-entities.ts`).
  */
 export type ResolveStatus =
   | 'resolved'
@@ -38,7 +41,8 @@ export type ResolveStatus =
   | 'scope_violation'
   | 'unavailable'
   | 'validator_failed'
-  | 'invalid';
+  | 'invalid'
+  | 'not_referenced';
 
 /** The verdict for one input check — always returned (the engine never throws per-check). */
 export interface ResolveVerdict {
