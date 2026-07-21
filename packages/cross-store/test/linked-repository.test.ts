@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Resolve, ReferenceRegistry, CrossStoreErrorCode } from '../src/index.js';
+import { Resolve, ReferenceRegistry, CrossStoreError, CrossStoreErrorCode } from '../src/index.js';
 import type { CrossStoreAdapter, FindManyInput, SnapshotRow, ValidatorMap } from '../src/index.js';
 import {
   createManyResolved,
@@ -148,6 +148,58 @@ describe('createManyResolved', () => {
     await expect(
       createManyResolved(shortWriter, [new LedgerEntry('a')], { registry, adapters: [adapter] }),
     ).rejects.toMatchObject({ code: CrossStoreErrorCode.INVALID_ARGUMENT });
+  });
+
+  it('refuses a concurrent mutation during writer.save itself (issue #140 window #2 — re-check→save non-atomicity)', async () => {
+    const { registry, adapter } = fixture();
+    const e = new LedgerEntry('a');
+    // simulates a concurrent holder of the same instance mutating it during save's own await —
+    // the exact gap `assertEntitiesUnchanged` (which already ran) cannot see.
+    const mutatingWriter: EntityWriter = {
+      save: async (entities) => {
+        (entities[0] as LedgerEntry).accountId = 'ghost';
+        return entities;
+      },
+    };
+    await expect(
+      createManyResolved(mutatingWriter, [e], { registry, adapters: [adapter] }),
+    ).rejects.toMatchObject({ code: CrossStoreErrorCode.INVALID_ARGUMENT }); // wrapped, not a bare TypeError
+    expect(e.accountId).toBe('a'); // the locked property could not actually be overwritten
+    // the field is unlocked again afterward (the `finally` ran despite the throw)
+    e.accountId = 'z';
+    expect(e.accountId).toBe('z');
+  });
+
+  it('still saves normally when nothing mutates during the (now-locked) save call', async () => {
+    const { registry, adapter } = fixture();
+    const writer = new FakeWriter();
+    const e = new LedgerEntry('a');
+    const saved = await createManyResolved(writer, [e], { registry, adapters: [adapter] });
+    expect(saved).toEqual([e]);
+    // fields are fully mutable again once the call returns
+    e.accountId = 'z';
+    expect(e.accountId).toBe('z');
+  });
+
+  it('does NOT misattribute an UNRELATED TypeError from writer.save to the lock', async () => {
+    // a bug in the writer itself (nothing to do with a locked field) must propagate as-is, not
+    // get relabeled as a TOCTOU mutation.
+    const { registry, adapter } = fixture();
+    const e = new LedgerEntry('a');
+    const buggyWriter: EntityWriter = {
+      save: () => {
+        throw new TypeError("Cannot read properties of undefined (reading 'foo')");
+      },
+    };
+    let caught: unknown;
+    try {
+      await createManyResolved(buggyWriter, [e], { registry, adapters: [adapter] });
+      throw new Error('should have thrown');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(caught).not.toBeInstanceOf(CrossStoreError);
   });
 });
 
