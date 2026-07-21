@@ -121,6 +121,33 @@ describe('ReferenceRegistry', () => {
     expect(nonAppendOnly.some((e) => e.table === 'canonical_records')).toBe(false);
   });
 
+  it('surfaces non-unique targets for a startup warning', () => {
+    // an omitted flag and an explicit `false` both count as non-unique; a `targetIsUnique` target is not warned
+    const reg = new ReferenceRegistry()
+      .register({ store: 'canonical', table: 'accounts', column: 'id', targetIsUnique: true })
+      .register({ store: 'canonical', table: 'sessions', column: 'id' })
+      .register({ store: 'canonical', table: 'drafts', column: 'id', targetIsUnique: false });
+    const nonUnique = reg.nonUniqueTargets();
+    expect(nonUnique.map((e) => e.table).sort()).toEqual(['drafts', 'sessions']);
+    expect(nonUnique.some((e) => e.table === 'accounts')).toBe(false);
+  });
+
+  it('rejects a re-registration that only differs on targetIsUnique (conflict)', () => {
+    const REF = { store: 'canonical', table: 'accounts', column: 'id' };
+    const reg = new ReferenceRegistry().register({ ...REF, targetIsUnique: true });
+    expect(() => reg.register({ ...REF, targetIsUnique: true })).not.toThrow(); // identical → idempotent
+    // flipping / clearing the unique flag → conflict (a late module must not silently drop the guarantee)
+    expect(() => reg.register({ ...REF, targetIsUnique: false })).toThrowError(CrossStoreError);
+    expect(() => reg.register({ ...REF })).toThrowError(CrossStoreError);
+  });
+
+  it('preserves + freezes the targetIsUnique flag on the stored entry', () => {
+    const REF = { store: 'canonical', table: 'accounts', column: 'id' };
+    const entry = new ReferenceRegistry().register({ ...REF, targetIsUnique: true }).get(REF)!;
+    expect(entry.targetIsUnique).toBe(true);
+    expect(Object.isFrozen(entry)).toBe(true);
+  });
+
   it('preserves the targetIsAppendOnly flag and copies scopeColumns defensively', () => {
     const scope = ['workspace_id'];
     const reg = new ReferenceRegistry().register({ ...CANONICAL, scopeColumns: scope });
