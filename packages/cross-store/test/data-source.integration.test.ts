@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { DataSource } from 'typeorm';
-import { ReferenceRegistry, resolveReferences, type SnapshotRow } from '../src/index.js';
+import {
+  ReferenceRegistry,
+  resolveReferences,
+  CrossStoreErrorCode,
+  type SnapshotRow,
+} from '../src/index.js';
 import { DataSourceAdapter } from '../src/typeorm.js';
 import { runAdapterConformance, type ConformanceContext } from './conformance.js';
 
@@ -111,6 +116,32 @@ d('cross-store resolve over two separate DataSource instances', () => {
       adapters: [canonical],
     });
     expect(v?.status).toBe('not_found');
+  });
+
+  // A mis-declared registry target (table/column absent in the live schema) makes Postgres reject
+  // the SELECT with a permanent "undefined object" error (42P01/42703) — recorded as a
+  // `misconfigured` verdict (never a retryable `unavailable`, and never a throw that would wedge the
+  // sweep). The write path still fails loud via assertAllResolved (issue #146).
+  it('records a `misconfigured` verdict when the target TABLE does not exist (42P01)', async () => {
+    const badRef = { store: 'canonical', table: 'ghost_table', column: 'id' };
+    const reg = new ReferenceRegistry().register(badRef);
+    const [v] = await resolveReferences([{ ref: badRef, value: A1 }], {
+      registry: reg,
+      adapters: [canonical],
+    });
+    expect(v?.status).toBe('misconfigured');
+    expect(v?.error?.code).toBe(CrossStoreErrorCode.REFERENCE_MISCONFIGURED);
+  });
+
+  it('records a `misconfigured` verdict when the target COLUMN does not exist (42703)', async () => {
+    const badRef = { store: 'canonical', table: 'accounts', column: 'nonexistent_col' };
+    const reg = new ReferenceRegistry().register(badRef);
+    const [v] = await resolveReferences([{ ref: badRef, value: A1 }], {
+      registry: reg,
+      adapters: [canonical],
+    });
+    expect(v?.status).toBe('misconfigured');
+    expect(v?.error?.code).toBe(CrossStoreErrorCode.REFERENCE_MISCONFIGURED);
   });
 
   it('applies the scope filter as a bound predicate (wrong workspace → not_found)', async () => {

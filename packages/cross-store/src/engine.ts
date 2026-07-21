@@ -40,6 +40,7 @@ export type ResolveStatus =
   | 'not_allowed'
   | 'scope_violation'
   | 'unavailable'
+  | 'misconfigured'
   | 'validator_failed'
   | 'invalid'
   | 'not_referenced';
@@ -234,6 +235,59 @@ export async function resolveReferences(
   return verdicts as ResolveVerdict[];
 }
 
+/**
+ * Postgres SQLSTATEs that mean "the referenced object does not exist" — a mis-declared registry
+ * entry (wrong table/column/schema), NOT a transient outage. Deliberately an explicit allowlist, not
+ * the whole SQLSTATE class 42: class 42 also includes `42501` (insufficient_privilege — a
+ * grant/role-rotation issue that can be operational/transient) and `42601` (syntax_error — our bug,
+ * not the caller's registry), which must NOT be labelled "check the registry declaration".
+ */
+const MISCONFIGURED_SQLSTATES: ReadonlySet<string> = new Set([
+  '42P01', // undefined_table
+  '42703', // undefined_column
+  '42883', // undefined_function
+  '42704', // undefined_object
+  '3F000', // invalid_schema_name
+]);
+
+/**
+ * Extract a **permanent** "object does not exist" SQLSTATE ({@link MISCONFIGURED_SQLSTATES}) from a
+ * caught adapter error, if present — the signal that the reference target is misconfigured (its
+ * table/column/schema is absent), which a retry can never fix. Handles a direct pg / TypeORM driver
+ * error (`.code` is the SQLSTATE; TypeORM's `QueryFailedError` copies the driver's `.code`) and a
+ * Prisma `P2010` raw-query wrapper (the real code is in `.meta.code`, or embedded in the message as
+ * ``Code: `42P01` ``). The message is consulted **only** for a Prisma-shaped error — parsing every
+ * error's `.message` for a code would let a data-influenced message (e.g. `22P02`'s echoed value)
+ * forge a false match. Returns `undefined` for anything else (a connection blip like `ECONNREFUSED`,
+ * or a permission/syntax class-42), which stays {@link CrossStoreErrorCode.ADAPTER_UNAVAILABLE}.
+ */
+function permanentSqlState(cause: unknown): string | undefined {
+  // Unwrap a shallow driver-error chain (TypeORM `.driverError`, a wrapped `.cause`) — bounded to a
+  // few hops so a self-referential `.cause` can't loop. The first object carrying a usable code wins.
+  let err = cause as { code?: unknown; meta?: { code?: unknown }; message?: unknown } | null;
+  for (let hop = 0; hop < 4 && err !== null && typeof err === 'object'; hop++) {
+    const direct = typeof err.code === 'string' ? err.code.toUpperCase() : undefined;
+    const isPrismaRaw =
+      direct === 'P2010' ||
+      (typeof err.message === 'string' && err.message.startsWith('Raw query failed'));
+    const prismaMeta =
+      isPrismaRaw && typeof err.meta?.code === 'string' ? err.meta.code.toUpperCase() : undefined;
+    const fromMessage =
+      isPrismaRaw && typeof err.message === 'string'
+        ? /Code:\s*[`"']?(42[0-9A-Za-z]{3}|3F000)\b/i.exec(err.message)?.[1]?.toUpperCase()
+        : undefined;
+    const match = [direct, prismaMeta, fromMessage].find(
+      (c): c is string => c !== undefined && MISCONFIGURED_SQLSTATES.has(c),
+    );
+    if (match !== undefined) return match;
+    const next =
+      (err as { driverError?: unknown; cause?: unknown }).driverError ??
+      (err as { cause?: unknown }).cause;
+    err = next as typeof err;
+  }
+  return undefined;
+}
+
 /** Fetch one group's rows in a single round-trip and write a verdict for each member. */
 async function resolveGroup(
   group: Group,
@@ -266,18 +320,40 @@ async function resolveGroup(
       if (!rowByValue.has(k)) rowByValue.set(k, Object.freeze(row));
     }
   } catch (cause) {
-    // The adapter threw: availability, not correctness. Every member is UNAVAILABLE, NOT
-    // "not found" — a transient blip must never reject a valid reference (issue #124 fix #5).
+    // A PERMANENT "object does not exist" SQL error (undefined table/column/schema) means the
+    // registry entry is mis-declared — a wiring bug that will never resolve on retry. Record a
+    // `misconfigured` verdict (NOT a throw): the engine keeps its "one verdict per check, never
+    // throws per-group" contract, so `resolveReferences` still returns the full array (healthy
+    // groups' results survive) and the `verifyReferences` sweep never crashes. The WRITE path still
+    // fails loud — `assertAllResolved`/`assertEntitiesResolved` throw on any non-`ok` verdict, so a
+    // misconfigured verdict surfaces `REFERENCE_MISCONFIGURED` there. Distinct from `unavailable`
+    // (retryable) so a sweep won't re-queue it forever.
+    const sqlState = permanentSqlState(cause);
+    const [code, status, reason] =
+      sqlState !== undefined
+        ? ([
+            CrossStoreErrorCode.REFERENCE_MISCONFIGURED,
+            'misconfigured',
+            `is misconfigured (SQL error ${sqlState}) — check the registry declaration matches the target schema`,
+          ] as const)
+        : // Otherwise a TRANSIENT failure: availability, not correctness — every member is
+          // UNAVAILABLE, NOT "not found" (a blip must never reject a valid reference; #124 fix #5).
+          ([CrossStoreErrorCode.ADAPTER_UNAVAILABLE, 'unavailable', `was unavailable`] as const);
     for (const i of group.members) {
-      const check = checks[i]!;
       verdicts[i] = {
-        check,
+        check: checks[i]!,
         ok: false,
-        status: 'unavailable',
+        status,
         error: new CrossStoreError(
-          CrossStoreErrorCode.ADAPTER_UNAVAILABLE,
-          `store "${group.store}" was unavailable while resolving ${group.table}.${group.column}`,
-          { store: group.store, table: group.table, column: group.column, cause: String(cause) },
+          code,
+          `reference target ${group.table}.${group.column} in store "${group.store}" ${reason}`,
+          {
+            store: group.store,
+            table: group.table,
+            column: group.column,
+            ...(sqlState !== undefined && { sqlState }),
+            cause: String(cause),
+          },
         ),
       };
     }
