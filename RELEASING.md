@@ -40,6 +40,23 @@ Do not publish release copy that presents planned features as shipped functional
    versions, then `pnpm publish`es **core first**, then **typeorm-timescaledb** (with provenance).
    `pnpm publish` rewrites the `workspace:*` core dependency to the concrete version.
 
+## Releasing `@blueprime/cross-store` (independent version line)
+
+`@blueprime/cross-store` versions **independently** of `typeorm-timescaledb` /
+`@blueprime/timescaledb-core` (it starts at `0.1.0` while they are on `0.5.x`). It has its own
+workflow ([`release-cross-store.yml`](.github/workflows/release-cross-store.yml)) triggered by a
+distinct tag prefix:
+
+```sh
+# after bumping packages/cross-store/package.json + its CHANGELOG on a merged main:
+git tag cross-store-v0.1.0   # must equal packages/cross-store version
+git push origin cross-store-v0.1.0
+```
+
+The workflow verifies the tag is on `main`, matches the cross-store version, then `pnpm publish`es
+`@blueprime/cross-store` (its `workspace:*` core dependency is rewritten to the concrete published
+core version) with provenance. Idempotent — re-run the tag if it half-fails.
+
 ## If a release half-publishes
 
 Publishing is sequential (core, then typeorm-timescaledb) and **idempotent** — each step
