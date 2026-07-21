@@ -1,10 +1,30 @@
 {
   "name": "@blueprime/cross-store",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Validated cross-store (@Resolve) references between TimescaleDB and another database.",
   "license": "Apache-2.0",
   "type": "module",
-  "private": true,
+  "keywords": [
+    "timescaledb",
+    "postgres",
+    "cross-database",
+    "referential-integrity",
+    "foreign-key",
+    "typeorm",
+    "prisma"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BluePrime-Technologies/typeorm-timescaledb.git",
+    "directory": "packages/cross-store"
+  },
+  "homepage": "https://github.com/BluePrime-Technologies/typeorm-timescaledb/tree/main/packages/cross-store#readme",
+  "bugs": {
+    "url": "https://github.com/BluePrime-Technologies/typeorm-timescaledb/issues"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "exports": {
     ".": {
       "import": {
