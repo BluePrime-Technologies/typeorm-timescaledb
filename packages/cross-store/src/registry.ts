@@ -1,5 +1,6 @@
 import { assertSafeIdentifier } from '@blueprime/timescaledb-core';
 import { CrossStoreError, CrossStoreErrorCode } from './errors.js';
+import { safeColumnType } from './sql/column-type.js';
 import type { ResolveRef } from './types.js';
 
 /** One allowed reference target plus the scope columns and append-only guarantee it carries. */
@@ -30,6 +31,14 @@ export interface ReferenceRegistryEntry {
    * package cannot verify the constraint exists; it's the caller's assertion that it does.
    */
   readonly targetIsUnique?: boolean;
+  /**
+   * The base SQL type of the key `column` (e.g. `'uuid'`, `'bigint'`, `'text'`). When set, the
+   * fetch casts the bound PARAM (`= ANY($1::uuid[])`) rather than the column, so the target's index
+   * stays usable while still working with a type-strict driver (Prisma). Validated against a
+   * conservative allowlist at registration (it is interpolated into SQL as a cast target, never
+   * bound). Omit to use the column-text-cast (Prisma) / native (TypeORM) comparison.
+   */
+  readonly columnType?: string;
 }
 
 /**
@@ -63,6 +72,8 @@ function freezeEntry(entry: ReferenceRegistryEntry): ReferenceRegistryEntry {
     ...(scopeColumns !== undefined && { scopeColumns }),
     ...(entry.targetIsAppendOnly !== undefined && { targetIsAppendOnly: entry.targetIsAppendOnly }),
     ...(entry.targetIsUnique !== undefined && { targetIsUnique: entry.targetIsUnique }),
+    // store the canonical (validated, lower-cased) type — the exact token later interpolated into SQL
+    ...(entry.columnType !== undefined && { columnType: safeColumnType(entry.columnType) }),
   });
 }
 
@@ -73,6 +84,7 @@ function freezeEntry(entry: ReferenceRegistryEntry): ReferenceRegistryEntry {
 function sameEntry(a: ReferenceRegistryEntry, b: ReferenceRegistryEntry): boolean {
   if ((a.targetIsAppendOnly === true) !== (b.targetIsAppendOnly === true)) return false;
   if ((a.targetIsUnique === true) !== (b.targetIsUnique === true)) return false;
+  if ((a.columnType ?? undefined) !== (b.columnType ?? undefined)) return false;
   const sa = new Set(a.scopeColumns ?? []);
   const sb = new Set(b.scopeColumns ?? []);
   if (sa.size !== sb.size) return false;
@@ -143,13 +155,14 @@ export class ReferenceRegistry {
     assertTableIdent(entry.table);
     assertSafeIdentifier(entry.column, 'reference column');
     for (const scopeCol of entry.scopeColumns ?? []) assertSafeIdentifier(scopeCol, 'scope column');
+    if (entry.columnType !== undefined) safeColumnType(entry.columnType); // allowlist-validate (fail fast)
     const key = refKey(entry);
     const frozen = freezeEntry(entry);
     const existing = this.entries.get(key);
     if (existing && !sameEntry(existing, frozen)) {
       throw new CrossStoreError(
         CrossStoreErrorCode.INVALID_ARGUMENT,
-        `conflicting re-registration of ${key} (scope columns / append-only / unique flag differ)`,
+        `conflicting re-registration of ${key} (scope columns / append-only / unique flag / columnType differ)`,
         { existing, attempted: frozen },
       );
     }

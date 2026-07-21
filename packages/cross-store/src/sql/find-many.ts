@@ -1,5 +1,6 @@
 import { safeIdent, TimescaleError, TimescaleErrorCode } from '@blueprime/timescaledb-core';
 import type { FindManyInput } from '../types.js';
+import { safeColumnType } from './column-type.js';
 
 /** A parameterized SQL statement: `text` with `$1..$n` placeholders and the bound `params`. */
 export interface FindManySql {
@@ -67,27 +68,43 @@ export function buildFindManySql(
   const asText = options.compareAsText === true;
   const table = safeQualified(input.table, 'reference table');
   const column = safeIdent(input.column, 'reference column');
-  // Native `= ANY($1)` (no cast) keeps a btree index on the key column usable (node-pg/TypeORM
-  // bind untyped text, so Postgres infers the column type). The tradeoff: one type-incompatible id
-  // in a batch makes pg reject the whole statement (22P02) → the group is ADAPTER_UNAVAILABLE.
-  // With `compareAsText` we cast the column to text and bind string values — universal, but no
-  // index — because a type-strict driver (Prisma) cannot rely on that inference. This compares the
-  // caller's String(value) to Postgres's canonical text rendering, so a non-canonical value (e.g.
-  // an UPPERCASE uuid, since `uuid::text` is lowercase) resolves to not_found — the SAME verdict
-  // the native path gives, because the engine's post-fetch match is also String()-keyed (see
-  // ReferenceCheck.value). The index sacrifice is only necessary while the registry carries no
-  // per-column SQL type; a future `columnType` would let us cast the *param* (`= ANY($1::uuid[])`),
-  // keeping the index and canonicalizing the input — a deliberate deferral, not a hard constraint.
-  const cast = asText ? '::text' : '';
-  const ids = asText ? input.ids.map((v) => String(v)) : input.ids;
+  // Key-column comparison, three modes:
+  //  - `columnType` given → **param-cast**: `<col> = ANY($1::<type>[])`. Casts the PARAM, not the
+  //    column, so the column's btree index stays usable AND a type-strict driver (Prisma, which
+  //    binds a JS string as `text`) works because the array is explicitly typed. Values are bound as
+  //    strings; the `::<type>[]` cast converts + canonicalizes them (safeColumnType allowlists the
+  //    type — it is interpolated, never bound). This is the preferred path.
+  //  - `compareAsText` (no columnType) → `<col>::text = ANY($1)`, string-bound: universal for a
+  //    type-strict driver but sacrifices the index (casts the column). Compares String(value) to
+  //    Postgres's canonical text rendering.
+  //  - neither → native `<col> = ANY($1)`: node-pg/TypeORM bind untyped text and Postgres infers the
+  //    column type; index-friendly, but one type-incompatible id (22P02) rejects the whole batch.
+  // In every mode the engine's post-fetch match is also String()-keyed, so a non-canonical input
+  // (e.g. an UPPERCASE uuid) resolves to the same `not_found` verdict regardless of mode.
+  const columnType = input.columnType !== undefined ? safeColumnType(input.columnType) : undefined;
+  let keyCondition: string;
+  let ids: readonly unknown[];
+  if (columnType !== undefined) {
+    keyCondition = `${column} = ANY($1::${columnType}[])`;
+    ids = input.ids.map((v) => String(v));
+  } else if (asText) {
+    keyCondition = `${column}::text = ANY($1)`;
+    ids = input.ids.map((v) => String(v));
+  } else {
+    keyCondition = `${column} = ANY($1)`;
+    ids = input.ids;
+  }
+  // Scope columns are governed by `compareAsText` only (they carry no declared per-column type):
+  // text-cast + string-bind under Prisma, native bind otherwise. Independent of the key's columnType.
+  const scopeCast = asText ? '::text' : '';
   const params: unknown[] = [ids];
-  const conditions = [`${column}${cast} = ANY($1)`];
+  const conditions = [keyCondition];
   if (input.scope) {
     for (const scopeColumn of Object.keys(input.scope)) {
       const quoted = safeIdent(scopeColumn, 'scope column');
       const raw = input.scope[scopeColumn];
       params.push(asText ? String(raw) : raw);
-      conditions.push(`${quoted}${cast} = $${params.length}`);
+      conditions.push(`${quoted}${scopeCast} = $${params.length}`);
     }
   }
   return { text: `SELECT * FROM ${table} WHERE ${conditions.join(' AND ')}`, params };

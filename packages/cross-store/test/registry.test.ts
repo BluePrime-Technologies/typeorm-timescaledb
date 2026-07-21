@@ -148,6 +148,29 @@ describe('ReferenceRegistry', () => {
     expect(Object.isFrozen(entry)).toBe(true);
   });
 
+  it('validates + canonicalizes columnType and rejects a non-allowlisted type', () => {
+    const REF = { store: 'canonical', table: 'accounts', column: 'id' };
+    // stored canonical (lower-cased) — it is later interpolated into SQL as a cast target
+    expect(
+      new ReferenceRegistry().register({ ...REF, columnType: 'UUID' }).get(REF)?.columnType,
+    ).toBe('uuid');
+    // not an allowlisted base scalar type → fails fast at registration
+    for (const columnType of ['varchar(255)', 'uuid[]);--', 'bogus', 'text; DROP']) {
+      expect(
+        () => new ReferenceRegistry().register({ ...REF, columnType }),
+        columnType,
+      ).toThrowError(CrossStoreError);
+    }
+  });
+
+  it('rejects a re-registration that only differs on columnType (conflict)', () => {
+    const REF = { store: 'canonical', table: 'accounts', column: 'id' };
+    const reg = new ReferenceRegistry().register({ ...REF, columnType: 'uuid' });
+    expect(() => reg.register({ ...REF, columnType: 'UUID' })).not.toThrow(); // same canonical → idempotent
+    expect(() => reg.register({ ...REF, columnType: 'text' })).toThrowError(CrossStoreError);
+    expect(() => reg.register({ ...REF })).toThrowError(CrossStoreError); // dropping the type conflicts
+  });
+
   it('preserves the targetIsAppendOnly flag and copies scopeColumns defensively', () => {
     const scope = ['workspace_id'];
     const reg = new ReferenceRegistry().register({ ...CANONICAL, scopeColumns: scope });
