@@ -68,7 +68,7 @@ be treated as a broken reference). A reconciliation sweep therefore reports a st
 
 ## Status
 
-Pre-1.0 (`0.1.x`). The `@Resolve` API surface is still settling — expect additive change. Tested
+Pre-1.0 (`0.2.x`). The `@Resolve` API surface is still settling — expect additive change. Tested
 against real Postgres/TimescaleDB via Testcontainers.
 
 ## License
