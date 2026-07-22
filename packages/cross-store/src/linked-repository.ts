@@ -171,3 +171,24 @@ export function warnNonAppendOnlyTargets(
   }
   return targets.length;
 }
+
+/**
+ * Surface every registered reference target that is NOT marked `targetIsUnique`, by calling `warn`
+ * for each — wire this into startup logging alongside {@link warnNonAppendOnlyTargets}. The resolver
+ * assumes a target column is unique (it takes one row per key value); a non-unique target makes a
+ * "resolved" verdict match an arbitrary row, so an undeclared one is a latent correctness risk.
+ * Returns the count warned.
+ */
+export function warnNonUniqueTargets(
+  registry: ReferenceRegistry,
+  warn: (message: string) => void,
+): number {
+  const targets = registry.nonUniqueTargets();
+  for (const entry of targets) {
+    warn(
+      `cross-store target "${entry.store}.${entry.table}.${entry.column}" is not marked unique; ` +
+        `resolution assumes the target column is a PRIMARY KEY / UNIQUE and matches an arbitrary row otherwise — set targetIsUnique once you've confirmed the constraint`,
+    );
+  }
+  return targets.length;
+}

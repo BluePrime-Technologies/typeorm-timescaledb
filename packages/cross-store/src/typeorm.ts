@@ -15,5 +15,6 @@ export {
   createResolved,
   verifyReferences,
   warnNonAppendOnlyTargets,
+  warnNonUniqueTargets,
 } from './linked-repository.js';
 export type { EntityWriter, ReconciliationResult } from './linked-repository.js';

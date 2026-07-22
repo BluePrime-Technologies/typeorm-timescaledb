@@ -6,6 +6,7 @@ import {
   createResolved,
   verifyReferences,
   warnNonAppendOnlyTargets,
+  warnNonUniqueTargets,
   type EntityWriter,
 } from '../src/typeorm.js';
 
@@ -300,6 +301,27 @@ describe('warnNonAppendOnlyTargets', () => {
     const { registry } = fixture();
     const messages: string[] = [];
     expect(warnNonAppendOnlyTargets(registry, (m) => messages.push(m))).toBe(0);
+    expect(messages).toEqual([]);
+  });
+});
+
+describe('warnNonUniqueTargets', () => {
+  it('warns once per non-unique target and returns the count', () => {
+    const registry = new ReferenceRegistry()
+      .register({ ...REF, targetIsUnique: true })
+      .register({ store: 'canonical', table: 'sessions', column: 'id' }); // NOT marked unique
+    const messages: string[] = [];
+    const count = warnNonUniqueTargets(registry, (m) => messages.push(m));
+    expect(count).toBe(1);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('canonical.sessions.id');
+    expect(messages[0]).toContain('not marked unique');
+  });
+
+  it('warns nothing when every target is marked unique', () => {
+    const registry = new ReferenceRegistry().register({ ...REF, targetIsUnique: true });
+    const messages: string[] = [];
+    expect(warnNonUniqueTargets(registry, (m) => messages.push(m))).toBe(0);
     expect(messages).toEqual([]);
   });
 });
