@@ -15,6 +15,14 @@ export const CrossStoreErrorCode = {
   REFERENCE_NOT_ALLOWED: 'XS_REFERENCE_NOT_ALLOWED',
   /** The target store could not be reached / queried (a blip — NOT a missing reference). */
   ADAPTER_UNAVAILABLE: 'XS_ADAPTER_UNAVAILABLE',
+  /**
+   * The reference target is permanently misconfigured — its table or column does not exist in the
+   * target store (a mis-declared registry entry), surfaced by a permanent SQL error (SQLSTATE class
+   * 42, e.g. `42P01` undefined_table / `42703` undefined_column). Distinct from
+   * `ADAPTER_UNAVAILABLE`: this is a wiring bug that will NOT fix itself on retry, so it is thrown
+   * (like the engine's other wiring errors), never recorded as a retryable `unavailable` verdict.
+   */
+  REFERENCE_MISCONFIGURED: 'XS_REFERENCE_MISCONFIGURED',
   /** A scope column used to filter the reference is not allowlisted for this target. */
   SCOPE_VIOLATION: 'XS_SCOPE_VIOLATION',
   /** A named domain validator rejected the fetched reference row. */
