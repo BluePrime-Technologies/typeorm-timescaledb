@@ -121,6 +121,8 @@ interface Group {
   readonly table: string;
   readonly column: string;
   readonly scope?: Readonly<Record<string, unknown>>;
+  /** The registered key-column SQL type (from the registry entry), threaded to `findMany`. */
+  readonly columnType?: string;
   /** Original indices (into the input `checks`) of every member of this group. */
   readonly members: number[];
 }
@@ -176,8 +178,9 @@ export async function resolveReferences(
     const scope = normalizeScope(check.scope);
     if (scope)
       for (const col of Object.keys(scope)) assertScalarId(scope[col], `scope value "${col}"`);
+    let entry;
     try {
-      registry.assertScopeAllowed(ref, scopeColumnsOf(check));
+      entry = registry.assertScopeAllowed(ref, scopeColumnsOf(check));
     } catch (e) {
       // A per-check data/declaration failure → verdict. An unexpected (non-CrossStore) throw is
       // an internal bug and must NOT be masked as not_allowed — rethrow it.
@@ -196,6 +199,9 @@ export async function resolveReferences(
         table: ref.table,
         column: ref.column,
         ...(scope !== undefined && { scope }),
+        // columnType is a property of the target (store,table,column) — every member of a group
+        // shares it (they share the target); thread it from the registry entry to `findMany`.
+        ...(entry.columnType !== undefined && { columnType: entry.columnType }),
         members: [i],
       });
   }
@@ -307,6 +313,7 @@ async function resolveGroup(
       column: group.column,
       ids: [...distinct.values()],
       ...(group.scope !== undefined && { scope: group.scope }),
+      ...(group.columnType !== undefined && { columnType: group.columnType }),
     });
     // Index by the key column. A row whose key column is SQL NULL/absent is NOT indexed — a
     // reference value can never legitimately be null (scalar-guarded), so a null-keyed row must

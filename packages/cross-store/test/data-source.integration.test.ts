@@ -118,6 +118,55 @@ d('cross-store resolve over two separate DataSource instances', () => {
     expect(v?.status).toBe('not_found');
   });
 
+  it('resolves a uuid target declared with columnType via the param-cast (= ANY($1::uuid[]))', async () => {
+    // proves the index-preserving `$1::uuid[]` cast is valid SQL against a real uuid column, and
+    // still gives the right verdicts (a malformed cast would error the whole batch → unavailable)
+    const reg = new ReferenceRegistry().register({ ...CANONICAL, columnType: 'uuid' });
+    const [hit, miss] = await resolveReferences(
+      [
+        { ref: CANONICAL, value: A1 },
+        { ref: CANONICAL, value: MISSING },
+      ],
+      { registry: reg, adapters: [canonical] },
+    );
+    expect(hit?.ok).toBe(true);
+    expect(hit?.row?.status).toBe('open');
+    expect(miss?.status).toBe('not_found');
+  });
+
+  it('an UPPERCASE uuid under columnType is fetched-then-dropped → not_found (verdicts are mode-invariant)', async () => {
+    // The `::uuid[]` cast canonicalizes an UPPERCASE input so it matches the row in SQL — but the
+    // engine's post-fetch String() index (keyed on canonical lower-case) drops it. Net verdict is
+    // not_found, identical to the compareAsText/native paths. Uses a throwaway table with a
+    // LETTER-bearing uuid (the shared `accounts` uuids are all-numeric, so uppercasing is a no-op).
+    await canonicalDS.query('CREATE TABLE ct_accounts (id uuid PRIMARY KEY)');
+    const U = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    await canonicalDS.query('INSERT INTO ct_accounts (id) VALUES ($1)', [U]);
+    const REF = { store: 'canonical', table: 'ct_accounts', column: 'id' };
+    const reg = new ReferenceRegistry().register({ ...REF, columnType: 'uuid' });
+    const [lower, upper] = await resolveReferences(
+      [
+        { ref: REF, value: U },
+        { ref: REF, value: U.toUpperCase() },
+      ],
+      { registry: reg, adapters: [canonical] },
+    );
+    expect(lower?.ok).toBe(true); // the canonical form resolves
+    expect(upper?.status).toBe('not_found'); // the non-canonical form is dropped post-fetch
+    await canonicalDS.query('DROP TABLE ct_accounts');
+  });
+
+  it('a misdeclared columnType (a non-castable value) fails the batch as UNAVAILABLE, not a false not_found', async () => {
+    // `'not-a-uuid'::uuid[]` raises 22P02, the adapter throws, and the engine records
+    // ADAPTER_UNAVAILABLE (availability ≠ correctness) — never a silent not_found for the batch.
+    const reg = new ReferenceRegistry().register({ ...CANONICAL, columnType: 'uuid' });
+    const [v] = await resolveReferences([{ ref: CANONICAL, value: 'not-a-uuid' }], {
+      registry: reg,
+      adapters: [canonical],
+    });
+    expect(v?.status).toBe('unavailable');
+  });
+
   // A mis-declared registry target (table/column absent in the live schema) makes Postgres reject
   // the SELECT with a permanent "undefined object" error (42P01/42703) — recorded as a
   // `misconfigured` verdict (never a retryable `unavailable`, and never a throw that would wedge the
