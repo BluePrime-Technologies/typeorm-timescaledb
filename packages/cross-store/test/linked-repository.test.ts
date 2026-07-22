@@ -6,6 +6,7 @@ import {
   createResolved,
   verifyReferences,
   warnNonAppendOnlyTargets,
+  warnNonUniqueTargets,
   type EntityWriter,
 } from '../src/typeorm.js';
 
@@ -258,6 +259,30 @@ describe('verifyReferences (reconciliation sweep)', () => {
     expect(dangling).toHaveLength(1);
     expect(dangling[0]?.verdict.status).toBe('invalid');
   });
+
+  it('reports a MISCONFIGURED target in its own bucket without crashing the sweep (issue #146)', async () => {
+    const { registry } = fixture();
+    // the target table/column is undefined in the schema → a permanent 42P01. Previously this THREW
+    // and aborted the whole sweep (discarding healthy results); now it is a `misconfigured` verdict.
+    const broken: CrossStoreAdapter = {
+      store: 'canonical',
+      findMany: () =>
+        Promise.reject(Object.assign(new Error('relation does not exist'), { code: '42P01' })),
+    };
+    const { dangling, unavailable, misconfigured } = await verifyReferences(
+      [new LedgerEntry('a')],
+      {
+        registry,
+        adapters: [broken],
+      },
+    );
+    expect(misconfigured).toHaveLength(1);
+    expect(misconfigured[0]?.verdict.status).toBe('misconfigured');
+    expect(misconfigured[0]?.verdict.error?.code).toBe(CrossStoreErrorCode.REFERENCE_MISCONFIGURED);
+    // a mis-declared entry must NOT be mislabelled dangling (remediate a row) or unavailable (retry)
+    expect(dangling).toEqual([]);
+    expect(unavailable).toEqual([]);
+  });
 });
 
 describe('warnNonAppendOnlyTargets', () => {
@@ -276,6 +301,27 @@ describe('warnNonAppendOnlyTargets', () => {
     const { registry } = fixture();
     const messages: string[] = [];
     expect(warnNonAppendOnlyTargets(registry, (m) => messages.push(m))).toBe(0);
+    expect(messages).toEqual([]);
+  });
+});
+
+describe('warnNonUniqueTargets', () => {
+  it('warns once per non-unique target and returns the count', () => {
+    const registry = new ReferenceRegistry()
+      .register({ ...REF, targetIsUnique: true })
+      .register({ store: 'canonical', table: 'sessions', column: 'id' }); // NOT marked unique
+    const messages: string[] = [];
+    const count = warnNonUniqueTargets(registry, (m) => messages.push(m));
+    expect(count).toBe(1);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('canonical.sessions.id');
+    expect(messages[0]).toContain('not marked unique');
+  });
+
+  it('warns nothing when every target is marked unique', () => {
+    const registry = new ReferenceRegistry().register({ ...REF, targetIsUnique: true });
+    const messages: string[] = [];
+    expect(warnNonUniqueTargets(registry, (m) => messages.push(m))).toBe(0);
     expect(messages).toEqual([]);
   });
 });

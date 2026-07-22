@@ -54,6 +54,13 @@ export interface FindManyInput {
   readonly ids: readonly unknown[];
   /** Optional scope filter applied to every id (`AND scopeCol = $value`). */
   readonly scope?: Readonly<Record<string, unknown>>;
+  /**
+   * The registered base SQL type of the key `column` (e.g. `'uuid'`, `'bigint'`), threaded from the
+   * registry entry. When present, the builder casts the bound PARAM (`= ANY($1::uuid[])`) instead of
+   * the column — keeping the column's index usable while still working with a type-strict driver
+   * (Prisma). Absent → the builder falls back to the column-text-cast / native path.
+   */
+  readonly columnType?: string;
 }
 
 /**

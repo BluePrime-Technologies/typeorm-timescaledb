@@ -110,6 +110,14 @@ export interface ReconciliationResult {
    * these as broken (that is exactly the `not_found`-vs-`unavailable` collapse the engine forbids).
    */
   readonly unavailable: readonly EntityFieldVerdict[];
+  /**
+   * References whose target is **misconfigured** — the registry points at a table/column/schema that
+   * does not exist in the target store (`misconfigured`). This is a deploy/wiring bug, NOT per-row
+   * data drift and NOT a transient blip: retrying won't help, and it isn't a specific row to
+   * remediate. A sweep surfaces it here (rather than crashing, or mislabelling it `dangling`) so the
+   * operator fixes the registry declaration or the target schema. Normally empty.
+   */
+  readonly misconfigured: readonly EntityFieldVerdict[];
 }
 
 /**
@@ -117,10 +125,11 @@ export interface ReconciliationResult {
  * rows (no write) and partition the failures — {@link ReconciliationResult.dangling} (act on) vs
  * {@link ReconciliationResult.unavailable} (retry). Run it as a background job over paginated
  * `repo.find()` results to detect references that went dangling after the write (the residual
- * TOCTOU window, or a non-append-only target that was deleted). It **never throws on data drift**:
- * a `required` field or scope sibling that is now null is reported as a `dangling` `invalid` verdict
- * rather than aborting the sweep, so one bad row can't wedge a paged job. Both lists are empty when
- * the batch is fully consistent.
+ * TOCTOU window, or a non-append-only target that was deleted). It **never throws** — data drift
+ * (a `required` field or scope sibling now null) is reported as a `dangling` `invalid` verdict, and
+ * a misconfigured target (undefined table/column) as a `misconfigured` verdict, rather than aborting
+ * the sweep, so one bad row or one mis-declared entry can't wedge a paged job. All lists are empty
+ * when the batch is fully consistent.
  */
 export async function verifyReferences(
   entities: readonly object[],
@@ -129,11 +138,18 @@ export async function verifyReferences(
   const results = await resolveEntities(entities, options, { reportInvalidAsVerdict: true });
   const dangling: EntityFieldVerdict[] = [];
   const unavailable: EntityFieldVerdict[] = [];
+  const misconfigured: EntityFieldVerdict[] = [];
   for (const result of results) {
     if (result.verdict.ok) continue;
-    (result.verdict.status === 'unavailable' ? unavailable : dangling).push(result);
+    if (result.verdict.status === 'unavailable') unavailable.push(result);
+    else if (result.verdict.status === 'misconfigured') misconfigured.push(result);
+    else dangling.push(result);
   }
-  return { dangling: Object.freeze(dangling), unavailable: Object.freeze(unavailable) };
+  return {
+    dangling: Object.freeze(dangling),
+    unavailable: Object.freeze(unavailable),
+    misconfigured: Object.freeze(misconfigured),
+  };
 }
 
 /**
@@ -151,6 +167,27 @@ export function warnNonAppendOnlyTargets(
     warn(
       `cross-store target "${entry.store}.${entry.table}.${entry.column}" is not marked append-only; ` +
         `a validated reference could be hard-deleted (TOCTOU mitigation weakened) — set targetIsAppendOnly or run verifyReferences regularly`,
+    );
+  }
+  return targets.length;
+}
+
+/**
+ * Surface every registered reference target that is NOT marked `targetIsUnique`, by calling `warn`
+ * for each — wire this into startup logging alongside {@link warnNonAppendOnlyTargets}. The resolver
+ * assumes a target column is unique (it takes one row per key value); a non-unique target makes a
+ * "resolved" verdict match an arbitrary row, so an undeclared one is a latent correctness risk.
+ * Returns the count warned.
+ */
+export function warnNonUniqueTargets(
+  registry: ReferenceRegistry,
+  warn: (message: string) => void,
+): number {
+  const targets = registry.nonUniqueTargets();
+  for (const entry of targets) {
+    warn(
+      `cross-store target "${entry.store}.${entry.table}.${entry.column}" is not marked unique; ` +
+        `resolution assumes the target column is a PRIMARY KEY / UNIQUE and matches an arbitrary row otherwise — set targetIsUnique once you've confirmed the constraint`,
     );
   }
   return targets.length;

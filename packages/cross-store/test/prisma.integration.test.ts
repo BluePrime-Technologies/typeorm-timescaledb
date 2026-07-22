@@ -93,6 +93,22 @@ d('cross-store resolve through a real Prisma adapter', () => {
     expect(v?.status).toBe('not_found');
   });
 
+  it('resolves a uuid target declared with columnType via the param-cast ($1::uuid[]) under Prisma', async () => {
+    // the point of columnType: keep the target's index (bare column) while Prisma binds type-strictly.
+    // native `uuid = ANY($1)` fails under Prisma (P2010); the param-cast `= ANY($1::uuid[])` works.
+    const reg = new ReferenceRegistry().register({ ...ACCOUNTS, columnType: 'uuid' });
+    const [hit, miss] = await resolveReferences(
+      [
+        { ref: ACCOUNTS, value: A1 },
+        { ref: ACCOUNTS, value: MISSING },
+      ],
+      { registry: reg, adapters: [adapter] },
+    );
+    expect(hit?.ok).toBe(true);
+    expect(hit?.row?.status).toBe('open');
+    expect(miss?.status).toBe('not_found');
+  });
+
   it('applies the scope filter (wrong workspace → not_found)', async () => {
     const [inScope, outOfScope] = await resolveReferences(
       [

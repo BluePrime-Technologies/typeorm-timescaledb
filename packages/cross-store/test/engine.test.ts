@@ -30,11 +30,12 @@ class FakeAdapter implements CrossStoreAdapter {
   constructor(
     readonly store: string,
     private readonly rows: SnapshotRow[],
-    private readonly opts: { throwOnFetch?: boolean } = {},
+    private readonly opts: { throwOnFetch?: boolean; rejectWith?: unknown } = {},
   ) {}
 
   findMany(input: FindManyInput): Promise<readonly SnapshotRow[]> {
     this.calls.push(input);
+    if (this.opts.rejectWith !== undefined) return Promise.reject(this.opts.rejectWith);
     if (this.opts.throwOnFetch) return Promise.reject(new Error('connection refused'));
     const ids = new Set(input.ids.map((v) => String(v)));
     const matched = this.rows.filter((r) => {
@@ -89,6 +90,77 @@ describe('resolveReferences', () => {
     expect(verdict?.error?.code).toBe(CrossStoreErrorCode.ADAPTER_UNAVAILABLE);
     // the whole group fails as unavailable — never silently "not found"
     expect(verdict?.error?.code).not.toBe(CrossStoreErrorCode.REFERENCE_NOT_FOUND);
+  });
+
+  // A permanent "object does not exist" SQL error (undefined table/column/schema) is a mis-declared
+  // registry entry. The engine records a `misconfigured` VERDICT (it never throws per-group, so the
+  // verifyReferences sweep survives); the write path surfaces it via assertAllResolved (issue #146).
+  it.each([
+    ['42P01 undefined_table (pg .code)', { code: '42P01' }],
+    ['42703 undefined_column (pg .code)', { code: '42703' }],
+    ['3F000 invalid_schema (pg .code)', { code: '3F000' }],
+    ['lower-case driver code is normalized', { code: '42p01' }],
+    ['Prisma P2010 with meta.code', { code: 'P2010', meta: { code: '42P01' } }],
+    [
+      'Prisma P2010 with code embedded in message',
+      {
+        code: 'P2010',
+        message: 'Raw query failed. Code: `42703`. Message: `column ... does not exist`',
+      },
+    ],
+    [
+      'TypeORM QueryFailedError wrapping driverError',
+      { name: 'QueryFailedError', driverError: { code: '42P01' } },
+    ],
+  ])('records a `misconfigured` verdict (not a throw) for %s', async (_label, rejectWith) => {
+    const adapter = new FakeAdapter('canonical', [], { rejectWith });
+    const [verdict] = await resolveReferences([check('a')], {
+      registry: registry(),
+      adapters: [adapter],
+    });
+    expect(verdict?.ok).toBe(false);
+    expect(verdict?.status).toBe('misconfigured');
+    expect(verdict?.error?.code).toBe(CrossStoreErrorCode.REFERENCE_MISCONFIGURED);
+  });
+
+  it('assertAllResolved throws REFERENCE_MISCONFIGURED on a misconfigured verdict (write path fails loud)', async () => {
+    const adapter = new FakeAdapter('canonical', [], { rejectWith: { code: '42P01' } });
+    const verdicts = await resolveReferences([check('a')], {
+      registry: registry(),
+      adapters: [adapter],
+    });
+    expect(() => assertAllResolved(verdicts)).toThrow(
+      expect.objectContaining({ code: CrossStoreErrorCode.REFERENCE_MISCONFIGURED }),
+    );
+  });
+
+  it('does NOT let a data-influenced message forge a misconfigured code (regex gated to Prisma-shaped errors)', async () => {
+    // a non-Prisma error (22P02 invalid_text_representation) whose message echoes a hostile value
+    // containing "Code: `42P01`" must stay unavailable — never flip to misconfigured.
+    const adapter = new FakeAdapter('canonical', [], {
+      rejectWith: { code: '22P02', message: 'invalid input syntax for type uuid: "Code: `42P01`"' },
+    });
+    const [verdict] = await resolveReferences([check('a')], {
+      registry: registry(),
+      adapters: [adapter],
+    });
+    expect(verdict?.status).toBe('unavailable');
+    expect(verdict?.error?.code).toBe(CrossStoreErrorCode.ADAPTER_UNAVAILABLE);
+  });
+
+  it.each([
+    ['a transient connection error (ECONNREFUSED)', { code: 'ECONNREFUSED' }],
+    ['insufficient_privilege 42501 (class 42 but NOT an undefined object)', { code: '42501' }],
+    ['syntax_error 42601 (our bug, not a registry misconfig)', { code: '42601' }],
+  ])('keeps %s as ADAPTER_UNAVAILABLE, not misconfigured', async (_label, rejectWith) => {
+    const adapter = new FakeAdapter('canonical', [], { rejectWith });
+    const [verdict] = await resolveReferences([check('a')], {
+      registry: registry(),
+      adapters: [adapter],
+    });
+    expect(verdict?.status).toBe('unavailable');
+    expect(verdict?.error?.code).toBe(CrossStoreErrorCode.ADAPTER_UNAVAILABLE);
+    expect(verdict?.error?.code).not.toBe(CrossStoreErrorCode.REFERENCE_MISCONFIGURED);
   });
 
   it('gates an unregistered target as not_allowed without calling any adapter', async () => {

@@ -1,5 +1,6 @@
 import { assertSafeIdentifier } from '@blueprime/timescaledb-core';
 import { CrossStoreError, CrossStoreErrorCode } from './errors.js';
+import { safeColumnType } from './sql/column-type.js';
 import type { ResolveRef } from './types.js';
 
 /** One allowed reference target plus the scope columns and append-only guarantee it carries. */
@@ -21,6 +22,23 @@ export interface ReferenceRegistryEntry {
    * runtime can warn at startup.
    */
   readonly targetIsAppendOnly?: boolean;
+  /**
+   * Asserts the target `column` is **unique** (a primary key or a `UNIQUE` constraint). The
+   * resolver assumes this: it indexes fetched rows by the key value and takes one row per value, so
+   * a non-unique target makes "resolved" pick an arbitrary row — an ambiguous, silently wrong match.
+   * A registered target without this flag is surfaced by {@link ReferenceRegistry.nonUniqueTargets}
+   * so the runtime can warn at startup (see {@link warnNonUniqueTargets}). Declarative only — the
+   * package cannot verify the constraint exists; it's the caller's assertion that it does.
+   */
+  readonly targetIsUnique?: boolean;
+  /**
+   * The base SQL type of the key `column` (e.g. `'uuid'`, `'bigint'`, `'text'`). When set, the
+   * fetch casts the bound PARAM (`= ANY($1::uuid[])`) rather than the column, so the target's index
+   * stays usable while still working with a type-strict driver (Prisma). Validated against a
+   * conservative allowlist at registration (it is interpolated into SQL as a cast target, never
+   * bound). Omit to use the column-text-cast (Prisma) / native (TypeORM) comparison.
+   */
+  readonly columnType?: string;
 }
 
 /**
@@ -53,12 +71,20 @@ function freezeEntry(entry: ReferenceRegistryEntry): ReferenceRegistryEntry {
     column: entry.column,
     ...(scopeColumns !== undefined && { scopeColumns }),
     ...(entry.targetIsAppendOnly !== undefined && { targetIsAppendOnly: entry.targetIsAppendOnly }),
+    ...(entry.targetIsUnique !== undefined && { targetIsUnique: entry.targetIsUnique }),
+    // store the canonical (validated, lower-cased) type — the exact token later interpolated into SQL
+    ...(entry.columnType !== undefined && { columnType: safeColumnType(entry.columnType) }),
   });
 }
 
-/** Two entries at the same key are equivalent iff their scope-column SET and append-only flag match. */
+/**
+ * Two entries at the same key are equivalent iff their scope-column SET, append-only flag, and
+ * unique flag all match — a conflicting re-registration (differing on any of these) is rejected.
+ */
 function sameEntry(a: ReferenceRegistryEntry, b: ReferenceRegistryEntry): boolean {
   if ((a.targetIsAppendOnly === true) !== (b.targetIsAppendOnly === true)) return false;
+  if ((a.targetIsUnique === true) !== (b.targetIsUnique === true)) return false;
+  if ((a.columnType ?? undefined) !== (b.columnType ?? undefined)) return false;
   const sa = new Set(a.scopeColumns ?? []);
   const sb = new Set(b.scopeColumns ?? []);
   if (sa.size !== sb.size) return false;
@@ -129,13 +155,14 @@ export class ReferenceRegistry {
     assertTableIdent(entry.table);
     assertSafeIdentifier(entry.column, 'reference column');
     for (const scopeCol of entry.scopeColumns ?? []) assertSafeIdentifier(scopeCol, 'scope column');
+    if (entry.columnType !== undefined) safeColumnType(entry.columnType); // allowlist-validate (fail fast)
     const key = refKey(entry);
     const frozen = freezeEntry(entry);
     const existing = this.entries.get(key);
     if (existing && !sameEntry(existing, frozen)) {
       throw new CrossStoreError(
         CrossStoreErrorCode.INVALID_ARGUMENT,
-        `conflicting re-registration of ${key} (scope columns / append-only flag differ)`,
+        `conflicting re-registration of ${key} (scope columns / append-only / unique flag / columnType differ)`,
         { existing, attempted: frozen },
       );
     }
@@ -209,5 +236,15 @@ export class ReferenceRegistry {
    */
   nonAppendOnlyTargets(): ReferenceRegistryEntry[] {
     return this.list().filter((entry) => entry.targetIsAppendOnly !== true);
+  }
+
+  /**
+   * Registered targets NOT marked `targetIsUnique` — the runtime warns about these at startup
+   * because the resolver assumes a target column is unique (it takes one row per key value). A
+   * non-unique target makes a "resolved" verdict pick an arbitrary matching row (ambiguous,
+   * silently wrong). See {@link warnNonUniqueTargets}.
+   */
+  nonUniqueTargets(): ReferenceRegistryEntry[] {
+    return this.list().filter((entry) => entry.targetIsUnique !== true);
   }
 }
