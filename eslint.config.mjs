@@ -33,4 +33,33 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // M4.1 boundary: the migration emitter must generate DDL only through the single
+    // compileOperation(s) choke point (packages/core/src/operation.ts), never by calling the
+    // core SQL builders directly. This keeps one SQL-generation path that every emit target
+    // (raw SQL, TS classes, direct apply) shares. Other modules (assertSchema drift, the CLI,
+    // decorators) legitimately use the builders, so the restriction is scoped to this file.
+    files: ['packages/typeorm/src/migrations/generate.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@blueprime/timescaledb-core',
+              importNames: [
+                'createHypertableSQL',
+                'addColumnstorePolicySQL',
+                'addRetentionPolicySQL',
+                'createContinuousAggregateSQL',
+                'addContinuousAggregatePolicySQL',
+              ],
+              message:
+                'The migration emitter must build SQL only through compileOperation(s) (M4.1 choke point) — do not call the core SQL builders directly.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

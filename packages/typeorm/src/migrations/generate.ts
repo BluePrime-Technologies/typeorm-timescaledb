@@ -1,15 +1,12 @@
 import type { DataSource, MigrationInterface, QueryRunner } from 'typeorm';
 import {
-  addColumnstorePolicySQL,
-  addContinuousAggregatePolicySQL,
-  addRetentionPolicySQL,
-  createContinuousAggregateSQL,
-  createHypertableSQL,
+  compileOperation,
+  compileOperations,
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
   type ContinuousAggregateFn,
-  type MigrationStatement,
+  type Operation,
 } from '@blueprime/timescaledb-core';
 import {
   getContinuousAggregateMeta,
@@ -145,8 +142,11 @@ export function generateTimescaleMigration(
     // Catch a plain TypeORM @PrimaryColumn key that omits a partitioning column at codegen time,
     // not at migration-run time with a raw Postgres error (partitioning columns are property names).
     assertTypeOrmPrimaryKeyIncludesPartitioning(em, [timeColumn, ...(space ? [space.column] : [])]);
-    const statements: MigrationStatement[] = [
-      createHypertableSQL({
+    // Build the per-hypertable operation IR (M4.1), then compile it through the single SQL
+    // choke point. Ordering + up/down assembly stay HERE (not in the compile core).
+    const operations: Operation[] = [
+      {
+        kind: 'createHypertable',
         table,
         timeColumn: toDb(timeColumn),
         ...(meta.options.chunkInterval !== undefined && {
@@ -155,36 +155,38 @@ export function generateTimescaleMigration(
         ...(space !== undefined && {
           spacePartition: { column: toDb(space.column), partitions: space.partitions },
         }),
-      }),
+      },
     ];
 
     const columnstore = meta.options.columnstore;
     if (columnstore) {
-      statements.push(
-        addColumnstorePolicySQL({
-          table,
-          ...(columnstore.segmentBy !== undefined && {
-            segmentBy: columnstore.segmentBy.map(toDb),
-          }),
-          ...(columnstore.orderBy !== undefined && {
-            orderBy: columnstore.orderBy.map((o) => ({
-              column: toDb(o.column),
-              direction: o.direction,
-            })),
-          }),
-          ...(columnstore.compressAfter !== undefined && {
-            after: columnstore.compressAfter,
-          }),
+      operations.push({
+        kind: 'addColumnstorePolicy',
+        table,
+        ...(columnstore.segmentBy !== undefined && {
+          segmentBy: columnstore.segmentBy.map(toDb),
         }),
-      );
+        ...(columnstore.orderBy !== undefined && {
+          orderBy: columnstore.orderBy.map((o) => ({
+            column: toDb(o.column),
+            direction: o.direction,
+          })),
+        }),
+        ...(columnstore.compressAfter !== undefined && {
+          after: columnstore.compressAfter,
+        }),
+      });
     }
 
     if (meta.options.retention) {
-      statements.push(
-        addRetentionPolicySQL({ table, dropAfter: meta.options.retention.dropAfter }),
-      );
+      operations.push({
+        kind: 'addRetentionPolicy',
+        table,
+        dropAfter: meta.options.retention.dropAfter,
+      });
     }
 
+    const statements = compileOperations(operations);
     for (const s of statements) up.push(...s.up);
     // Reverse builder order so the most-recently-applied change is undone first.
     for (const s of [...statements].reverse()) down.push(...s.down);
@@ -325,7 +327,8 @@ export function generateTimescaleMigration(
       seenOutputs.add(name);
     }
 
-    const stmt = createContinuousAggregateSQL({
+    const stmt = compileOperation({
+      kind: 'createContinuousAggregate',
       view: meta.viewName,
       source: sourceRef,
       timeColumn: srcToDb(srcTimeProp),
@@ -348,7 +351,8 @@ export function generateTimescaleMigration(
     if (meta.refresh) {
       // Always pass schedule_interval (default = the bucket width): TimescaleDB 2.18, our
       // supported floor, has no `add_continuous_aggregate_policy` overload that omits it.
-      const policy = addContinuousAggregatePolicySQL({
+      const policy = compileOperation({
+        kind: 'addContinuousAggregatePolicy',
         view: meta.viewName,
         startOffset: meta.refresh.startOffset,
         endOffset: meta.refresh.endOffset,
