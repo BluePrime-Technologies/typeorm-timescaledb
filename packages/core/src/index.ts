@@ -110,3 +110,26 @@ export type {
   SpacePartitionOptions,
   TimescaleEntityMetadata,
 } from './metadata.js';
+export type {
+  SchemaStateIR,
+  HypertableState,
+  DimensionState,
+  ColumnstoreState,
+  OrderByElement,
+  PolicyState,
+  CompressionOrRetentionPolicy,
+  RefreshPolicy,
+  UnmanagedPolicy,
+  ContinuousAggregateState,
+  IntervalOrInt,
+} from './schema-state.js';
+export {
+  canonicalizeInterval,
+  intervalsEqual,
+  parsePolicyConfig,
+  policiesEqual,
+  normalizeCaggDefinition,
+  caggDefinitionsEqual,
+  caggComparable,
+  TIMESCALE_DEFAULTS,
+} from './normalize.js';
