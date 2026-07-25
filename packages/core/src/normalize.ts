@@ -225,10 +225,11 @@ export function policiesEqual(a: PolicyState | undefined, b: PolicyState | undef
  * equality needs the DB; this is the DB-free textual reduction of an already-normalized definition.)
  */
 export function normalizeCaggDefinition(definition: string): string {
-  return definition
-    .replace(/\s+/g, ' ')
-    .replace(/\s*;\s*$/, '')
-    .trim();
+  const collapsed = definition.replace(/\s+/g, ' ').trim();
+  // Strip a single trailing semicolon WITHOUT a `\s*…\s*$` regex — that form backtracks
+  // quadratically on all-whitespace input (CodeQL js/polynomial-redos). Whitespace is already
+  // collapsed + trimmed above, so `endsWith`/`slice` is a linear, equivalent strip.
+  return collapsed.endsWith(';') ? collapsed.slice(0, -1).trimEnd() : collapsed;
 }
 
 /** Two CAGG definitions are equal iff their normalized forms match. */
