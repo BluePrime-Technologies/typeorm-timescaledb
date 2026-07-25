@@ -133,3 +133,13 @@ export {
   caggComparable,
   TIMESCALE_DEFAULTS,
 } from './normalize.js';
+export { compileOperation, compileOperations } from './operation.js';
+export type {
+  Operation,
+  OperationKind,
+  CreateHypertableOperation,
+  AddColumnstorePolicyOperation,
+  AddRetentionPolicyOperation,
+  CreateContinuousAggregateOperation,
+  AddContinuousAggregatePolicyOperation,
+} from './operation.js';
