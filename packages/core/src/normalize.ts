@@ -40,13 +40,12 @@ const UNIT_MICROS: Record<string, bigint> = {
 const UNIT_DAYS: Record<string, number> = { day: 1, week: 7 };
 const UNIT_MONTHS: Record<string, number> = { mon: 1, month: 1, year: 12 };
 
-// Longest unit first + a trailing `\b` so `mon` cannot partial-match inside `month` (which would
-// leave `th` as unrecognized leftover and wrongly quarantine `1 month` to the raw fallback).
-const WORD_RE =
-  /(-?\d+)\s+(microseconds?|milliseconds?|seconds?|secs?|minutes?|mins?|hours?|days?|weeks?|months?|mons?|years?)\b/gi;
-// Sign accepts `+` or `-` (Postgres emits mixed-sign forms like `-1 days +02:00:00`). Hours are
-// `\d+` (can exceed 2 digits, e.g. `100:00:00`); minutes/seconds are zero-padded 2-digit fields.
-const TIME_RE = /(^|\s)([+-]?)(\d+):(\d{2}):(\d{2})(?:\.(\d+))?/;
+// Both regexes are FULLY ANCHORED and applied to a SINGLE whitespace-split token, never scanned
+// globally over the whole string — so neither can backtrack super-linearly (no polynomial ReDoS,
+// even on a token of many `9`s). Sign accepts `+`/`-` (Postgres emits mixed-sign `-1 days +02:00:00`);
+// hours may exceed two digits (`100:00:00`); minutes/seconds are zero-padded two-digit fields.
+const NUM_TOKEN_RE = /^-?\d+$/;
+const TIME_TOKEN_RE = /^([+-]?)(\d+):(\d{2}):(\d{2})(?:\.(\d+))?$/;
 
 /** Strip a trailing plural `s` and lowercase, so `days`→`day`, `Mons`→`mon`. */
 function singular(unit: string): string {
@@ -70,51 +69,52 @@ export function canonicalizeInterval(value: IntervalOrInt): string {
   }
   if (typeof value !== 'string') return `raw:${String(value)}`;
   const text = value.trim();
+  const raw = (): string => `raw:${text.toLowerCase().replace(/\s+/g, ' ')}`;
+
+  // Tokenize on whitespace (linear) and recognize either a standalone `HH:MM:SS` time token or a
+  // `<number> <unit>` pair. ANY unrecognized token quarantines the whole value to `raw:` rather than
+  // risk a confident partial mis-parse (e.g. a non-`postgres` IntervalStyle, or junk like
+  // "every 5 minutes"). Applying the anchored regexes per-token avoids the polynomial backtracking a
+  // global scan would allow.
+  const parts = text.split(/\s+/).filter((p) => p.length > 0);
+  if (parts.length === 0) return raw();
 
   let months = 0n;
   let days = 0n;
   let micros = 0n;
-  // Track which characters a recognized token consumed. Any leftover non-whitespace means the string
-  // carries unrecognized content (a non-`postgres` IntervalStyle, or junk like "every 5 minutes") —
-  // quarantine it to `raw:` instead of silently canonicalizing a partial parse.
-  const covered = new Array<boolean>(text.length).fill(false);
-  const cover = (start: number, len: number): void => {
-    for (let i = start; i < start + len; i++) covered[i] = true;
-  };
 
-  for (const m of text.matchAll(WORD_RE)) {
-    const n = BigInt(m[1]!);
-    const unit = singular(m[2]!);
+  for (let i = 0; i < parts.length; ) {
+    const tok = parts[i]!;
+    const tm = TIME_TOKEN_RE.exec(tok);
+    if (tm) {
+      const sign = tm[1] === '-' ? -1n : 1n;
+      // Round sub-microsecond fractional seconds to µs (Postgres rounds, e.g. `.9999999`s → 1s); the
+      // carry is handled naturally because fracMicros is added straight into the total.
+      let fracMicros = 0n;
+      if (tm[5]) {
+        const padded = (tm[5] + '0000000').slice(0, 7); // 6 µs digits + 1 rounding digit
+        fracMicros = BigInt(padded.slice(0, 6)) + (Number(padded[6]) >= 5 ? 1n : 0n);
+      }
+      micros +=
+        sign *
+        (BigInt(tm[2]!) * 3_600_000_000n +
+          BigInt(tm[3]!) * 60_000_000n +
+          BigInt(tm[4]!) * 1_000_000n +
+          fracMicros);
+      i += 1;
+      continue;
+    }
+    // Otherwise expect a `<number> <unit>` pair.
+    const unitTok = parts[i + 1];
+    if (!NUM_TOKEN_RE.test(tok) || unitTok === undefined) return raw();
+    const n = BigInt(tok);
+    const unit = singular(unitTok.toLowerCase());
     if (unit in UNIT_MICROS) micros += n * UNIT_MICROS[unit]!;
     else if (unit in UNIT_DAYS) days += n * BigInt(UNIT_DAYS[unit]!);
     else if (unit in UNIT_MONTHS) months += n * BigInt(UNIT_MONTHS[unit]!);
-    cover(m.index, m[0].length);
+    else return raw(); // unrecognized unit word
+    i += 2;
   }
-
-  const t = TIME_RE.exec(text);
-  if (t) {
-    const sign = t[2] === '-' ? -1n : 1n;
-    const h = BigInt(t[3]!);
-    const mm = BigInt(t[4]!);
-    const ss = BigInt(t[5]!);
-    // Round sub-microsecond fractional seconds to µs (Postgres rounds, e.g. `.9999999`s → 1s); the
-    // carry is handled naturally because fracMicros is added straight into the total.
-    let fracMicros = 0n;
-    if (t[6]) {
-      const padded = (t[6] + '0000000').slice(0, 7); // 6 µs digits + 1 rounding digit
-      fracMicros = BigInt(padded.slice(0, 6)) + (Number(padded[6]) >= 5 ? 1n : 0n);
-    }
-    micros += sign * (h * 3_600_000_000n + mm * 60_000_000n + ss * 1_000_000n + fracMicros);
-    cover(t.index, t[0].length);
-  }
-
-  let anyCovered = false;
-  let leftover = false;
-  for (let i = 0; i < text.length; i++) {
-    if (covered[i]) anyCovered = true;
-    else if (!/\s/.test(text[i]!)) leftover = true;
-  }
-  if (!anyCovered || leftover) return `raw:${text.toLowerCase().replace(/\s+/g, ' ')}`;
 
   const total = months * USECS_PER_MONTH + days * USECS_PER_DAY + micros;
   return `us:${total.toString()}`;
