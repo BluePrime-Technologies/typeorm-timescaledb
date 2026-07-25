@@ -750,4 +750,69 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
     );
     expect(creates).toHaveLength(1);
   });
+
+  // M4.1 S2 — byte-identical golden lock. generateTimescaleMigration now routes every statement
+  // through the core Operation IR + compileOperation(s) choke point instead of calling the builders
+  // directly. This pins the COMPLETE assembled up/down (hypertable → columnstore → retention, then
+  // CAGG + refresh policy; reversed on down) so the IR routing is provably output-preserving.
+  it('produces byte-identical full up/down through the operation IR (golden)', () => {
+    const ds = stubDataSource([
+      {
+        target: Trade,
+        tableName: 'trades',
+        columns: [
+          { propertyName: 'time', databaseName: 'time' },
+          { propertyName: 'symbol', databaseName: 'symbol' },
+        ],
+      },
+      {
+        target: Reading,
+        tableName: 'reading',
+        columns: [
+          { propertyName: 'time', databaseName: 'time' },
+          { propertyName: 'sensor', databaseName: 'sensor' },
+          { propertyName: 'value', databaseName: 'value' },
+        ],
+      },
+    ]);
+    const gen = generateTimescaleMigration(ds, {
+      timestamp: TS,
+      continuousAggregates: [ReadingHourlyRefreshed],
+    });
+
+    expect(gen.up).toEqual([
+      // 'reading' sorts before 'trades' → its hypertable DDL comes first.
+      `SELECT create_hypertable('"public"."reading"', by_range('time', INTERVAL '1 day'), if_not_exists => TRUE, migrate_data => FALSE);`,
+      `SELECT create_hypertable('"public"."trades"', by_range('time', INTERVAL '1 day'), if_not_exists => TRUE, migrate_data => FALSE);`,
+      `ALTER TABLE "public"."trades" SET (timescaledb.enable_columnstore = true, timescaledb.segmentby = '"symbol"', timescaledb.orderby = '"time" DESC');`,
+      `CALL add_columnstore_policy('"public"."trades"', after => INTERVAL '7 days', if_not_exists => TRUE);`,
+      `SELECT add_retention_policy('"public"."trades"', drop_after => INTERVAL '90 days', if_not_exists => TRUE);`,
+      // CAGGs after the hypertables: CREATE then add-policy.
+      'CREATE MATERIALIZED VIEW "public"."reading_hourly_refreshed" ' +
+        'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
+        `SELECT time_bucket(INTERVAL '1 hour', "time") AS "bucket", avg("value") AS "avgValue" ` +
+        `FROM "public"."reading" GROUP BY time_bucket(INTERVAL '1 hour', "time") WITH NO DATA;`,
+      `SELECT add_continuous_aggregate_policy('"public"."reading_hourly_refreshed"', ` +
+        `start_offset => INTERVAL '1 month', end_offset => INTERVAL '1 hour', ` +
+        `schedule_interval => INTERVAL '30 minutes', if_not_exists => TRUE);`,
+    ]);
+
+    // The non-destructive hypertable-down NOTICE, reconstructed independently from the builder's
+    // format (nonDestructiveNotice) so the golden byte-locks the FULL string, not a self-reference.
+    const htNotice = (ident: string): string =>
+      `DO $$ BEGIN RAISE NOTICE 'timescaledb: not reverting hypertable on % — reverting would lose data (non-destructive down)', '${ident}'; END $$;`;
+    expect(gen.down).toEqual([
+      // CAGG teardown is unshifted to the front (remove policy before DROP).
+      `SELECT remove_continuous_aggregate_policy('"public"."reading_hourly_refreshed"', if_exists => TRUE);`,
+      `DROP MATERIALIZED VIEW IF EXISTS "public"."reading_hourly_refreshed";`,
+      // Then the hypertable downs in ENTITY order (reading before trades); each entity's own
+      // statements are reversed. reading has only its non-destructive hypertable notice.
+      htNotice('"public"."reading"'),
+      // trades' statements reversed: retention, then columnstore, then its hypertable notice.
+      `SELECT remove_retention_policy('"public"."trades"', if_exists => TRUE);`,
+      `CALL remove_columnstore_policy('"public"."trades"', if_exists => TRUE);`,
+      htNotice('"public"."trades"'),
+    ]);
+    expect(gen.down).toHaveLength(6);
+  });
 });
