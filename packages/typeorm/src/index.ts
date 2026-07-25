@@ -99,6 +99,10 @@ export {
 export { assertSchema } from './runtime/assertSchema.js';
 export type { AssertSchemaOptions } from './runtime/assertSchema.js';
 
+// Live-DB introspection (M4.0) — reduce a running TimescaleDB to the canonical SchemaStateIR.
+export { introspect } from './runtime/introspect.js';
+export type { IntrospectOptions } from './runtime/introspect.js';
+
 // Migration generation — Django/Prisma-style codegen from @Hypertable metadata.
 export {
   generateTimescaleMigration,
