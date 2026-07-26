@@ -1,10 +1,13 @@
 import type {
+  ColumnstoreState,
   DimensionState,
   HypertableState,
   IntervalOrInt,
+  OrderByElement,
   PolicyState,
   SchemaStateIR,
 } from './schema-state.js';
+import type { ColumnstoreConfig } from './sql/index.js';
 import type {
   AddColumnstorePolicyOperation,
   Operation,
@@ -37,11 +40,15 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * yields an **empty plan**.
  *
  * It deliberately does **NOT** yet emit:
- *   - **columnstore-config alters** (changed segmentby/orderby → `needs-recompress`) — deferred.
+ *   - **drops** of a compression policy present in current but not desired — deferred (AS3c).
  *   - **drops** — an object in `current` but not `desired` (destructive; migration `down()` never
  *     destroys data). Deferred, will require safety classification + an explicit opt-in.
  *   - **continuous aggregates** — `compileDesiredState()` does not yet compile them, so acting on them
  *     would drop every live CAGG. The diff is hypertable-scoped and ignores `continuousAggregates`.
+ *   - **clearing a columnstore facet** — an EMPTY desired `segmentBy`/`orderBy` means "unmanaged / accept
+ *     the engine default", not "remove"; the IR can't distinguish unset from explicitly-empty, so the diff
+ *     never emits an alter to clear a facet the current DB has set. Also: **NULLS placement is unmanaged**
+ *     (decorators can't express it) — see `toColumnstoreConfig`.
  *
  * **Integer-time / `created_before` policy thresholds THROW** (never silent under-convergence): they
  * can't be expressed by the string-only builders, so the diff raises `INVALID_ARGUMENT` rather than a
@@ -58,7 +65,7 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * desired hypertables resolving to the same current one (an ambiguous rename) THROWS.
  *
  * {@link isEmptyPlan} means "no operation IN SCOPE is needed" — not a guarantee of full convergence
- * (columnstore-config alters, chunk-interval alters, drops, and CAGGs are still out of scope).
+ * (drops and CAGGs are still out of scope).
  */
 
 /** Options for {@link diffSchemaState}. */
@@ -186,6 +193,34 @@ function policyThresholdEqual(a: PolicyState, b: PolicyState): boolean {
     return intervalsEqual(a.after, b.after) && intervalsEqual(a.createdBefore, b.createdBefore);
   }
   return false;
+}
+
+function stringArrayEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** Compare columnstore orderby on column + direction ONLY. NULLS placement is deliberately excluded:
+ * the builder emits `col ASC|DESC` (engine default NULLS), so a NULLS-only difference isn't expressible
+ * and must not be reported as (non-convergent) drift. */
+function orderByEqual(a: readonly OrderByElement[], b: readonly OrderByElement[]): boolean {
+  return (
+    a.length === b.length && a.every((x, i) => x.column === b[i]!.column && x.desc === b[i]!.desc)
+  );
+}
+
+const orderElementToConfig = (
+  o: OrderByElement,
+): { column: string; direction: 'ASC' | 'DESC' } => ({
+  column: o.column,
+  direction: o.desc ? 'DESC' : 'ASC',
+});
+
+/** Convert a `ColumnstoreState` (IR) to the builder's `ColumnstoreConfig` (segmentBy + orderBy as
+ * column/direction). NULLS placement is dropped (per {@link orderByEqual}) — the whole engine cannot
+ * express NULLS (decorators have no such option, and no builder emits it), so a non-default NULLS set
+ * out-of-band is UNMANAGED: it is neither diffed nor restored by `down()`. Consistent, not data-losing. */
+function toColumnstoreConfig(cs: ColumnstoreState): ColumnstoreConfig {
+  return { segmentBy: [...cs.segmentBy], orderBy: cs.orderBy.map(orderElementToConfig) };
 }
 
 /** The full create sequence for a hypertable absent from the current DB. */
@@ -340,8 +375,29 @@ export function diffSchemaState(
           to: stringThreshold(compressionAfter(d), d.table, 'desired compression after'),
         });
       }
-      // columnstore segmentby/orderby config changes (needs-recompress) and dropping a compression
-      // policy present in current but not desired are alters/drops — deferred (see module doc).
+      // Columnstore segmentby/orderby config change → needs-recompress alter. Only facets the desired
+      // side DECLARES (non-empty) are managed: an EMPTY desired segmentBy/orderBy means "accept the
+      // engine default" (introspect fills the default orderby as the time column DESC), so it must not
+      // false-drift (S1 characterization contract). For a declared facet that differs, emit one alter
+      // that SETs the full target config (declared facet from desired; undeclared facet preserved from
+      // current, so it isn't clobbered).
+      const cur = c.columnstore;
+      const des = d.columnstore;
+      const segChanged =
+        des.segmentBy.length > 0 && !stringArrayEqual(des.segmentBy, cur.segmentBy);
+      const ordChanged = des.orderBy.length > 0 && !orderByEqual(des.orderBy, cur.orderBy);
+      if (segChanged || ordChanged) {
+        operations.push({
+          kind: 'alterColumnstoreConfig',
+          table: d.table,
+          from: toColumnstoreConfig(cur),
+          to: {
+            segmentBy: des.segmentBy.length > 0 ? [...des.segmentBy] : [...cur.segmentBy],
+            orderBy: (des.orderBy.length > 0 ? des.orderBy : cur.orderBy).map(orderElementToConfig),
+          },
+        });
+      }
+      // Dropping a compression policy present in current but not desired is a drop — deferred (AS3c).
     }
 
     // Retention: add a missing policy (additive), or alter a changed threshold.

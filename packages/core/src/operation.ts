@@ -6,12 +6,14 @@ import {
   alterCompressionPolicySQL,
   alterRetentionPolicySQL,
   setChunkIntervalSQL,
+  alterColumnstoreConfigSQL,
   createContinuousAggregateSQL,
   createHypertableSQL,
   renameHypertableSQL,
   type AddCompressionPolicyInput,
   type AlterPolicyInput,
   type SetChunkIntervalInput,
+  type AlterColumnstoreConfigInput,
   type ColumnstorePolicyInput,
   type ContinuousAggregatePolicyInput,
   type CreateContinuousAggregateInput,
@@ -99,6 +101,11 @@ export interface SetChunkIntervalOperation extends SetChunkIntervalInput {
   readonly kind: 'setChunkInterval';
 }
 
+/** Change an existing columnstore's segment-by/order-by config (`down` restores `from`). needs-recompress. */
+export interface AlterColumnstoreConfigOperation extends AlterColumnstoreConfigInput {
+  readonly kind: 'alterColumnstoreConfig';
+}
+
 /**
  * The migration operation IR — a discriminated union over `kind`. Every variant that can be
  * emitted into a generated TimescaleDB migration today is represented; the union is the
@@ -114,7 +121,8 @@ export type Operation =
   | AlterCompressionPolicyOperation
   | AlterRetentionPolicyOperation
   | RenameHypertableOperation
-  | SetChunkIntervalOperation;
+  | SetChunkIntervalOperation
+  | AlterColumnstoreConfigOperation;
 
 /** The set of {@link Operation} discriminants. */
 export type OperationKind = Operation['kind'];
@@ -148,6 +156,8 @@ export function compileOperation(operation: Operation): MigrationStatement {
       return renameHypertableSQL(operation);
     case 'setChunkInterval':
       return setChunkIntervalSQL(operation);
+    case 'alterColumnstoreConfig':
+      return alterColumnstoreConfigSQL(operation);
     default: {
       // Exhaustiveness: if a new Operation variant is added without a case, this fails to compile.
       // At runtime it guards a caller that (via `any`) passes an unknown discriminant.

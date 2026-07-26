@@ -432,3 +432,72 @@ describe('diffSchemaState — rename resolution (renamedFrom)', () => {
     expect(isEmptyPlan(plan)).toBe(true);
   });
 });
+
+describe('diffSchemaState — columnstore config alters (AS3b, needs-recompress)', () => {
+  const withColumnstore = (
+    segmentBy: string[],
+    orderBy: { column: string; desc: boolean; nullsFirst: boolean }[],
+  ): HypertableState => ({
+    table: 'public.metric',
+    dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+    columnstore: { segmentBy, orderBy },
+  });
+  const tsDesc = { column: 'ts', desc: true, nullsFirst: true };
+
+  it('emits alterColumnstoreConfig when segmentBy changed (preserving current orderBy)', () => {
+    const current = withColumnstore(['device_id'], [tsDesc]);
+    const desired = withColumnstore(['device_id', 'region'], [tsDesc]);
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([
+      {
+        kind: 'alterColumnstoreConfig',
+        table: 'public.metric',
+        from: { segmentBy: ['device_id'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+        to: { segmentBy: ['device_id', 'region'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+      },
+    ]);
+    expect(plan.steps[0]!.safety).toBe('needs-recompress');
+  });
+
+  it('emits alterColumnstoreConfig when an explicit orderBy direction changed', () => {
+    const current = withColumnstore(['device_id'], [tsDesc]);
+    const desired = withColumnstore(
+      ['device_id'],
+      [{ column: 'ts', desc: false, nullsFirst: false }],
+    );
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([
+      {
+        kind: 'alterColumnstoreConfig',
+        table: 'public.metric',
+        from: { segmentBy: ['device_id'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+        to: { segmentBy: ['device_id'], orderBy: [{ column: 'ts', direction: 'ASC' }] },
+      },
+    ]);
+  });
+
+  it('does NOT drift when desired orderBy is empty and current has the engine-default (S1 contract)', () => {
+    // desired declares only segmentBy; empty orderBy means "accept the engine default" (time-DESC),
+    // which introspect reads back — must not false-drift.
+    const current = withColumnstore(['device_id'], [tsDesc]);
+    const desired = withColumnstore(['device_id'], []);
+    expect(ops(diffSchemaState(ir(current), ir(desired)))).toEqual([]);
+  });
+
+  it('does NOT drift on a NULLS-only difference (builder emits col ASC|DESC, no explicit NULLS)', () => {
+    const current = withColumnstore(
+      ['device_id'],
+      [{ column: 'ts', desc: true, nullsFirst: true }],
+    );
+    const desired = withColumnstore(
+      ['device_id'],
+      [{ column: 'ts', desc: true, nullsFirst: false }],
+    );
+    expect(ops(diffSchemaState(ir(current), ir(desired)))).toEqual([]);
+  });
+
+  it('does NOT drift when columnstore config is unchanged', () => {
+    const cs = withColumnstore(['device_id', 'region'], [tsDesc]);
+    expect(ops(diffSchemaState(ir(cs), ir(cs)))).toEqual([]);
+  });
+});

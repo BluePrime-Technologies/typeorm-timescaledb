@@ -20,8 +20,9 @@ import type { Operation } from './operation.js';
  * - **`refuse-by-default`** — destructive / data-losing; never emitted without an explicit opt-in.
  *   (Dropping a hypertable, disabling the columnstore, dropping a column.)
  *
- * NOTE: `needs-recompress` and `refuse-by-default` are forward-looking vocabulary for the alter/drop
- * slice — no current {@link Operation} variant returns them (except the unknown-kind fallback below).
+ * NOTE: `alterColumnstoreConfig` is `needs-recompress`; `refuse-by-default` remains forward-looking
+ * vocabulary for the drops slice (no current {@link Operation} variant returns it except the
+ * unknown-kind fallback below).
  */
 export type SafetyClass = 'online-safe' | 'needs-recompress' | 'refuse-by-default' | 'one-way';
 
@@ -97,6 +98,12 @@ export function classifyOperation(operation: Operation): OperationSafety {
         safety: 'online-safe',
         reason:
           'set_chunk_time_interval affects only FUTURE chunks — existing chunks keep their size, no data is rewritten; down() restores the prior interval',
+      };
+    case 'alterColumnstoreConfig':
+      return {
+        safety: 'needs-recompress',
+        reason:
+          'the ALTER itself is online and applies to FUTURE chunks; EXISTING compressed chunks keep the old segmentby/orderby layout until manually decompressed + recompressed — no data loss; down() restores the prior config',
       };
     default: {
       // Exhaustiveness: a new Operation variant without a case fails to compile here.

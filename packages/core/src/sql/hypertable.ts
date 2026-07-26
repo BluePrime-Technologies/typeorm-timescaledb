@@ -422,6 +422,75 @@ export function setChunkIntervalSQL(input: SetChunkIntervalInput): MigrationStat
   return { up: [setInterval(to)], down: [setInterval(from)], inspect };
 }
 
+/** A columnstore's segment-by + order-by configuration (the diffable content of the columnstore). */
+export interface ColumnstoreConfig {
+  readonly segmentBy: readonly string[];
+  readonly orderBy: ReadonlyArray<{ readonly column: string; readonly direction?: 'ASC' | 'DESC' }>;
+}
+
+export interface AlterColumnstoreConfigInput {
+  /** Table name, optionally `schema.table`. The columnstore must already be enabled. */
+  readonly table: string;
+  /** The current config (for `down`). */
+  readonly from: ColumnstoreConfig;
+  /** The desired config (for `up`). */
+  readonly to: ColumnstoreConfig;
+}
+
+/** Render the `timescaledb.segmentby`/`timescaledb.orderby` reloption clause for a columnstore config
+ * (same quoting/direction rules as {@link addColumnstorePolicySQL}; omits an empty facet). */
+function columnstoreConfigClause(config: ColumnstoreConfig): string {
+  const options: string[] = [];
+  if (config.segmentBy.length > 0) {
+    const cols = config.segmentBy
+      .map((c) => quoteIdent(assertSafeIdentifier(c, 'segmentBy')))
+      .join(', ');
+    options.push(`timescaledb.segmentby = ${quoteLiteral(cols)}`);
+  }
+  if (config.orderBy.length > 0) {
+    const cols = config.orderBy
+      .map(
+        (o) =>
+          `${quoteIdent(assertSafeIdentifier(o.column, 'orderBy'))} ${orderByDirection(o.direction)}`,
+      )
+      .join(', ');
+    options.push(`timescaledb.orderby = ${quoteLiteral(cols)}`);
+  }
+  return options.join(', ');
+}
+
+/**
+ * Change an existing columnstore's segment-by / order-by configuration via `ALTER TABLE ... SET`. The
+ * columnstore must already be enabled (this never re-enables or disables it). NOT data-safe to apply
+ * silently: on a hypertable with compressed chunks the engine must decompress + recompress to honour
+ * the new layout — hence the `needs-recompress` safety class. `down` restores the prior config.
+ */
+export function alterColumnstoreConfigSQL(input: AlterColumnstoreConfigInput): MigrationStatement {
+  const t = parseTable(input.table);
+  const toClause = columnstoreConfigClause(input.to);
+  if (toClause === '') {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `alterColumnstoreConfig on ${t.ident} needs at least one of segmentBy/orderBy in the target config`,
+      { table: input.table },
+    );
+  }
+  const fromClause = columnstoreConfigClause(input.from);
+  const up = [`ALTER TABLE ${t.ident} SET (${toClause});`];
+  // `from` is the introspected current config (a live columnstore always reports its orderby), so it is
+  // normally non-empty; guard the degenerate empty case with a non-destructive notice rather than a
+  // malformed empty SET.
+  const down =
+    fromClause === ''
+      ? [nonDestructiveNotice('columnstore configuration', t.ident)]
+      : [`ALTER TABLE ${t.ident} SET (${fromClause});`];
+  const inspect =
+    `SELECT segmentby, orderby FROM _timescaledb_catalog.compression_settings cs ` +
+    `JOIN pg_class cl ON cl.oid = cs.relid JOIN pg_namespace n ON n.oid = cl.relnamespace ` +
+    `WHERE n.nspname = ${quoteLiteral(t.schema)} AND cl.relname = ${quoteLiteral(t.name)};`;
+  return { up, down, inspect };
+}
+
 /**
  * Change a compression policy's `after` threshold. A policy's threshold is not editable in place, so
  * this is a **remove-then-add**: `up` removes the current policy and adds one at `to`; `down` removes

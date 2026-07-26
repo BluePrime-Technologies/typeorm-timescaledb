@@ -12,6 +12,7 @@ import {
   createHypertableSQL,
   renameHypertableSQL,
   setChunkIntervalSQL,
+  alterColumnstoreConfigSQL,
   TimescaleError,
   TimescaleErrorCode,
   type Operation,
@@ -150,6 +151,21 @@ const CASES: ReadonlyArray<{
     operation: { kind: 'setChunkInterval', table: 'public.metric', from: '1 day', to: '7 days' },
     direct: () => setChunkIntervalSQL({ table: 'public.metric', from: '1 day', to: '7 days' }),
   },
+  {
+    kind: 'alterColumnstoreConfig',
+    operation: {
+      kind: 'alterColumnstoreConfig',
+      table: 'public.metric',
+      from: { segmentBy: ['device_id'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+      to: { segmentBy: ['device_id', 'region'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+    },
+    direct: () =>
+      alterColumnstoreConfigSQL({
+        table: 'public.metric',
+        from: { segmentBy: ['device_id'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+        to: { segmentBy: ['device_id', 'region'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+      }),
+  },
 ];
 
 describe('compileOperation — delegates to the core builders (byte-identical)', () => {
@@ -171,6 +187,7 @@ describe('compileOperation — delegates to the core builders (byte-identical)',
       'alterRetentionPolicy',
       'renameHypertable',
       'setChunkInterval',
+      'alterColumnstoreConfig',
     ];
     // The cases exercise each declared kind exactly once — a new union member without a test fails here.
     expect([...new Set(CASES.map((c) => c.kind))].sort()).toEqual([...KINDS].sort());
