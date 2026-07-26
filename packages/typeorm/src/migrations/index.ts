@@ -10,3 +10,4 @@ export type {
   GenerateMigrationOptions,
   PlanMigrationOptions,
 } from './generate.js';
+export { TimescaleSchemaBuilder } from './schema-builder.js';
