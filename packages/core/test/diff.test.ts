@@ -113,12 +113,47 @@ describe('diffSchemaState — additive (create-only) plan', () => {
     expect(ops(plan)).toEqual([]);
   });
 
-  it('does NOT emit an alter when an existing object differs in content (deferred)', () => {
-    // current retention 365d, desired 90d — both present, so additive-only emits nothing (alter deferred).
-    const desired = metric();
+  it('emits alterRetentionPolicy when the retention threshold changed (remove-then-add)', () => {
+    // current drops after 90d, desired 365d — both present but differ → alter (from current, to desired).
+    const desired = metric(); // 365 days
     const current: HypertableState = {
       ...metric(),
       retentionPolicy: { kind: 'retention', after: '90 days' },
+    };
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([
+      { kind: 'alterRetentionPolicy', table: 'public.metric', from: '90 days', to: '365 days' },
+    ]);
+  });
+
+  it('emits alterCompressionPolicy when the compression threshold changed', () => {
+    const desired = metric(); // compress after 30 days
+    const current: HypertableState = {
+      ...metric(),
+      compressionPolicy: { kind: 'compression', after: '7 days' },
+    };
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([
+      { kind: 'alterCompressionPolicy', table: 'public.metric', from: '7 days', to: '30 days' },
+    ]);
+  });
+
+  it('does NOT emit a policy alter when the threshold is only textually different (30 days == 720 hours)', () => {
+    // Postgres treats these intervals as equal; the normalizer must suppress the false drift.
+    const desired = metric(); // retention 365 days
+    const current: HypertableState = {
+      ...metric(),
+      retentionPolicy: { kind: 'retention', after: '8760 hours' }, // 365 * 24
+    };
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([]);
+  });
+
+  it('ignores a differing scheduleInterval when the threshold matches (no false drift)', () => {
+    const desired = metric();
+    const current: HypertableState = {
+      ...metric(),
+      retentionPolicy: { kind: 'retention', after: '365 days', scheduleInterval: '1 day' },
     };
     const plan = diffSchemaState(ir(current), ir(desired));
     expect(ops(plan)).toEqual([]);
@@ -191,6 +226,16 @@ describe('diffSchemaState — unrepresentable desired state throws (no silent fa
     expect(() => diffSchemaState(ir(), ir(t))).toThrow(TimescaleError);
   });
 
+  it('throws on a compression policy declared without a columnstore (inconsistent desired)', () => {
+    const t: HypertableState = {
+      table: 'public.t',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+      // compressionPolicy but NO columnstore — a compression policy requires an enabled columnstore.
+      compressionPolicy: { kind: 'compression', after: '7 days' },
+    };
+    expect(() => diffSchemaState(ir(), ir(t))).toThrow(TimescaleError);
+  });
+
   it('throws on a space dimension missing numPartitions (cannot emit add_dimension)', () => {
     const t: HypertableState = {
       table: 'public.t',
@@ -202,29 +247,27 @@ describe('diffSchemaState — unrepresentable desired state throws (no silent fa
     expect(() => diffSchemaState(ir(), ir(t))).toThrow(TimescaleError);
   });
 
-  it('does NOT re-add a compression policy on an already-columnstore table (known additive gap)', () => {
+  it('adds a missing compression policy on an already-columnstore table (AS2 closes the gap)', () => {
     // current: columnstore enabled but NO compression policy; desired: columnstore + compression policy.
-    // The additive slice keys the columnstore add on columnstore PRESENCE, so it emits nothing here and
-    // reports converged. This is the documented gap the alter slice closes — pinned so it can't silently
-    // change. (Not destructive; not a false op — a deliberate under-report.)
+    // AS2 emits a policy-only add (no ALTER SET re-assert) — the S2 gap is now closed.
+    const columnstore = {
+      segmentBy: ['device_id'],
+      orderBy: [{ column: 'ts', desc: true, nullsFirst: true }],
+    };
     const current: HypertableState = {
       table: 'public.metric',
       dimensions: metric().dimensions,
-      columnstore: {
-        segmentBy: ['device_id'],
-        orderBy: [{ column: 'ts', desc: true, nullsFirst: true }],
-      },
+      columnstore,
     };
     const desired: HypertableState = {
       table: 'public.metric',
       dimensions: metric().dimensions,
-      columnstore: {
-        segmentBy: ['device_id'],
-        orderBy: [{ column: 'ts', desc: true, nullsFirst: true }],
-      },
+      columnstore,
       compressionPolicy: { kind: 'compression', after: '30 days' },
     };
     const plan = diffSchemaState(ir(current), ir(desired));
-    expect(ops(plan)).toEqual([]);
+    expect(ops(plan)).toEqual([
+      { kind: 'addCompressionPolicy', table: 'public.metric', after: '30 days' },
+    ]);
   });
 });

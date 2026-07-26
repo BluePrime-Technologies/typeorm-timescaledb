@@ -294,3 +294,98 @@ export function addRetentionPolicySQL(input: RetentionPolicyInput): MigrationSta
 
   return { up, down, inspect };
 }
+
+// SQL fragments shared by the compression-policy add/alter builders (M4.2 AS2). The columnstore must
+// already be enabled on the hypertable — these manage only the auto-convert POLICY job, never the
+// `ALTER TABLE ... SET (timescaledb.enable_columnstore)` (that stays put; see addColumnstorePolicySQL).
+function compressionPolicyInspect(t: ParsedTable): string {
+  return (
+    `SELECT job_id, proc_name, schedule_interval, config FROM timescaledb_information.jobs ` +
+    `WHERE proc_name = 'policy_compression' AND hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`
+  );
+}
+const removeCompressionPolicyCall = (t: ParsedTable): string =>
+  `CALL remove_columnstore_policy(${t.regclass}, if_exists => TRUE);`;
+const addCompressionPolicyCall = (t: ParsedTable, after: string, ifNotExists: boolean): string =>
+  `CALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(after)}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`;
+const removeRetentionPolicyCall = (t: ParsedTable): string =>
+  `SELECT remove_retention_policy(${t.regclass}, if_exists => TRUE);`;
+const addRetentionPolicyCall = (t: ParsedTable, dropAfter: string, ifNotExists: boolean): string =>
+  `SELECT add_retention_policy(${t.regclass}, drop_after => INTERVAL ${quoteLiteral(dropAfter)}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`;
+
+export interface AddCompressionPolicyInput {
+  /** Table name, optionally `schema.table`. The columnstore must already be enabled. */
+  readonly table: string;
+  /** Auto-convert chunks to the columnstore after this interval, e.g. `'7 days'`. */
+  readonly after: string;
+  /** `if_not_exists` on the policy — make `up` idempotent. Default `true`. */
+  readonly ifNotExists?: boolean;
+}
+
+/**
+ * Add ONLY the compression (columnstore) policy job to a hypertable whose columnstore is already
+ * enabled — unlike {@link addColumnstorePolicySQL}, it does not re-assert `ALTER TABLE ... SET`. Used
+ * to close the "columnstore enabled but no compression policy" drift. `down` removes the policy
+ * (`remove_columnstore_policy`, `if_exists`); it never disables the columnstore or touches data.
+ */
+export function addCompressionPolicySQL(input: AddCompressionPolicyInput): MigrationStatement {
+  const t = parseTable(input.table);
+  const after = assertInterval(input.after, 'after');
+  const ifNotExists = input.ifNotExists ?? true;
+  return {
+    up: [addCompressionPolicyCall(t, after, ifNotExists)],
+    down: [removeCompressionPolicyCall(t)],
+    inspect: compressionPolicyInspect(t),
+  };
+}
+
+export interface AlterPolicyInput {
+  /** Table name, optionally `schema.table`. */
+  readonly table: string;
+  /** The current threshold interval (for `down` — restore the prior policy). */
+  readonly from: string;
+  /** The desired threshold interval (for `up` — the new policy). */
+  readonly to: string;
+}
+
+/**
+ * Change a compression policy's `after` threshold. A policy's threshold is not editable in place, so
+ * this is a **remove-then-add**: `up` removes the current policy and adds one at `to`; `down` removes
+ * that and restores `from`. Non-destructive — a policy is a background job, so toggling it rewrites no
+ * data (the columnstore stays enabled throughout). Emit only when the columnstore already exists.
+ */
+export function alterCompressionPolicySQL(input: AlterPolicyInput): MigrationStatement {
+  const t = parseTable(input.table);
+  const to = assertInterval(input.to, 'to');
+  const from = assertInterval(input.from, 'from');
+  // The add half asserts fresh (`if_not_exists => FALSE`): after the preceding remove the policy must
+  // be gone, so a duplicate here means the remove did not take effect — fail loudly rather than silently
+  // no-op and leave the OLD threshold in place (a silent drift). remove precedes add, so the block stays
+  // idempotent on re-run.
+  return {
+    up: [removeCompressionPolicyCall(t), addCompressionPolicyCall(t, to, false)],
+    down: [removeCompressionPolicyCall(t), addCompressionPolicyCall(t, from, false)],
+    inspect: compressionPolicyInspect(t),
+  };
+}
+
+/**
+ * Change a retention policy's `drop_after` threshold, as a **remove-then-add** (see
+ * {@link alterCompressionPolicySQL}). Non-destructive: it only re-schedules future drops; `down`
+ * restores the prior threshold. It never deletes existing data.
+ */
+export function alterRetentionPolicySQL(input: AlterPolicyInput): MigrationStatement {
+  const t = parseTable(input.table);
+  const to = assertInterval(input.to, 'to');
+  const from = assertInterval(input.from, 'from');
+  const inspect =
+    `SELECT job_id, proc_name, schedule_interval, config FROM timescaledb_information.jobs ` +
+    `WHERE proc_name = 'policy_retention' AND hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`;
+  // Assert fresh (`if_not_exists => FALSE`) after the remove — a duplicate means the remove failed;
+  // fail loudly rather than silently leave the old threshold. remove precedes add → block idempotent.
+  return {
+    up: [removeRetentionPolicyCall(t), addRetentionPolicyCall(t, to, false)],
+    down: [removeRetentionPolicyCall(t), addRetentionPolicyCall(t, from, false)],
+    inspect,
+  };
+}

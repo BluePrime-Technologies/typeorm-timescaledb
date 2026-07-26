@@ -40,6 +40,18 @@ const CASES: ReadonlyArray<{ operation: Operation; safety: SafetyClass }> = [
     },
     safety: 'online-safe', // refresh policy is a background job
   },
+  {
+    operation: { kind: 'addCompressionPolicy', table: 'public.m', after: '7 days' },
+    safety: 'online-safe', // policy-only add to an enabled columnstore, no data rewrite
+  },
+  {
+    operation: { kind: 'alterCompressionPolicy', table: 'public.m', from: '7 days', to: '30 days' },
+    safety: 'online-safe', // remove-then-add of a background job, reversible
+  },
+  {
+    operation: { kind: 'alterRetentionPolicy', table: 'public.m', from: '90 days', to: '365 days' },
+    safety: 'online-safe', // re-schedules future drops, deletes no data at apply, reversible
+  },
 ];
 
 describe('classifyOperation', () => {
@@ -58,6 +70,9 @@ describe('classifyOperation', () => {
       'addRetentionPolicy',
       'createContinuousAggregate',
       'addContinuousAggregatePolicy',
+      'addCompressionPolicy',
+      'alterCompressionPolicy',
+      'alterRetentionPolicy',
     ];
     expect([...new Set(CASES.map((c) => c.operation.kind))].sort()).toEqual([...KINDS].sort());
   });

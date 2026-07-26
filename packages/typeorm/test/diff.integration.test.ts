@@ -13,7 +13,12 @@ import {
   generateTimescaleMigration,
   introspect,
 } from '../src/index.js';
-import { compileOperations, diffSchemaState, isEmptyPlan } from '@blueprime/timescaledb-core';
+import {
+  compileOperations,
+  diffSchemaState,
+  intervalsEqual,
+  isEmptyPlan,
+} from '@blueprime/timescaledb-core';
 
 // Env-gated (mirrors the other *.integration.test.ts): runs against both
 // timescale/timescaledb:latest-pg17 (2.28.x) AND timescale/timescaledb:2.18.0-pg16.
@@ -125,5 +130,91 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     // schema, across the M4.0 normalizers — no false drift from system-filled defaults.
     const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
     expect(isEmptyPlan(plan)).toBe(true);
+  });
+
+  it('detects a CHANGED retention threshold as an alter and converges after applying (AS2)', async () => {
+    // Drift the live DB: change retention from the declared 90 days to 30 days (out-of-band).
+    await runAll(ds, [
+      `SELECT remove_retention_policy('public.metric', if_exists => TRUE);`,
+      `SELECT add_retention_policy('public.metric', drop_after => INTERVAL '30 days');`,
+    ]);
+
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(plan.steps).toHaveLength(1);
+    const step = plan.steps[0]!;
+    expect(step.operation.kind).toBe('alterRetentionPolicy');
+    expect(step.safety).toBe('online-safe');
+    const op = step.operation as { table: string; from: string; to: string };
+    expect(op.table).toBe('public.metric');
+    // Compare via the normalizers — introspect() may render the interval in a different text form.
+    expect(intervalsEqual(op.from, '30 days')).toBe(true);
+    expect(intervalsEqual(op.to, '90 days')).toBe(true);
+
+    // Apply the compiled alter (remove-then-add) and confirm convergence back to the declared 90 days.
+    await runAll(
+      ds,
+      compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    const after = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(isEmptyPlan(after)).toBe(true);
+
+    // The catalog now reflects the desired threshold.
+    const rows: Array<{ drop_after: string }> = await ds.query(
+      `SELECT (config ->> 'drop_after') AS drop_after FROM timescaledb_information.jobs ` +
+        `WHERE proc_name = 'policy_retention' AND hypertable_schema = 'public' AND hypertable_name = 'metric'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(intervalsEqual(rows[0]!.drop_after, '90 days')).toBe(true);
+  });
+
+  it('re-adds a compression policy dropped out-of-band on an already-columnstore table (gap add)', async () => {
+    // Drop just the compression policy job; the columnstore stays enabled.
+    await runAll(ds, [`CALL remove_columnstore_policy('public.metric', if_exists => TRUE);`]);
+
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]!.operation.kind).toBe('addCompressionPolicy');
+    const op = plan.steps[0]!.operation as { table: string; after: string };
+    expect(op.table).toBe('public.metric');
+    expect(intervalsEqual(op.after, '7 days')).toBe(true); // Metric declares compressAfter '7 days'
+
+    await runAll(
+      ds,
+      compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
+    const jobs: Array<{ proc_name: string }> = await ds.query(
+      `SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_schema = 'public' AND hypertable_name = 'metric'`,
+    );
+    expect(jobs.map((j) => j.proc_name)).toContain('policy_compression');
+  });
+
+  it('detects a CHANGED compression threshold as an alter and converges after applying', async () => {
+    // Drift compression out-of-band from the declared 7 days to 30 days.
+    await runAll(ds, [
+      `CALL remove_columnstore_policy('public.metric', if_exists => TRUE);`,
+      `CALL add_columnstore_policy('public.metric', after => INTERVAL '30 days');`,
+    ]);
+
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(plan.steps).toHaveLength(1);
+    const step = plan.steps[0]!;
+    expect(step.operation.kind).toBe('alterCompressionPolicy');
+    expect(step.safety).toBe('online-safe');
+    const op = step.operation as { table: string; from: string; to: string };
+    expect(intervalsEqual(op.from, '30 days')).toBe(true);
+    expect(intervalsEqual(op.to, '7 days')).toBe(true);
+
+    await runAll(
+      ds,
+      compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
+    const rows: Array<{ compress_after: string }> = await ds.query(
+      `SELECT (config ->> 'compress_after') AS compress_after FROM timescaledb_information.jobs ` +
+        `WHERE proc_name = 'policy_compression' AND hypertable_schema = 'public' AND hypertable_name = 'metric'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(intervalsEqual(rows[0]!.compress_after, '7 days')).toBe(true);
   });
 });

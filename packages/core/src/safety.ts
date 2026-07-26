@@ -68,6 +68,24 @@ export function classifyOperation(operation: Operation): OperationSafety {
         reason:
           'a continuous-aggregate refresh policy is a background job — cleanly removed on down()',
       };
+    case 'addCompressionPolicy':
+      return {
+        safety: 'online-safe',
+        reason:
+          'adds only the compression policy job to an already-enabled columnstore — no data rewrite, cleanly removed on down()',
+      };
+    case 'alterCompressionPolicy':
+      return {
+        safety: 'online-safe',
+        reason:
+          'changes when compression runs (remove-then-add of a background job) — rewrites no data; down() restores the prior threshold',
+      };
+    case 'alterRetentionPolicy':
+      return {
+        safety: 'online-safe',
+        reason:
+          're-schedules future chunk drops (remove-then-add of a background job) — deletes no data at apply; down() restores the prior threshold. ⚠️ SHORTENING drop_after means the next scheduler tick drops chunks that were previously retained (declared intent, but review the from→to direction)',
+      };
     default: {
       // Exhaustiveness: a new Operation variant without a case fails to compile here.
       const unhandled: never = operation;
