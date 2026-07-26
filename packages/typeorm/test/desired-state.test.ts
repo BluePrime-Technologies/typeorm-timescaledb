@@ -231,3 +231,39 @@ describe('compileDesiredState — deliberate omissions the S2 diff must reconcil
     expect(compileDesiredState(ds).continuousAggregates).toEqual([]);
   });
 });
+
+describe('compileDesiredState — single-table inheritance (audit)', () => {
+  // TypeORM registers one entity metadata per SUBCLASS, all mapped to the SAME physical table.
+  class Base {}
+  Hypertable({ chunkInterval: '1 day' })(Base);
+  TimeColumn()(Base.prototype, 'ts');
+  HypertablePrimaryKey()(Base.prototype, 'ts');
+
+  class SubA extends Base {}
+  class SubB extends Base {}
+
+  it('emits ONE hypertable for N subclasses mapped to one table', () => {
+    // Previously this produced N duplicate hypertables — an N-times-repeated migration, and a diff
+    // comparing the table against itself.
+    const ds = stubDataSource([
+      { target: SubA, tableName: 'events' },
+      { target: SubB, tableName: 'events' },
+    ]);
+    const ir = compileDesiredState(ds);
+    expect(ir.hypertables).toHaveLength(1);
+    expect(ir.hypertables[0]?.table).toBe('public.events');
+  });
+
+  it('refuses CONFLICTING declarations for the same physical table', () => {
+    class OtherBase {}
+    Hypertable({ chunkInterval: '7 days' })(OtherBase);
+    TimeColumn()(OtherBase.prototype, 'ts');
+    HypertablePrimaryKey()(OtherBase.prototype, 'ts');
+
+    const ds = stubDataSource([
+      { target: SubA, tableName: 'events' }, // 1 day
+      { target: OtherBase, tableName: 'events' }, // 7 days — disagrees
+    ]);
+    expect(() => compileDesiredState(ds)).toThrow(/CONFLICTING/);
+  });
+});

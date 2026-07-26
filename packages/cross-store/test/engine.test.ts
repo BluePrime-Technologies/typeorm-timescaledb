@@ -548,3 +548,47 @@ describe('id validity + key normalization (audit)', () => {
     ).resolves.toBeDefined();
   });
 });
+
+describe('key normalization for bpchar/citext (audit)', () => {
+  /**
+   * Postgres matches these types by a rule the driver's returned value does not preserve. Verified
+   * against a live database with node-pg: a `char(8)` column storing 'AB' matches the probe 'AB'
+   * but comes back as "AB      "; a `citext` column storing 'AbC' matches the probe 'abc' but comes
+   * back as "AbC". Indexing on the raw value therefore reported a row the DB DID match as not_found.
+   */
+  function adapterReturning(row: Record<string, unknown>): CrossStoreAdapter {
+    return {
+      store: 'canonical',
+      findMany: () => Promise.resolve([row as SnapshotRow]),
+    };
+  }
+
+  it('matches a char(n) row the driver padded with trailing blanks', async () => {
+    // the registry allow-lists BASE scalar types, so a char(n) column registers as 'char'
+    const reg = new ReferenceRegistry().register({ ...REF, columnType: 'char' });
+    const [v] = await resolveReferences([check('AB')], {
+      registry: reg,
+      adapters: [adapterReturning({ id: 'AB      ' })],
+    });
+    expect(v?.status).toBe('resolved');
+  });
+
+  it('matches a citext row whose stored casing differs from the probe', async () => {
+    const reg = new ReferenceRegistry().register({ ...REF, columnType: 'citext' });
+    const [v] = await resolveReferences([check('abc')], {
+      registry: reg,
+      adapters: [adapterReturning({ id: 'AbC' })],
+    });
+    expect(v?.status).toBe('resolved');
+  });
+
+  it('does NOT loosen matching for an ordinary text column', async () => {
+    // trailing-space / case normalization must be scoped to the types whose equality warrants it.
+    const reg = new ReferenceRegistry().register({ ...REF, columnType: 'text' });
+    const [v] = await resolveReferences([check('AB')], {
+      registry: reg,
+      adapters: [adapterReturning({ id: 'AB      ' })],
+    });
+    expect(v?.status).toBe('not_found');
+  });
+});

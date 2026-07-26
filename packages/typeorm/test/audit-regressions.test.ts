@@ -171,3 +171,57 @@ describe('CLI argument handling (audit)', () => {
     expect(classifyLoadError(err, 'dist/data-source.js')).toBeUndefined();
   });
 });
+
+describe('runtime + query guards without prior coverage (audit)', () => {
+  it('refuses origin/gapfill on a naive `timestamp` time column', async () => {
+    // The bounds are emitted as TIMESTAMPTZ; PostgreSQL would coerce the column and reinterpret
+    // every value in the session time zone, silently shifting bucket boundaries.
+    const repo = {
+      metadata: {
+        findColumnWithPropertyName: (p: string) => ({ databaseName: p, type: 'timestamp' }),
+      },
+      createQueryBuilder: () => ({}),
+    } as unknown as Repository<ObjectLiteral>;
+    expect(() =>
+      getTimeBucket(repo, 'ts', {
+        interval: '1 hour',
+        timeColumn: 'ts',
+        metrics: [{ alias: 'v', fn: 'avg', column: 'val' }],
+        origin: '2024-01-01',
+      }),
+    ).toThrow(/TIMESTAMPTZ/);
+  });
+
+  it('allows origin on a timestamptz time column', () => {
+    const { repo } = stubRepo();
+    expect(() =>
+      getTimeBucket(repo, 'ts', {
+        interval: '1 hour',
+        metrics: [{ alias: 'v', fn: 'avg', column: 'val' }],
+        origin: '2024-01-01',
+      }),
+    ).not.toThrow();
+  });
+
+  it('re-checks toolkit presence after a failure instead of caching "missing" forever', async () => {
+    // Installing timescaledb_toolkit could not be picked up without restarting the process.
+    const { assertToolkit } = await import('../src/query/toolkit.js');
+    let calls = 0;
+    const ds = {
+      query: async () => {
+        calls++;
+        return calls === 1 ? [] : [{ '?column?': 1 }]; // absent, then installed
+      },
+    } as unknown as DataSource;
+
+    await expect(assertToolkit(ds)).rejects.toThrow();
+    await expect(assertToolkit(ds)).resolves.toBeUndefined(); // re-checked, now present
+    expect(calls).toBe(2);
+  });
+
+  it('rejects introspect() on an uninitialized DataSource with a typed error', async () => {
+    const { introspect } = await import('../src/runtime/introspect.js');
+    const ds = { isInitialized: false } as unknown as DataSource;
+    await expect(introspect(ds)).rejects.toThrow(/must be initialized/);
+  });
+});
