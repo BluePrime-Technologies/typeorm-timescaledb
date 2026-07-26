@@ -5,6 +5,7 @@ import {
   lastExpr,
   locfExpr,
   safeIdent,
+  assertSafeIdentifier,
   timeBucketExpr,
   timeBucketGapfillExpr,
   TimescaleError,
@@ -208,7 +209,28 @@ export function getTimeBucket<T extends ObjectLiteral>(
       ...(options.offset !== undefined ? { offset: options.offset } : {}),
     });
   }
-  const bucketAlias = options.bucketAlias ?? 'bucket';
+  // Output aliases are caller-supplied and land in the SELECT list. TypeORM 0.3.x's Postgres driver
+  // quotes an alias WITHOUT escaping embedded double quotes, so an unvalidated alias containing `"`
+  // breaks out of the quoting and injects arbitrary select-list SQL. Validate through the same
+  // allow-list every other identifier in this layer already uses.
+  const bucketAlias = assertSafeIdentifier(options.bucketAlias ?? 'bucket', 'bucketAlias');
+
+  // Postgres allows duplicate output column names, but a row object can only keep ONE — the last
+  // wins, silently discarding the other column (a metric aliased `bucket` erases the time axis; two
+  // metrics sharing an alias plot the wrong series). Reject it instead of returning wrong data.
+  const seenAliases = new Set<string>([bucketAlias]);
+  for (const metric of options.metrics) {
+    const alias = assertSafeIdentifier(metric.alias, 'metric alias');
+    if (seenAliases.has(alias)) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `duplicate output alias "${alias}" — the bucket alias and every metric alias must be distinct, ` +
+          `otherwise one column silently overwrites the other in the result rows`,
+        { alias },
+      );
+    }
+    seenAliases.add(alias);
+  }
 
   const qb = repo.createQueryBuilder('e').select(bucketExpr, bucketAlias).groupBy(bucketExpr);
   for (const metric of options.metrics) {

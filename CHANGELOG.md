@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [Unreleased]
+
+### Fixed
+
+Pre-release audit of the whole library. The entries below are defects in
+**previously released** code (0.5.0 and earlier); each ships with a regression test and
+was reproduced and verified against live TimescaleDB 2.18-pg16 and latest-pg17.
+
+- **SQL injection via output aliases (query layer)** — `getTimeBucket`'s `bucketAlias` /
+  `metrics[].alias` and every `TimescaleQueryBuilder` alias (`timeBucket`, `timeBucketGapfill`,
+  `first`, `last`, `histogram`, `locf`, `interpolate`) were passed to TypeORM unvalidated. TypeORM
+  0.3.x — inside this package's supported peer range — quotes an alias without escaping embedded
+  double quotes, so an alias derived from user input (a chart label, a saved-dashboard field) could
+  inject arbitrary select-list SQL. Aliases are now allow-listed like every other identifier in the
+  layer. **Applications that pass caller-controlled aliases should treat this as a security fix.**
+- **Cross-schema data leak in `listChunks` / `listJobs`** — an unqualified `hypertable` filter
+  applied only `hypertable_name = $1`, with no schema predicate, so in a schema-per-tenant database
+  a tenant-scoped call returned other tenants' chunks and jobs. An unqualified name now resolves
+  against the DataSource's configured schema (falling back to `public`), matching how the migration
+  generator already pins unqualified entities. **Behaviour change:** callers who relied on a bare
+  name matching every schema must now pass `schema.name` explicitly.
+- **Duplicate output aliases silently dropped a column** — `getTimeBucket` never checked that the
+  bucket alias and metric aliases were distinct. PostgreSQL permits duplicate output names but a row
+  object keeps only the last, so a metric aliased `bucket` erased the time axis from every row, and
+  two metrics sharing an alias silently plotted one series under the other's label — with no error.
+  Colliding aliases are now rejected.
+- **Hierarchical continuous aggregates generated invalid SQL** — a parent CAGG resolved the child
+  view's columns by identity, emitting the `@GroupColumn` **property** name. When the child's source
+  hypertable remapped that column with `@Column({ name })` (`sensorId` → `sensor_id`), the generated
+  `CREATE MATERIALIZED VIEW` failed with `column "sensorId" does not exist`, rolling back the whole
+  migration. The parent now resolves group columns through the child's own output naming.
+- **Writes were refused for an unassigned optional cross-store reference** (`@blueprime/cross-store`)
+  — an optional `@Resolve` field declared as `parentId?: string` and never assigned has no own
+  property, which the save-time TOCTOU guard treated as unlockable: it threw `INVALID_ARGUMENT` and
+  the entity was never written, with an error that misreported the cause as an inherited accessor.
+  An absent property is now locked (and restored) correctly; genuinely unlockable shapes — inherited
+  accessors and non-configurable fields — still fail closed.
+
 ## [0.5.0] - 2026-07-20
 
 Minor release: adds async/deferred NestJS configuration and a fail-fast

@@ -268,14 +268,21 @@ export function generateTimescaleMigration(
       : undefined;
 
     if (sourceCagg) {
-      // Hierarchical CAGG: FROM the child's view. Resolve columns by identity — the child's
-      // bucket and aggregate outputs are property-named verbatim; a child @GroupColumn output
-      // takes the child's source physical column name (which equals the property unless the
-      // child's source hypertable column is @Column({ name })-remapped). Either way the name
-      // is a real column on the child view, so identity forwards it and a genuine typo fails
-      // loudly at migration run. The time bucket defaults to the child's @BucketColumn output.
+      // Hierarchical CAGG: FROM the child's view, so every referenced column must be one of the
+      // CHILD's OUTPUT names. The child's bucket and aggregate outputs are property-named verbatim,
+      // but a child `@GroupColumn` is projected UNALIASED — its output is the child's *source*
+      // physical column name. Resolving by identity therefore emits the property name whenever the
+      // child's source hypertable remaps it with `@Column({ name })` (`sensorId` → `sensor_id`),
+      // producing `column "sensorId" does not exist` and rolling back the whole migration. Build the
+      // child's own property→column map and resolve group properties through it.
+      const childSourceEm = dataSource.entityMetadatas.find((e) => e.target === sourceCagg.source);
+      const childDb = new Map<string, string>(
+        (childSourceEm?.columns ?? []).map((col) => [col.propertyName, col.databaseName]),
+      );
+      const childGroupProps = new Set(sourceCagg.groupProperties);
       sourceRef = sourceCagg.viewName;
-      srcToDb = (property) => property;
+      srcToDb = (property) =>
+        childGroupProps.has(property) ? (childDb.get(property) ?? property) : property;
       srcTimeProp = meta.timeColumn ?? sourceCagg.bucketProperty;
       sourceLabel = sourceCagg.viewName;
     } else {

@@ -609,3 +609,56 @@ describe('assertEntitiesRegistered (boot-time wiring)', () => {
     }
   });
 });
+
+describe('lockValidatedFields — optional reference never assigned (pre-release audit)', () => {
+  it('locks (and does not refuse) a field that has no own property because it was never set', () => {
+    // The idiomatic optional reference `parentId?: string` creates NO own property until assigned.
+    // `lockValidatedFields` required an own descriptor, so it threw INVALID_ARGUMENT and the write
+    // was refused entirely — for a perfectly valid `not_referenced` entity.
+    class LedgerEntry {
+      accountId: string;
+      constructor(accountId: string) {
+        this.accountId = accountId;
+      }
+    }
+    const entity = new LedgerEntry('acct-1') as LedgerEntry & { parentId?: string };
+    expect(Object.getOwnPropertyDescriptor(entity, 'parentId')).toBeUndefined();
+
+    const verdicts = [
+      { entity, property: 'accountId', verdict: { check: { scope: undefined } } },
+      { entity, property: 'parentId', verdict: { check: { scope: undefined } } },
+    ] as unknown as Parameters<typeof lockValidatedFields>[0];
+
+    const restore = lockValidatedFields(verdicts);
+
+    // it is genuinely LOCKED (the TOCTOU guarantee still holds for the absent field)
+    const d = Object.getOwnPropertyDescriptor(entity, 'parentId');
+    expect(d?.writable).toBe(false);
+    expect(() => {
+      (entity as { parentId?: string }).parentId = 'sneaky';
+    }).toThrow(TypeError);
+    expect(entity.parentId).toBeUndefined();
+
+    // and restoring removes it again, leaving the entity exactly as it was
+    restore();
+    expect(Object.prototype.hasOwnProperty.call(entity, 'parentId')).toBe(false);
+  });
+
+  it('still FAILS CLOSED on an inherited accessor (which also has no own descriptor)', () => {
+    // The absent-property path must not shadow a prototype getter/setter — that would silently
+    // change entity semantics instead of refusing an unlockable field.
+    class WithAccessor {
+      get parentId(): string {
+        return 'from-getter';
+      }
+    }
+    const entity = new WithAccessor();
+    expect(Object.getOwnPropertyDescriptor(entity, 'parentId')).toBeUndefined();
+    expect('parentId' in entity).toBe(true);
+
+    const verdicts = [
+      { entity, property: 'parentId', verdict: { check: { scope: undefined } } },
+    ] as unknown as Parameters<typeof lockValidatedFields>[0];
+    expect(() => lockValidatedFields(verdicts)).toThrow();
+  });
+});

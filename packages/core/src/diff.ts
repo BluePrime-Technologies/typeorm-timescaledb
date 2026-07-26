@@ -9,11 +9,7 @@ import type {
 } from './schema-state.js';
 import type { ColumnstoreConfig } from './sql/index.js';
 import { compileOperations } from './operation.js';
-import type {
-  AddColumnstorePolicyOperation,
-  Operation,
-  RenameHypertableOperation,
-} from './operation.js';
+import type { AddColumnstorePolicyOperation, Operation } from './operation.js';
 import { classifyOperation, type OperationSafety } from './safety.js';
 import { intervalsEqual, TIMESCALE_DEFAULTS } from './normalize.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
@@ -65,19 +61,28 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  *     never emits an alter to clear a facet the current DB has set. Also: **NULLS placement is unmanaged**
  *     (decorators can't express it) — see `toColumnstoreConfig`.
  *
- * **Integer-time / `created_before` policy thresholds THROW** (never silent under-convergence): they
+ * **Integer-time / `created_before` POLICY thresholds THROW** (never silent under-convergence): they
  * can't be expressed by the string-only builders, so the diff raises `INVALID_ARGUMENT` rather than a
- * wrong op or a false "converged". (The decorator path only produces string `after` thresholds.)
+ * wrong op or a false "converged". (The decorator path only produces string `after` thresholds.) An
+ * integer-time **chunk interval** is different: when desired declares none, that means "accept the
+ * engine's", so the comparison is skipped rather than throwing.
  *
- * **Rename resolution.** A hypertable renamed at the decorator level (new `table`, no matching
- * `current` entry) would otherwise diff as a drop-then-create — the Prisma/EF anti-pattern the M4.2
- * plan calls out, and worse here: `createHypertableOperations` would attempt `create_hypertable` on a
- * table that already IS one under its old name. Callers pass a `renames` map (desired table → current
- * table, collected from `@Hypertable({ renamedFrom })`) via {@link DiffOptions}; when `desired.table`
- * has no direct `current` match but resolves through `renames` to one that does, the diff matches the
- * two as the SAME hypertable: it emits a single `renameHypertable` op first, then diffs the rest
- * (columnstore/policies) against the matched current entry exactly as an existing-table update. Two
- * desired hypertables resolving to the same current one (an ambiguous rename) THROWS.
+ * **Space dimensions THROW on divergence.** `add_dimension` is one-way and re-partitioning is not
+ * expressible, so a declared space partition the database lacks (or a changed partition count) raises
+ * `INVALID_ARGUMENT` naming the remedy — never a silent "no drift" on a schema that has diverged.
+ *
+ * **Rename resolution runs as a PRE-PASS**, before any hypertable is diffed. A hypertable renamed at
+ * the decorator level (new `table`, no matching `current` entry) would otherwise diff as a
+ * drop-then-create — the Prisma/EF anti-pattern the M4.2 plan calls out, and worse here:
+ * `createHypertableOperations` would attempt `create_hypertable` on a table that already IS one under
+ * its old name. Callers pass a `renames` map (desired table → current table, collected from
+ * `@Hypertable({ renamedFrom })`) via {@link DiffOptions}. The pre-pass emits each
+ * `renameHypertable` first and re-keys the current entry to its new name, so every later lookup sees
+ * post-rename identity regardless of iteration order — which is what makes reusing a freed name
+ * (rename `metrics`→`trades`, then declare a NEW `metrics`) correct rather than order-dependent.
+ * A rename whose source no longer exists is a no-op; a target name already occupied in the database
+ * (a mutual A↔B swap, inexpressible as a bare `ALTER ... RENAME`) emits no rename and converges
+ * per-facet instead. Two desired hypertables claiming the same source (an ambiguous rename) THROWS.
  *
  * {@link isEmptyPlan} means "no operation IN SCOPE is needed" — not a guarantee of full convergence
  * (drops and CAGGs are still out of scope).
@@ -116,7 +121,7 @@ export interface Plan {
   readonly steps: readonly PlanStep[];
 }
 
-/** `true` when the plan has no steps (no drift) — the `check`-verb gate (a later slice). NOTE: this
+/** `true` when the plan has no steps (no drift) — the gate behind the `check` verb. NOTE: this
  * reflects only what the current diff detects (additive create-only in this slice), not full convergence. */
 export function isEmptyPlan(plan: Plan): boolean {
   return plan.steps.length === 0;
@@ -261,6 +266,24 @@ function orderByEqual(a: readonly OrderByElement[], b: readonly OrderByElement[]
   );
 }
 
+/**
+ * The columnstore `orderby` TimescaleDB will actually store for a declared `orderBy`. The engine
+ * always appends the time dimension (DESC, NULLS FIRST) when the declared list omits it — verified on
+ * 2.18-pg16 and latest-pg17 — so the desired side must carry that implied element before being
+ * compared with an introspected one. Returns the list unchanged when the time column is already
+ * declared (in any position/direction, which the engine then respects), when nothing is declared
+ * (the "accept the engine default" contract handled by the caller), or when the time column is
+ * unknown.
+ */
+function withImpliedTimeOrderBy(
+  declared: readonly OrderByElement[],
+  timeColumn: string | undefined,
+): readonly OrderByElement[] {
+  if (declared.length === 0 || timeColumn === undefined) return declared;
+  if (declared.some((o) => o.column === timeColumn)) return declared;
+  return [...declared, { column: timeColumn, desc: true, nullsFirst: true }];
+}
+
 const orderElementToConfig = (
   o: OrderByElement,
 ): { column: string; direction: 'ASC' | 'DESC' } => ({
@@ -345,6 +368,45 @@ export function diffSchemaState(
   const renamedFromTable = new Map<string, string>();
   const operations: Operation[] = [];
 
+  // ── Rename PRE-PASS ────────────────────────────────────────────────────────────────────────
+  // Resolve every declared rename BEFORE diffing any entry, by re-keying the current entry from its
+  // old name to its new one and emitting the rename first. Doing this per-entry inside the loop
+  // (i.e. only when a direct name match failed) is wrong whenever a rename FREES a name that another
+  // desired hypertable reuses: iteration order decides the outcome, the reused name matches the
+  // about-to-be-renamed current entry, and its ops are emitted against the pre-rename table while the
+  // genuinely-new hypertable is never created — a silent wrong schema that still "succeeds" on the DB.
+  // Re-keying up front makes every later lookup see post-rename identity regardless of iteration order.
+  // Snapshot the pre-rename table set: the map is mutated below, so ambiguity ("two desired tables
+  // both claim the same source") must be judged against the ORIGINAL names, not the mutated map.
+  const currentTablesBeforeRenames = new Set(currentByTable.keys());
+  for (const d of desired.hypertables) {
+    const oldTable = renames.get(d.table);
+    if (oldTable === undefined) continue;
+    // A stale `renamedFrom` pointing at a table that no longer exists (the rename already ran) is a
+    // no-op, not a spurious rename.
+    if (!currentTablesBeforeRenames.has(oldTable)) continue;
+    const claimedBy = renamedFromTable.get(oldTable);
+    if (claimedBy !== undefined) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `ambiguous rename: both ${claimedBy} and ${d.table} declare renamedFrom(${oldTable})`,
+        { oldTable, desired: [claimedBy, d.table] },
+      );
+    }
+    renamedFromTable.set(oldTable, d.table);
+    // The target name is already occupied in the live DB (e.g. a mutual A↔B swap, which a bare
+    // ALTER ... RENAME cannot express without a temporary name). Claim it so the ambiguity check
+    // above still applies, but emit no rename: the per-facet diff below converges each table on
+    // its own, which is correct and avoids emitting SQL that would fail on a real database.
+    if (currentByTable.has(d.table)) continue;
+    operations.push({ kind: 'renameHypertable', from: oldTable, to: d.table });
+    currentByTable.set(d.table, currentByTable.get(oldTable)!);
+    // Free the old key: the physical table no longer exists under that name after the rename, so a
+    // desired hypertable REUSING the freed name correctly diffs as a create instead of matching the
+    // entry that was just renamed away.
+    currentByTable.delete(oldTable);
+  }
+
   for (const d of desired.hypertables) {
     // A compression policy requires the columnstore to be enabled. Reject the inconsistent desired
     // shape loudly rather than silently drop the policy (it isn't reachable from compileDesiredState,
@@ -357,42 +419,31 @@ export function diffSchemaState(
       );
     }
 
-    let c = currentByTable.get(d.table);
-    let renameOp: RenameHypertableOperation | undefined;
-
-    if (c === undefined) {
-      const oldTable = renames.get(d.table);
-      const oldEntry = oldTable === undefined ? undefined : currentByTable.get(oldTable);
-      if (oldTable !== undefined && oldEntry !== undefined) {
-        const claimedBy = renamedFromTable.get(oldTable);
-        if (claimedBy !== undefined) {
-          throw new TimescaleError(
-            TimescaleErrorCode.INVALID_ARGUMENT,
-            `ambiguous rename: both ${claimedBy} and ${d.table} declare renamedFrom(${oldTable})`,
-            { oldTable, desired: [claimedBy, d.table] },
-          );
-        }
-        renamedFromTable.set(oldTable, d.table);
-        c = oldEntry;
-        renameOp = { kind: 'renameHypertable', from: oldTable, to: d.table };
-      }
-    }
+    // Renames were already resolved (and their `renameHypertable` steps emitted) by the pre-pass
+    // above, which re-keyed the current entry to its new name — so a plain lookup is now correct and
+    // order-independent.
+    const c = currentByTable.get(d.table);
 
     if (c === undefined) {
       // Whole hypertable missing (and no rename resolves it) → emit the full create sequence.
       operations.push(...createHypertableOperations(d));
       continue;
     }
-    if (renameOp !== undefined) operations.push(renameOp);
-
-    // Existing table (possibly just renamed above). Time-dimension chunk interval change →
+    // Existing table (possibly just renamed by the pre-pass). Time-dimension chunk interval change →
     // set_chunk_time_interval. Reconcile the engine default: when desired omits chunkInterval it means
     // "the create-time default", which introspect() reads back as the concrete
     // TIMESCALE_DEFAULTS.chunkInterval — so compare against that, not undefined, to avoid false drift on
     // a bare hypertable (the S1 characterization contract).
     const currentTime = findDimension(c, 'time');
     const desiredTime = findDimension(d, 'time');
-    if (currentTime !== undefined && desiredTime !== undefined) {
+    // An INTEGER-time hypertable reads back a numeric chunk interval, which the decorator surface
+    // cannot express (`chunkInterval` is interval-validated). When desired declares nothing, that
+    // means "accept whatever the engine chose" — so skip the comparison entirely rather than
+    // measuring a number against the interval-time default and then throwing on the unrepresentable
+    // value, which would abort the whole run for every other entity too.
+    const currentIsIntegerTime = typeof currentTime?.chunkInterval === 'number';
+    const skipChunkCompare = currentIsIntegerTime && desiredTime?.chunkInterval === undefined;
+    if (currentTime !== undefined && desiredTime !== undefined && !skipChunkCompare) {
       const desiredInterval = desiredTime.chunkInterval ?? TIMESCALE_DEFAULTS.chunkInterval;
       if (!intervalsEqual(currentTime.chunkInterval, desiredInterval)) {
         operations.push({
@@ -439,7 +490,13 @@ export function diffSchemaState(
       const des = d.columnstore;
       const segChanged =
         des.segmentBy.length > 0 && !stringArrayEqual(des.segmentBy, cur.segmentBy);
-      const ordChanged = des.orderBy.length > 0 && !orderByEqual(des.orderBy, cur.orderBy);
+      // TimescaleDB AUTO-APPENDS the time column (DESC) to `compress_orderby` whenever the declared
+      // orderby omits it — so a decorator declaring `orderBy: [region ASC]` reads back as
+      // `[region ASC, ts DESC]`. Comparing raw would report drift on an unchanged schema AND propose a
+      // `needs-recompress` alter whose own SQL the engine re-expands identically, so it could never
+      // converge. Reconcile by appending the engine-implied element to desired before comparing.
+      const desiredOrderBy = withImpliedTimeOrderBy(des.orderBy, desiredTime?.column);
+      const ordChanged = des.orderBy.length > 0 && !orderByEqual(desiredOrderBy, cur.orderBy);
       if (segChanged || ordChanged) {
         operations.push({
           kind: 'alterColumnstoreConfig',
@@ -451,7 +508,34 @@ export function diffSchemaState(
           },
         });
       }
-      // Dropping a compression policy present in current but not desired is a drop — deferred (AS3c).
+      // Dropping a compression policy present in current but not desired is a guarded drop —
+      // emitted below only when `allowDrops` is enabled.
+    }
+
+    // Space (hash) dimensions cannot be reconciled in-place: `add_dimension` is a one-way operation
+    // with its own preconditions, and neither dropping nor re-partitioning an existing space
+    // dimension is expressible. Rather than silently report "no drift" for a declared partitioning
+    // the database does not have — which would let a schema diverge invisibly — surface the
+    // divergence loudly with the exact remedy. Matching declarations are of course a no-op.
+    const currentSpace = findDimension(c, 'space');
+    const desiredSpace = findDimension(d, 'space');
+    const spaceEqual =
+      currentSpace === undefined
+        ? desiredSpace === undefined
+        : desiredSpace !== undefined &&
+          currentSpace.column === desiredSpace.column &&
+          currentSpace.numPartitions === desiredSpace.numPartitions;
+    if (!spaceEqual) {
+      const describe = (dim: DimensionState | undefined): string =>
+        dim === undefined ? 'none' : `${dim.column} (${String(dim.numPartitions)} partitions)`;
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `hypertable ${d.table}: space-partition drift is not auto-reconcilable — declared ` +
+          `${describe(desiredSpace)}, database has ${describe(currentSpace)}. Adding, removing, or ` +
+          `re-partitioning a space dimension on an existing hypertable needs a hand-written ` +
+          `migration (add_dimension / recreate); align the decorator with the database to proceed.`,
+        { table: d.table },
+      );
     }
 
     // Retention: add a missing policy (additive), or alter a changed threshold.

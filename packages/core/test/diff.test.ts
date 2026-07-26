@@ -647,3 +647,155 @@ describe('compilePlan — Plan → reversible up/down SQL (M4.3a bridge)', () =>
     expect(compiled.down.join('\n')).toContain('90 days');
   });
 });
+
+// ── Pre-release audit regressions ──────────────────────────────────────────────────────────────
+// Each case below reproduces a defect found in the pre-release audit of the migration engine.
+
+const ht = (table: string, chunkInterval?: string | number): HypertableState => ({
+  table,
+  dimensions: [
+    { column: 'ts', kind: 'time', ...(chunkInterval !== undefined && { chunkInterval }) },
+  ],
+});
+
+describe('diffSchemaState — rename resolution (audit)', () => {
+  it('renames BEFORE diffing, so a desired table reusing the freed name is created, not mutated', () => {
+    // The live DB has one `metrics`; the code renames it to `trades` AND declares a brand-new
+    // `metrics`. Resolving renames per-entry let the reused name match the about-to-be-renamed
+    // entry: the new table`s chunk interval landed on `trades` and the new `metrics` was never
+    // created — both statements succeed on a real DB, so the schema diverged silently.
+    const plan = diffSchemaState(
+      ir(ht('public.metrics', '7 days')),
+      ir(ht('public.metrics', '1 day'), ht('public.trades', '7 days')),
+      { renames: new Map([['public.trades', 'public.metrics']]) },
+    );
+    const kinds = ops(plan).map((o) => o.kind);
+    expect(kinds[0]).toBe('renameHypertable'); // rename must come first
+    expect(kinds).toContain('createHypertable'); // the NEW metrics is created
+    // and nothing mutates the renamed-away table's chunk interval
+    expect(ops(plan).some((o) => o.kind === 'setChunkInterval')).toBe(false);
+  });
+
+  it('emits a single rename for a plain rename', () => {
+    const plan = diffSchemaState(ir(ht('public.old', '1 day')), ir(ht('public.new', '1 day')), {
+      renames: new Map([['public.new', 'public.old']]),
+    });
+    expect(ops(plan)).toEqual([{ kind: 'renameHypertable', from: 'public.old', to: 'public.new' }]);
+  });
+
+  it('treats a STALE renamedFrom (already applied) as a no-op', () => {
+    const plan = diffSchemaState(ir(ht('public.new', '1 day')), ir(ht('public.new', '1 day')), {
+      renames: new Map([['public.new', 'public.old']]),
+    });
+    expect(isEmptyPlan(plan)).toBe(true);
+  });
+
+  it('still rejects an ambiguous rename after the pre-pass re-keys the map', () => {
+    // Regression guard: the pre-pass deletes the old key, so ambiguity must be judged against the
+    // PRE-rename snapshot or the second claimant is silently ignored.
+    expect(() =>
+      diffSchemaState(
+        ir(ht('public.o', '1 day')),
+        ir(ht('public.x', '1 day'), ht('public.y', '1 day')),
+        {
+          renames: new Map([
+            ['public.x', 'public.o'],
+            ['public.y', 'public.o'],
+          ]),
+        },
+      ),
+    ).toThrow(TimescaleError);
+  });
+
+  it('does not emit an impossible rename for a mutual A↔B swap (converges per-facet instead)', () => {
+    const plan = diffSchemaState(
+      ir(ht('public.a', '1 day'), ht('public.b', '2 days')),
+      ir(ht('public.a', '2 days'), ht('public.b', '1 day')),
+      {
+        renames: new Map([
+          ['public.a', 'public.b'],
+          ['public.b', 'public.a'],
+        ]),
+      },
+    );
+    // A bare ALTER ... RENAME cannot express a swap without a temp name, so no rename is emitted.
+    expect(ops(plan).some((o) => o.kind === 'renameHypertable')).toBe(false);
+  });
+});
+
+describe('diffSchemaState — engine-implied columnstore orderBy (audit)', () => {
+  const current: HypertableState = {
+    table: 'public.m',
+    dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+    // TimescaleDB auto-appends the time column DESC when the declared orderby omits it.
+    columnstore: {
+      segmentBy: ['dev'],
+      orderBy: [
+        { column: 'region', desc: false, nullsFirst: false },
+        { column: 'ts', desc: true, nullsFirst: true },
+      ],
+    },
+    compressionPolicy: { kind: 'compression', after: '7 days' },
+  };
+  const desired: HypertableState = {
+    table: 'public.m',
+    dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+    columnstore: {
+      segmentBy: ['dev'],
+      orderBy: [{ column: 'region', desc: false, nullsFirst: false }],
+    },
+    compressionPolicy: { kind: 'compression', after: '7 days' },
+  };
+
+  it('does NOT report drift when the declared orderBy omits the time column', () => {
+    // Previously this diffed non-empty forever: the proposed alter re-expanded to the same catalog
+    // state, so `check` could never go green and the plan advertised a needless recompress.
+    expect(isEmptyPlan(diffSchemaState(ir(current), ir(desired)))).toBe(true);
+  });
+
+  it('still detects a genuine orderBy change', () => {
+    const changed: HypertableState = {
+      ...desired,
+      columnstore: {
+        segmentBy: ['dev'],
+        orderBy: [{ column: 'other', desc: false, nullsFirst: false }],
+      },
+    };
+    expect(ops(diffSchemaState(ir(current), ir(changed))).map((o) => o.kind)).toEqual([
+      'alterColumnstoreConfig',
+    ]);
+  });
+});
+
+describe('diffSchemaState — integer-time hypertables (audit)', () => {
+  it('does not throw (or drift) when the decorator declares no chunk interval', () => {
+    // introspect() reports a NUMBER for an integer-time hypertable, which the decorator surface
+    // cannot express. Comparing it against the interval-time default threw and aborted the whole
+    // run — for every other entity too.
+    const plan = diffSchemaState(ir(ht('public.d2', 1_000_000)), ir(ht('public.d2')));
+    expect(isEmptyPlan(plan)).toBe(true);
+  });
+});
+
+describe('diffSchemaState — space dimensions (audit)', () => {
+  const timeOnly = (): HypertableState => ht('public.s', '1 day');
+  const withSpace = (numPartitions: number): HypertableState => ({
+    table: 'public.s',
+    dimensions: [
+      { column: 'ts', kind: 'time', chunkInterval: '1 day' },
+      { column: 'dev', kind: 'space', numPartitions },
+    ],
+  });
+
+  it('never silently reports "no drift" for a declared-but-missing space partition', () => {
+    expect(() => diffSchemaState(ir(timeOnly()), ir(withSpace(4)))).toThrow(TimescaleError);
+  });
+
+  it('surfaces a changed partition count instead of ignoring it', () => {
+    expect(() => diffSchemaState(ir(withSpace(4)), ir(withSpace(8)))).toThrow(TimescaleError);
+  });
+
+  it('is a no-op when the declared space dimension matches the database', () => {
+    expect(isEmptyPlan(diffSchemaState(ir(withSpace(4)), ir(withSpace(4))))).toBe(true);
+  });
+});
