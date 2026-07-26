@@ -1,5 +1,5 @@
 /** The CLI subcommands. */
-export const COMMANDS = ['generate', 'run', 'revert', 'status'] as const;
+export const COMMANDS = ['generate', 'run', 'revert', 'status', 'check'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 /** Thrown on malformed CLI input; carries a user-facing message (with usage). */
@@ -27,6 +27,7 @@ Commands:
   run        Apply pending migrations
   revert     Revert the last applied migration
   status     Show whether migrations are pending
+  check      Diff the live DB against @Hypertable declarations; exit non-zero on drift (CI gate)
 
 Options:
   -d, --dataSource <path>   Module exporting a DataSource, default or named (required)

@@ -1,7 +1,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DataSource } from 'typeorm';
+import { diffSchemaState, isEmptyPlan, type Plan } from '@blueprime/timescaledb-core';
 import { generateTimescaleMigration, renderTimescaleMigration } from '../migrations/index.js';
+import { compileDesiredState } from '../runtime/desired-state.js';
+import { collectRenames } from '../runtime/renames.js';
+import { introspect } from '../runtime/introspect.js';
+import { formatPlanPreview } from './format-plan.js';
 
 /** Minimal output sink — injectable so commands are testable without touching the console. */
 export interface Logger {
@@ -81,4 +86,32 @@ export async function statusCommand(dataSource: DataSource, logger: Logger): Pro
   const pending = await dataSource.showMigrations();
   logger.log(pending ? 'There are pending migrations.' : 'All migrations are applied.');
   return pending;
+}
+
+/**
+ * Report a {@link Plan} to the logger and return whether it represents drift — the CLI-facing half
+ * of the `check` verb, split out from {@link checkCommand} so it is unit-testable without a live
+ * DataSource (a canned `Plan` is enough; no DB round-trip needed).
+ */
+export function reportPlan(plan: Plan, logger: Logger): boolean {
+  if (isEmptyPlan(plan)) {
+    logger.log('No drift detected — schema matches the @Hypertable declarations.');
+    return false;
+  }
+  logger.log(formatPlanPreview(plan));
+  return true;
+}
+
+/**
+ * Diff the live-DB schema (`introspect()`) against the `@Hypertable` decorators
+ * (`compileDesiredState()` + `collectRenames()`) and report the result — the `check` CLI verb (a CI
+ * drift gate). Returns `true` when drift was found, so the caller (`main.ts`) can set a non-zero
+ * exit code without this function reaching into `process` itself.
+ */
+export async function checkCommand(dataSource: DataSource, logger: Logger): Promise<boolean> {
+  const current = await introspect(dataSource);
+  const desired = compileDesiredState(dataSource);
+  const renames = collectRenames(dataSource);
+  const plan = diffSchemaState(current, desired, { renames });
+  return reportPlan(plan, logger);
 }

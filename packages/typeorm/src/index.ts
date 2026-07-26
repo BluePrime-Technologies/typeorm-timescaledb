@@ -105,6 +105,9 @@ export type { IntrospectOptions } from './runtime/introspect.js';
 // Desired-state compiler (M4.2) — reduce the `@Hypertable` decorators to the same SchemaStateIR,
 // so the diff engine can compare desired (this) vs current (introspect()).
 export { compileDesiredState } from './runtime/desired-state.js';
+// Rename resolution (M4.2 S4) — `@Hypertable({ renamedFrom })` → the map `diffSchemaState` consumes
+// so a renamed hypertable diffs to a single `renameHypertable` op, not drop-then-create.
+export { collectRenames } from './runtime/renames.js';
 
 // Migration generation — Django/Prisma-style codegen from @Hypertable metadata.
 export {

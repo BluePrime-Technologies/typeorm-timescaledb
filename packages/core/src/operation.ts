@@ -7,6 +7,7 @@ import {
   alterRetentionPolicySQL,
   createContinuousAggregateSQL,
   createHypertableSQL,
+  renameHypertableSQL,
   type AddCompressionPolicyInput,
   type AlterPolicyInput,
   type ColumnstorePolicyInput,
@@ -14,6 +15,7 @@ import {
   type CreateContinuousAggregateInput,
   type CreateHypertableInput,
   type MigrationStatement,
+  type RenameTableInput,
   type RetentionPolicyInput,
 } from './sql/index.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
@@ -84,6 +86,12 @@ export interface AlterRetentionPolicyOperation extends AlterPolicyInput {
   readonly kind: 'alterRetentionPolicy';
 }
 
+/** Rename a hypertable's underlying table (catalog-only; `down` renames back to `from`). Emitted by
+ * the M4.2 diff when a desired hypertable resolves to a current one via `renamedFrom`. */
+export interface RenameHypertableOperation extends RenameTableInput {
+  readonly kind: 'renameHypertable';
+}
+
 /**
  * The migration operation IR — a discriminated union over `kind`. Every variant that can be
  * emitted into a generated TimescaleDB migration today is represented; the union is the
@@ -97,7 +105,8 @@ export type Operation =
   | AddContinuousAggregatePolicyOperation
   | AddCompressionPolicyOperation
   | AlterCompressionPolicyOperation
-  | AlterRetentionPolicyOperation;
+  | AlterRetentionPolicyOperation
+  | RenameHypertableOperation;
 
 /** The set of {@link Operation} discriminants. */
 export type OperationKind = Operation['kind'];
@@ -127,6 +136,8 @@ export function compileOperation(operation: Operation): MigrationStatement {
       return alterCompressionPolicySQL(operation);
     case 'alterRetentionPolicy':
       return alterRetentionPolicySQL(operation);
+    case 'renameHypertable':
+      return renameHypertableSQL(operation);
     default: {
       // Exhaustiveness: if a new Operation variant is added without a case, this fails to compile.
       // At runtime it guards a caller that (via `any`) passes an unknown discriminant.

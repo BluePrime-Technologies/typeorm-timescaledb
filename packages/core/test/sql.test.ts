@@ -3,6 +3,7 @@ import {
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
   createHypertableSQL,
+  renameHypertableSQL,
   TimescaleError,
   TimescaleErrorCode,
   type MigrationStatement,
@@ -245,6 +246,50 @@ describe('addRetentionPolicySQL', () => {
   });
 });
 
+describe('renameHypertableSQL', () => {
+  it('renames the table; down renames back (losslessly reversible)', () => {
+    const s = renameHypertableSQL({ from: 'old_metrics', to: 'metrics' });
+    expect(s.up).toEqual([`ALTER TABLE "public"."old_metrics" RENAME TO "metrics";`]);
+    expect(s.down).toEqual([`ALTER TABLE "public"."metrics" RENAME TO "old_metrics";`]);
+  });
+
+  it('is schema-qualification-aware', () => {
+    const s = renameHypertableSQL({ from: 'analytics.old_events', to: 'analytics.events' });
+    expect(s.up).toEqual([`ALTER TABLE "analytics"."old_events" RENAME TO "events";`]);
+    expect(s.down).toEqual([`ALTER TABLE "analytics"."events" RENAME TO "old_events";`]);
+  });
+
+  it('inspect targets the new (after) table name', () => {
+    const s = renameHypertableSQL({ from: 'old_metrics', to: 'metrics' });
+    expect(s.inspect).toContain(`hypertable_name = 'metrics'`);
+    expect(s.inspect).toContain(`hypertable_schema = 'public'`);
+  });
+
+  it('rejects a cross-schema rename (needs SET SCHEMA, which this does not emit)', () => {
+    expect(() => renameHypertableSQL({ from: 'public.metrics', to: 'analytics.metrics' })).toThrow(
+      TimescaleError,
+    );
+  });
+
+  it('rejects a no-op rename (from === to)', () => {
+    expect(() => renameHypertableSQL({ from: 'metrics', to: 'metrics' })).toThrow(TimescaleError);
+    expect(() => renameHypertableSQL({ from: 'public.metrics', to: 'metrics' })).toThrow(
+      TimescaleError,
+    );
+  });
+
+  it('rejects unsafe identifiers', () => {
+    expect(() =>
+      renameHypertableSQL({ from: 'metrics', to: 'metrics"; DROP TABLE x; --' }),
+    ).toThrow(TimescaleError);
+    expect(() => renameHypertableSQL({ from: 'a.b.c', to: 'metrics' })).toThrow(TimescaleError);
+  });
+
+  it('down is non-destructive (renames back, never drops)', () => {
+    expectNonDestructiveDown(renameHypertableSQL({ from: 'old_m', to: 'm' }));
+  });
+});
+
 describe('atomic statements + non-destructive down() gate (all builders)', () => {
   it('every up/down entry is a single statement (no embedded newlines)', () => {
     const all: MigrationStatement[] = [
@@ -270,5 +315,6 @@ describe('atomic statements + non-destructive down() gate (all builders)', () =>
     expectNonDestructiveDown(addColumnstorePolicySQL({ table: 'm', after: '1 day' }));
     expectNonDestructiveDown(addColumnstorePolicySQL({ table: 'm', segmentBy: ['a'] }));
     expectNonDestructiveDown(addRetentionPolicySQL({ table: 'm', dropAfter: '1 day' }));
+    expectNonDestructiveDown(renameHypertableSQL({ from: 'old_m', to: 'm' }));
   });
 });

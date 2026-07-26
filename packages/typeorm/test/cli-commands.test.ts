@@ -2,11 +2,13 @@ import 'reflect-metadata';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
+import type { Plan } from '@blueprime/timescaledb-core';
 import {
   generateMigrationFile,
   runMigrationsCommand,
   revertMigrationCommand,
   statusCommand,
+  reportPlan,
   type FileWriter,
   type Logger,
 } from '../src/cli/index.js';
@@ -129,5 +131,30 @@ describe('statusCommand', () => {
     const { logger: l2, lines: lines2 } = recordingLogger();
     expect(await statusCommand(cleanDs, l2)).toBe(false);
     expect(lines2[0]).toContain('applied');
+  });
+});
+
+describe('reportPlan', () => {
+  it('reports no drift and returns false for an empty plan', () => {
+    const { logger, lines } = recordingLogger();
+    const plan: Plan = { steps: [] };
+    expect(reportPlan(plan, logger)).toBe(false);
+    expect(lines[0]).toContain('No drift detected');
+  });
+
+  it('prints the drift preview and returns true for a non-empty plan (the CI-gate signal)', () => {
+    const { logger, lines } = recordingLogger();
+    const plan: Plan = {
+      steps: [
+        {
+          operation: { kind: 'renameHypertable', from: 'public.old_m', to: 'public.m' },
+          safety: 'online-safe',
+          reason: 'catalog-only, reversible',
+        },
+      ],
+    };
+    expect(reportPlan(plan, logger)).toBe(true);
+    expect(lines[0]).toContain('Drift detected');
+    expect(lines[0]).toContain('public.old_m');
   });
 });

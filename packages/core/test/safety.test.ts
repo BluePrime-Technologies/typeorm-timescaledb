@@ -52,6 +52,10 @@ const CASES: ReadonlyArray<{ operation: Operation; safety: SafetyClass }> = [
     operation: { kind: 'alterRetentionPolicy', table: 'public.m', from: '90 days', to: '365 days' },
     safety: 'online-safe', // re-schedules future drops, deletes no data at apply, reversible
   },
+  {
+    operation: { kind: 'renameHypertable', from: 'public.old_m', to: 'public.m' },
+    safety: 'online-safe', // catalog-only ALTER TABLE ... RENAME TO, cleanly reversible
+  },
 ];
 
 describe('classifyOperation', () => {
@@ -73,6 +77,7 @@ describe('classifyOperation', () => {
       'addCompressionPolicy',
       'alterCompressionPolicy',
       'alterRetentionPolicy',
+      'renameHypertable',
     ];
     expect([...new Set(CASES.map((c) => c.operation.kind))].sort()).toEqual([...KINDS].sort());
   });

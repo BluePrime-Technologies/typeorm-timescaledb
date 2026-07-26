@@ -86,6 +86,12 @@ export function classifyOperation(operation: Operation): OperationSafety {
         reason:
           're-schedules future chunk drops (remove-then-add of a background job) — deletes no data at apply; down() restores the prior threshold. ⚠️ SHORTENING drop_after means the next scheduler tick drops chunks that were previously retained (declared intent, but review the from→to direction)',
       };
+    case 'renameHypertable':
+      return {
+        safety: 'online-safe',
+        reason:
+          'ALTER TABLE ... RENAME TO is a catalog-only metadata change — no data rewrite, no lock beyond the instant rename — and is cleanly reversible (down() renames back); TimescaleDB updates the hypertable/chunk/CAGG catalog automatically',
+      };
     default: {
       // Exhaustiveness: a new Operation variant without a case fails to compile here.
       const unhandled: never = operation;
