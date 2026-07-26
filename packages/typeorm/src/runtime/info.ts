@@ -39,6 +39,23 @@ function splitQualified(table: string): { schema?: string; name: string } {
   return dot === -1 ? { name: table } : { schema: table.slice(0, dot), name: table.slice(dot + 1) };
 }
 
+/**
+ * Resolve the schema a `hypertable` filter should be scoped to. An UNQUALIFIED name must never widen
+ * to "every schema": in a schema-per-tenant layout two tenants each own a `metrics` hypertable, and
+ * an unscoped predicate would return the other tenant's rows. Mirrors the migration generator's rule
+ * — an unqualified name resolves against the DataSource's configured schema, falling back to
+ * `public` — so results are deterministic rather than `search_path`-dependent.
+ */
+function resolveFilterSchema(
+  dataSource: DataSource,
+  table: string,
+): { schema: string; name: string } {
+  const { schema, name } = splitQualified(table);
+  if (schema !== undefined) return { schema, name };
+  const configured = (dataSource.options as { schema?: string }).schema;
+  return { schema: configured ?? 'public', name };
+}
+
 // ---------------------------------------------------------------------------
 // Hypertables
 // ---------------------------------------------------------------------------
@@ -93,9 +110,9 @@ export async function listChunks(
   const params: unknown[] = [];
   let where = '';
   if (options.hypertable !== undefined) {
-    const { schema, name } = splitQualified(options.hypertable);
+    const { schema, name } = resolveFilterSchema(dataSource, options.hypertable);
     where = ` WHERE hypertable_name = $${params.push(name)}`;
-    if (schema !== undefined) where += ` AND hypertable_schema = $${params.push(schema)}`;
+    where += ` AND hypertable_schema = $${params.push(schema)}`;
   }
   const rows: Array<Record<string, unknown>> = await dataSource.query(
     `SELECT hypertable_schema, hypertable_name, chunk_schema, chunk_name,
@@ -170,9 +187,9 @@ export async function listJobs(
   const params: unknown[] = [];
   let where = '';
   if (options.hypertable !== undefined) {
-    const { schema, name } = splitQualified(options.hypertable);
+    const { schema, name } = resolveFilterSchema(dataSource, options.hypertable);
     where = ` WHERE hypertable_name = $${params.push(name)}`;
-    if (schema !== undefined) where += ` AND hypertable_schema = $${params.push(schema)}`;
+    where += ` AND hypertable_schema = $${params.push(schema)}`;
   }
   const rows: Array<Record<string, unknown>> = await dataSource.query(
     `SELECT job_id, application_name, schedule_interval::text AS schedule_interval,

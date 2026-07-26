@@ -114,3 +114,38 @@ describe('classifyOperation', () => {
     expect(result.reason).toContain('dropEverything');
   });
 });
+
+describe('classifyOperation — retention direction (audit)', () => {
+  it('refuses a SHORTENING alterRetentionPolicy (the next run drops previously-retained chunks)', () => {
+    const result = classifyOperation({
+      kind: 'alterRetentionPolicy',
+      table: 'public.m',
+      from: '365 days',
+      to: '30 days',
+    });
+    expect(result.safety).toBe('refuse-by-default');
+    expect(result.reason).toMatch(/shortens drop_after/);
+  });
+
+  it('keeps a LENGTHENING alterRetentionPolicy online-safe', () => {
+    expect(
+      classifyOperation({
+        kind: 'alterRetentionPolicy',
+        table: 'public.m',
+        from: '30 days',
+        to: '365 days',
+      }).safety,
+    ).toBe('online-safe');
+  });
+
+  it('does not claim safety it cannot prove (unparseable threshold stays online-safe)', () => {
+    expect(
+      classifyOperation({
+        kind: 'alterRetentionPolicy',
+        table: 'public.m',
+        from: 'not-an-interval',
+        to: '30 days',
+      }).safety,
+    ).toBe('online-safe');
+  });
+});

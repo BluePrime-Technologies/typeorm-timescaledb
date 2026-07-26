@@ -359,3 +359,69 @@ describe.skipIf(!IMAGE)('M4.0 introspect() — live-DB → SchemaStateIR round-t
     expect(pct).toBeGreaterThanOrEqual(95);
   });
 });
+
+// ── Pre-release audit regression ───────────────────────────────────────────────────────────────
+describe.skipIf(!IMAGE)(
+  'introspect() — policy thresholds under a non-default IntervalStyle',
+  () => {
+    let container: StartedTestContainer;
+    let ds: DataSource;
+
+    beforeAll(async () => {
+      ({ container, ds } = await boot(IMAGE as string));
+    }, 240_000);
+
+    afterAll(async () => {
+      await ds?.destroy();
+      await container?.stop();
+    });
+
+    it('normalizes ISO-8601 policy thresholds frozen in the job config', async () => {
+      // A policy's threshold is stored as TEXT inside the job's `config` JSONB, rendered in whatever
+      // IntervalStyle the CREATING session used — so the reader's `SET LOCAL intervalstyle` cannot
+      // re-render it. A policy created under `iso_8601` read back as `P7D`, which the canonicalizer
+      // quarantines: the diff then emitted an alter on EVERY run and `applyDirect` threw compiling it.
+      await ds.query(`CREATE TABLE iso_policy(t timestamptz NOT NULL, v double precision)`);
+      await ds.query(`SELECT create_hypertable('public.iso_policy','t')`);
+      await ds.query(`ALTER TABLE public.iso_policy SET (timescaledb.compress)`);
+      // Create the policies in a session using ISO-8601 interval rendering.
+      const qr = ds.createQueryRunner();
+      try {
+        await qr.connect();
+        await qr.query(`SET intervalstyle = 'iso_8601'`);
+        await qr.query(`SELECT add_compression_policy('public.iso_policy', INTERVAL '7 days')`);
+        await qr.query(`SELECT add_retention_policy('public.iso_policy', INTERVAL '30 days')`);
+      } finally {
+        await qr.release();
+      }
+
+      // Raw catalog really does hold the ISO form — otherwise this test proves nothing.
+      const raw: Array<{ v: string }> = await ds.query(
+        `SELECT coalesce(config->>'compress_after', config->>'drop_after') AS v
+         FROM timescaledb_information.jobs WHERE hypertable_name = 'iso_policy'`,
+      );
+      expect(raw.map((r) => r.v).sort()).toEqual(['P30D', 'P7D']);
+
+      const ir = await introspect(ds);
+      const ht = ir.hypertables.find((h) => h.table === 'public.iso_policy');
+      expect(ht).toBeDefined();
+      // Normalized back to the Postgres rendering the canonicalizer understands.
+      expect(ht?.compressionPolicy?.after).toBe('7 days');
+      expect(ht?.retentionPolicy?.after).toBe('30 days');
+    });
+
+    it('leaves an INTEGER-time threshold untouched (never coerced to an interval)', async () => {
+      // `'500000'::interval` is silently 277:46:40 — a blind cast would corrupt integer-time policies.
+      await ds.query(`CREATE TABLE int_policy(t bigint NOT NULL, v double precision)`);
+      await ds.query(
+        `SELECT create_hypertable('public.int_policy','t', chunk_time_interval => 1000000)`,
+      );
+      await ds.query(`ALTER TABLE public.int_policy SET (timescaledb.compress)`);
+      await ds.query(`SELECT add_compression_policy('public.int_policy', 500000::bigint)`);
+
+      const ir = await introspect(ds);
+      const ht = ir.hypertables.find((h) => h.table === 'public.int_policy');
+      expect(ht?.compressionPolicy?.after).toBe(500000);
+    });
+  },
+);

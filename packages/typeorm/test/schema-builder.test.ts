@@ -161,7 +161,12 @@ describe('TimescaleSchemaBuilder', () => {
     },
     {
       method: 'addContinuousAggregatePolicy',
-      input: { view: 'mv', startOffset: '1 month', endOffset: '1 hour' },
+      input: {
+        view: 'mv',
+        startOffset: '1 month',
+        endOffset: '1 hour',
+        scheduleInterval: '1 hour',
+      },
       kind: 'addContinuousAggregatePolicy',
     },
     {

@@ -157,14 +157,17 @@ d('cross-store resolve over two separate DataSource instances', () => {
   });
 
   it('a misdeclared columnType (a non-castable value) fails the batch as UNAVAILABLE, not a false not_found', async () => {
-    // `'not-a-uuid'::uuid[]` raises 22P02, the adapter throws, and the engine records
-    // ADAPTER_UNAVAILABLE (availability ≠ correctness) — never a silent not_found for the batch.
+    // `'not-a-uuid'::uuid[]` raises 22P02, the adapter throws, and the engine records a PERMANENT
+    // `misconfigured` verdict. The load-bearing invariant is unchanged — never a silent not_found for
+    // the batch — but the failure is no longer retryable: a malformed id can never become castable,
+    // and treating it as a transient outage retried the batch forever and poisoned valid siblings.
     const reg = new ReferenceRegistry().register({ ...CANONICAL, columnType: 'uuid' });
     const [v] = await resolveReferences([{ ref: CANONICAL, value: 'not-a-uuid' }], {
       registry: reg,
       adapters: [canonical],
     });
-    expect(v?.status).toBe('unavailable');
+    expect(v?.status).toBe('misconfigured');
+    expect(v?.status).not.toBe('not_found');
   });
 
   // A mis-declared registry target (table/column absent in the live schema) makes Postgres reject
@@ -258,14 +261,16 @@ d('cross-store resolve over two separate DataSource instances', () => {
     expect(miss?.status).toBe('not_found');
   });
 
-  it('treats a type-incompatible id as unavailable (fail-safe), never a silent not_found or crash', async () => {
-    // 'not-a-uuid' is a valid scalar but not a valid uuid → pg rejects the batch (22P02). The
-    // engine must record `unavailable` (couldn't verify) — NOT not_found, and NOT a thrown crash.
+  it('treats a type-incompatible id as a PERMANENT error, never a silent not_found or crash', async () => {
+    // 'not-a-uuid' is a valid scalar but not a valid uuid → pg rejects the batch (22P02). It must be
+    // reported as permanent (`misconfigured`) — NOT not_found, NOT a thrown crash, and NOT a
+    // retryable `unavailable` that would re-run the doomed batch forever.
     const [v] = await resolveReferences([{ ref: CANONICAL, value: 'not-a-uuid' }], {
       registry,
       adapters: [canonical],
     });
-    expect(v?.status).toBe('unavailable');
+    expect(v?.status).toBe('misconfigured');
+    expect(v?.ok).toBe(false);
   });
 
   it('batches a mixed id set into one round-trip per group', async () => {

@@ -209,8 +209,15 @@ export class ReadingHourly {
 - `@AggregateColumn({ fn, column })` marks an aggregate output; omit `column`
   only for `fn: 'count'` (→ `count(*)`).
 
-Pass CAGG classes to `generateTimescaleMigration` (or the `generate` CLI, which
-does this for you) so their DDL is emitted after the hypertables they depend on:
+Pass CAGG classes to `generateTimescaleMigration` so their DDL is emitted after
+the hypertables they depend on.
+
+> **Note.** The `generate` CLI does **not** emit continuous-aggregate DDL. A CAGG
+> is a view, not a TypeORM entity, so it cannot be discovered from the
+> DataSource's `entityMetadatas` — the classes have to be passed explicitly,
+> which only the programmatic API accepts. Call
+> `generateTimescaleMigration(dataSource, { continuousAggregates: [...] })` from
+> a small script when your schema includes CAGGs.
 
 ```ts
 import { generateTimescaleMigration } from 'typeorm-timescaledb';

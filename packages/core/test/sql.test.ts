@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
+  alterColumnstoreConfigSQL,
+  alterCompressionPolicySQL,
+  alterRetentionPolicySQL,
   createHypertableSQL,
   renameHypertableSQL,
   TimescaleError,
@@ -316,5 +319,72 @@ describe('atomic statements + non-destructive down() gate (all builders)', () =>
     expectNonDestructiveDown(addColumnstorePolicySQL({ table: 'm', segmentBy: ['a'] }));
     expectNonDestructiveDown(addRetentionPolicySQL({ table: 'm', dropAfter: '1 day' }));
     expectNonDestructiveDown(renameHypertableSQL({ from: 'old_m', to: 'm' }));
+  });
+});
+
+// ── Pre-release audit regressions (core SQL builders) ──────────────────────────────────────────
+describe('core SQL builders — audit regressions', () => {
+  it('uses a named dollar-quote tag so a $$ in an identifier cannot close the DO block', () => {
+    // `$` is a legal identifier char and passes the allow-list, so `a$$b` rendered a `$$` INSIDE
+    // `DO $$ ... $$`. Postgres closes the body at that first `$$`, making the down() a syntax error.
+    const stmt = createHypertableSQL({ table: 'a$$b', timeColumn: 'ts' });
+    const down = stmt.down.join('\n');
+    expect(down).toContain('$tsdb_notice$');
+    // the body must not be terminated early: exactly the opening and closing tag, nothing between
+    expect(down.split('$tsdb_notice$')).toHaveLength(3);
+    expect(down.startsWith('DO $tsdb_notice$')).toBe(true);
+    expect(down.trimEnd().endsWith('$tsdb_notice$;')).toBe(true);
+  });
+
+  it('rejects a NEGATIVE threshold in a policy alter (would drop the whole hypertable)', () => {
+    // add_retention_policy(drop_after => INTERVAL '-30 days') is accepted by TimescaleDB and drops
+    // every chunk older than now() + 30 days — i.e. everything — on the next job run.
+    expect(() =>
+      alterRetentionPolicySQL({ table: 'public.m', from: '90 days', to: '-30 days' }),
+    ).toThrow(TimescaleError);
+    expect(() =>
+      alterCompressionPolicySQL({ table: 'public.m', from: '7 days', to: '-1 day' }),
+    ).toThrow(TimescaleError);
+    // and a zero threshold is equally meaningless
+    expect(() =>
+      alterRetentionPolicySQL({ table: 'public.m', from: '90 days', to: '0 days' }),
+    ).toThrow(TimescaleError);
+  });
+
+  it('preserves a customized schedule_interval across a remove-then-add policy alter', () => {
+    // The alter recreates the job, which otherwise resets a cadence the user set via alter_job —
+    // silently, and irreversibly (down re-added with the default too).
+    const stmt = alterRetentionPolicySQL({
+      table: 'public.m',
+      from: '90 days',
+      to: '30 days',
+      scheduleInterval: '12 hours',
+    });
+    expect(stmt.up.join('\n')).toContain("schedule_interval => INTERVAL '12 hours'");
+    expect(stmt.down.join('\n')).toContain("schedule_interval => INTERVAL '12 hours'");
+  });
+
+  it('omits schedule_interval entirely when the caller does not supply one', () => {
+    const stmt = alterRetentionPolicySQL({ table: 'public.m', from: '90 days', to: '30 days' });
+    expect(stmt.up.join('\n')).not.toContain('schedule_interval');
+  });
+
+  it('refuses to CLEAR a columnstore facet (ALTER ... SET is additive, so it would silently persist)', () => {
+    expect(() =>
+      alterColumnstoreConfigSQL({
+        table: 'public.m',
+        from: { segmentBy: ['a'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+        to: { segmentBy: ['a'], orderBy: [] },
+      }),
+    ).toThrow(/cannot clear "orderBy"/);
+  });
+
+  it('inspect reports order DIRECTION, not just the column names', () => {
+    const stmt = alterColumnstoreConfigSQL({
+      table: 'public.m',
+      from: { segmentBy: ['a'], orderBy: [{ column: 'ts', direction: 'ASC' }] },
+      to: { segmentBy: ['a'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
+    });
+    expect(stmt.inspect).toContain('orderby_desc');
   });
 });

@@ -891,7 +891,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
     // The non-destructive hypertable-down NOTICE, reconstructed independently from the builder's
     // format (nonDestructiveNotice) so the golden byte-locks the FULL string, not a self-reference.
     const htNotice = (ident: string): string =>
-      `DO $$ BEGIN RAISE NOTICE 'timescaledb: not reverting hypertable on % — reverting would lose data (non-destructive down)', '${ident}'; END $$;`;
+      `DO $tsdb_notice$ BEGIN RAISE NOTICE 'timescaledb: not reverting hypertable on % — reverting would lose data (non-destructive down)', '${ident}'; END $tsdb_notice$;`;
     expect(gen.down).toEqual([
       // CAGG teardown is unshifted to the front (remove policy before DROP).
       `SELECT remove_continuous_aggregate_policy('"public"."reading_hourly_refreshed"', if_exists => TRUE);`,
@@ -905,5 +905,57 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       htNotice('"public"."trades"'),
     ]);
     expect(gen.down).toHaveLength(6);
+  });
+});
+
+// ── Pre-release audit regression ───────────────────────────────────────────────────────────────
+describe('hierarchical CAGG column resolution (audit)', () => {
+  // A hypertable whose group column is REMAPPED via @Column({ name }).
+  class AuditReading {}
+  Hypertable({ chunkInterval: '1 day' })(AuditReading);
+  TimeColumn()(AuditReading.prototype, 'measuredAt');
+  HypertablePrimaryKey()(AuditReading.prototype, 'measuredAt');
+
+  // Child CAGG: a @GroupColumn is projected UNALIASED, so its output name is the SOURCE
+  // physical column (`sensor_id`), not the property (`sensorId`).
+  class AuditHourly {}
+  ContinuousAggregate({ name: 'audit_hourly', source: AuditReading, bucket: '1 hour' })(
+    AuditHourly,
+  );
+  BucketColumn()(AuditHourly.prototype, 'bucket');
+  GroupColumn()(AuditHourly.prototype, 'sensorId');
+  AggregateColumn({ fn: 'avg', column: 'value' })(AuditHourly.prototype, 'avgValue');
+
+  // Parent hierarchical CAGG selecting FROM the child view.
+  class AuditDaily {}
+  ContinuousAggregate({ name: 'audit_daily', source: AuditHourly, bucket: '1 day' })(AuditDaily);
+  BucketColumn()(AuditDaily.prototype, 'bucket');
+  GroupColumn()(AuditDaily.prototype, 'sensorId');
+  AggregateColumn({ fn: 'avg', column: 'avgValue' })(AuditDaily.prototype, 'avgValue');
+
+  const ds = (): DataSource =>
+    stubDataSource([
+      {
+        target: AuditReading,
+        tableName: 'audit_reading',
+        columns: [
+          { propertyName: 'measuredAt', databaseName: 'measured_at' },
+          { propertyName: 'sensorId', databaseName: 'sensor_id' },
+          { propertyName: 'value', databaseName: 'value' },
+        ],
+      },
+    ]);
+
+  it('references the child view by its ACTUAL output column, not the parent property name', () => {
+    // Resolving hierarchical columns by identity emitted "sensorId", a column that does not exist
+    // on the child view — `column "sensorId" does not exist`, rolling back the whole migration.
+    const gen = generateTimescaleMigration(ds(), {
+      timestamp: TS,
+      continuousAggregates: [AuditHourly, AuditDaily],
+    });
+    const daily = gen.up.find((s) => s.includes('audit_daily'));
+    expect(daily).toBeDefined();
+    expect(daily).toContain('"sensor_id"');
+    expect(daily).not.toContain('"sensorId"');
   });
 });

@@ -78,7 +78,12 @@ export function timeBucketExpr(input: TimeBucketExprInput): string {
       : `INTERVAL ${quoteLiteral(assertInterval(input.offset, 'time_bucket offset'))}`;
 
   if (input.timezone !== undefined) {
-    const tz = quoteLiteral(input.timezone, 'time_bucket timezone');
+    // Cast explicitly to `text`. An untyped literal leaves PostgreSQL unable to choose between the
+    // ORIGIN overload `time_bucket(interval, timestamp, timestamp)` and the TIMEZONE overload
+    // `time_bucket(interval, timestamptz, text)` on a `timestamp without time zone` column, so the
+    // query fails with "function time_bucket(...) is not unique". It only happens to resolve on a
+    // `timestamptz` column.
+    const tz = `${quoteLiteral(input.timezone, 'time_bucket timezone')}::text`;
     // Positional tz variant: width, ts, tz, origin, offset. `offset` without an
     // explicit `origin` needs a NULL placeholder to keep positions aligned.
     const args = [width, col, tz];

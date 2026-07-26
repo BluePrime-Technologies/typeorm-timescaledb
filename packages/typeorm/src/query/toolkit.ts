@@ -86,9 +86,11 @@ function applyTimeRange<T extends ObjectLiteral>(
  * documented failure instead of a raw `function ... does not exist` from PostgreSQL.
  */
 
-// Cache the presence check per DataSource: a present OR a deterministically-absent
-// toolkit is a stable fact, so resolve/reject it once. Only a TRANSIENT query failure
-// (connection blip) is evicted so it can be retried.
+// Cache the presence check per DataSource. Only a POSITIVE result is a stable fact: the extension
+// can be installed at any time (a migration running `CREATE EXTENSION timescaledb_toolkit`, or an
+// operator doing it by hand), and caching the absence permanently meant the process had to be
+// restarted before the toolkit could ever be used. Every FAILURE — missing extension or a transient
+// blip — is therefore evicted so the next call re-checks.
 const toolkitChecked = new WeakMap<DataSource, Promise<void>>();
 
 /** Resolve once per DataSource; throws `TSDB_TOOLKIT_MISSING` when the extension is absent. */
@@ -106,12 +108,10 @@ export function assertToolkit(dataSource: DataSource): Promise<void> {
     });
     // Keep the deterministic "missing" verdict cached; evict only a transient failure
     // (e.g. a dropped connection) so the next call re-checks rather than re-throwing it.
-    pending.catch((err: unknown) => {
-      const deterministic =
-        err instanceof TimescaleError && err.code === TimescaleErrorCode.TOOLKIT_MISSING;
-      if (!deterministic) {
-        toolkitChecked.delete(dataSource);
-      }
+    // Side-channel eviction only — must NOT rethrow, or this derived promise becomes an unhandled
+    // rejection. The caller still receives the original rejection from `pending`.
+    pending.catch(() => {
+      toolkitChecked.delete(dataSource);
     });
     toolkitChecked.set(dataSource, pending);
   }

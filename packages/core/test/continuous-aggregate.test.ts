@@ -176,14 +176,17 @@ describe('addContinuousAggregatePolicySQL', () => {
     expect(stmt.up[0]).toContain('start_offset => NULL, end_offset => NULL');
   });
 
-  it('omits schedule_interval when not provided (server default)', () => {
+  it('ALWAYS emits schedule_interval (TimescaleDB 2.18 has no overload without it)', () => {
+    // Omitting it produced `function add_continuous_aggregate_policy(...) does not exist` on the
+    // package's declared 2.18 floor, so the field is required and always rendered.
     const stmt = addContinuousAggregatePolicySQL({
       view: 'reading_hourly',
       startOffset: '7 days',
       endOffset: '1 hour',
+      scheduleInterval: '1 hour',
     });
-    expect(stmt.up[0]).not.toContain('schedule_interval');
-    expect(stmt.up[0]).toContain("end_offset => INTERVAL '1 hour', if_not_exists => TRUE");
+    expect(stmt.up[0]).toContain("schedule_interval => INTERVAL '1 hour'");
+    expect(stmt.up[0]).toContain('if_not_exists => TRUE');
   });
 
   it('honours a schema-qualified view in add, remove, and inspect', () => {
@@ -191,6 +194,7 @@ describe('addContinuousAggregatePolicySQL', () => {
       view: 'analytics.reading_hourly',
       startOffset: '1 month',
       endOffset: '1 hour',
+      scheduleInterval: '1 hour',
     });
     expect(stmt.up[0]).toContain(`add_continuous_aggregate_policy('"analytics"."reading_hourly"'`);
     expect(stmt.down[0]).toContain(

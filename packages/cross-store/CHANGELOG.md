@@ -6,6 +6,42 @@ All notable changes to `@blueprime/cross-store` are documented here. This packag
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **One malformed id poisoned an entire batch as a retryable outage.** A group resolves in a single
+  `= ANY($1::uuid[])`, so one non-uuid value makes PostgreSQL reject the whole statement (`22P02`).
+  That was classified as `unavailable` — transient — so the batch retried forever and every
+  provably-valid sibling id failed with it. `22P02`/`22003` are now permanent, reported as
+  `misconfigured` with a message naming the cause. (The classifier still refuses to read a SQLSTATE
+  out of an error _message_ for these codes: `22P02` echoes the offending value, which would let
+  hostile data forge a classification.)
+- **A row the database matched could be reported `not_found`.** Results were indexed by the driver's
+  raw value, but PostgreSQL matches `char(n)`/`bpchar` ignoring trailing blanks (the driver returns
+  the value space-padded) and `citext` case-insensitively. Keys are now normalized per column type on
+  both the indexing and lookup side.
+- **`number` ids past `Number.MAX_SAFE_INTEGER` could resolve against the wrong row** — such a value
+  has already lost precision, so two distinct bigint ids collapse onto one double. They are now
+  rejected with a message directing callers to `string`/`bigint`.
+- **`verifyReferences` could throw despite documenting that it never does** — a non-class row wedged
+  a paged reconciliation sweep instead of being reported. In sweep mode it is now an `invalid`
+  verdict; the write path still fails closed.
+- **Tenant isolation could not be made mandatory.** `scopeColumns` is only an allow-list, so a check
+  that omitted the scope entirely resolved across every tenant. Registry entries accept
+  `requiredScopeColumns`, and a check missing one now raises `SCOPE_VIOLATION`.
+
+- **Writes were refused for an optional `@Resolve` field that was never assigned.** A nullable
+  cross-store reference declared the idiomatic way (`parentId?: string`, left unset) has no own
+  property on the instance. `lockValidatedFields` — the save-time TOCTOU guard — required an own
+  descriptor, so it threw `INVALID_ARGUMENT` and the entity was never saved, even though the field
+  correctly resolved as `not_referenced`. The error also misreported the cause as "an inherited
+  getter/setter or a non-configurable field". An absent property is now locked as a non-writable
+  `undefined` and removed again on restore, so the guarantee is unchanged (a post-validation
+  mutation still throws); genuinely unlockable shapes — an **inherited accessor** or a
+  non-configurable field — continue to fail closed. Found by the pre-release audit; covered by
+  regression tests for both the absent-property and inherited-accessor paths.
+
 ## [0.2.0] - 2026-07-22
 
 Correctness + registry-hardening release (finishing the M3 cross-store milestone). No breaking

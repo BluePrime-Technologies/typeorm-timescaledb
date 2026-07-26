@@ -110,9 +110,28 @@ export function parseTable(table: string): ParsedTable {
   return { schema, name, ident, regclass: quoteLiteral(ident) };
 }
 
+/**
+ * Dollar-quote tag for the generated `DO` blocks. A bare `$$` is unusable here: `$` is a legal
+ * PostgreSQL identifier character (and is allowed by `assertSafeIdentifier`), so a table like
+ * `a$$b` renders a `$$` INSIDE the block body. PostgreSQL's dollar-quote lexer ignores single
+ * quotes and closes the body at the first `$$`, making the whole statement a syntax error — the
+ * generated `down()` could not be executed at all. A named tag is only terminated by that exact
+ * delimiter.
+ */
+const DO_TAG = '$tsdb_notice$';
+
 /** A no-op `down` that documents why the `up` is intentionally not reversed. */
 function nonDestructiveNotice(reason: string, tableIdent: string): string {
-  return `DO $$ BEGIN RAISE NOTICE ${quoteLiteral(`timescaledb: not reverting ${reason} on % — reverting would lose data (non-destructive down)`)}, ${quoteLiteral(tableIdent)}; END $$;`;
+  const body = `BEGIN RAISE NOTICE ${quoteLiteral(`timescaledb: not reverting ${reason} on % — reverting would lose data (non-destructive down)`)}, ${quoteLiteral(tableIdent)}; END`;
+  if (body.includes(DO_TAG)) {
+    // Unreachable for any allow-listed identifier, but never emit a block the tag cannot close.
+    throw new TimescaleError(
+      TimescaleErrorCode.UNSAFE_IDENTIFIER,
+      `identifier contains the reserved dollar-quote tag ${DO_TAG}`,
+      { table: tableIdent },
+    );
+  }
+  return `DO ${DO_TAG} ${body} ${DO_TAG};`;
 }
 
 export interface CreateHypertableInput {
@@ -350,12 +369,27 @@ function compressionPolicyInspect(t: ParsedTable): string {
 }
 const removeCompressionPolicyCall = (t: ParsedTable): string =>
   `CALL remove_columnstore_policy(${t.regclass}, if_exists => TRUE);`;
-const addCompressionPolicyCall = (t: ParsedTable, after: string, ifNotExists: boolean): string =>
-  `CALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(after)}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`;
+const addCompressionPolicyCall = (
+  t: ParsedTable,
+  after: string,
+  ifNotExists: boolean,
+  scheduleInterval?: string,
+): string =>
+  `CALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(after)}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'}${scheduleArg(scheduleInterval)});`;
 const removeRetentionPolicyCall = (t: ParsedTable): string =>
   `SELECT remove_retention_policy(${t.regclass}, if_exists => TRUE);`;
-const addRetentionPolicyCall = (t: ParsedTable, dropAfter: string, ifNotExists: boolean): string =>
-  `SELECT add_retention_policy(${t.regclass}, drop_after => INTERVAL ${quoteLiteral(dropAfter)}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`;
+const scheduleArg = (scheduleInterval: string | undefined): string =>
+  scheduleInterval === undefined
+    ? ''
+    : `, schedule_interval => INTERVAL ${quoteLiteral(scheduleInterval)}`;
+
+const addRetentionPolicyCall = (
+  t: ParsedTable,
+  dropAfter: string,
+  ifNotExists: boolean,
+  scheduleInterval?: string,
+): string =>
+  `SELECT add_retention_policy(${t.regclass}, drop_after => INTERVAL ${quoteLiteral(dropAfter)}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'}${scheduleArg(scheduleInterval)});`;
 
 export interface AddCompressionPolicyInput {
   /** Table name, optionally `schema.table`. The columnstore must already be enabled. */
@@ -390,6 +424,13 @@ export interface AlterPolicyInput {
   readonly from: string;
   /** The desired threshold interval (for `up` — the new policy). */
   readonly to: string;
+  /**
+   * The job's current `schedule_interval`. These builders REMOVE then re-ADD the policy, which
+   * creates a fresh job at TimescaleDB's default cadence — silently discarding a cadence the user
+   * tuned with `alter_job`, and not restoring it on `down` either. Pass the introspected value to
+   * preserve it on both sides. Omit only when the job is known to use the default.
+   */
+  readonly scheduleInterval?: string;
 }
 
 export interface SetChunkIntervalInput {
@@ -475,6 +516,22 @@ export function alterColumnstoreConfigSQL(input: AlterColumnstoreConfigInput): M
       { table: input.table },
     );
   }
+  // `ALTER TABLE ... SET (reloption)` is ADDITIVE: an option the clause omits keeps its old value.
+  // So a `to` that empties a facet the current config has set cannot be expressed — the statement
+  // would succeed while leaving the old value in place, i.e. report success on a state it did not
+  // reach (and `down` would be wrong the same way). Refuse instead of silently diverging. The diff
+  // engine is unaffected: it back-fills an undeclared facet from the current state before building.
+  for (const facet of ['segmentBy', 'orderBy'] as const) {
+    if (input.to[facet].length === 0 && input.from[facet].length > 0) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `alterColumnstoreConfig on ${t.ident}: cannot clear "${facet}" — ALTER TABLE ... SET is ` +
+          `additive, so the existing value would silently remain. Pass the explicit target value, ` +
+          `or use a hand-written migration to reset the columnstore configuration.`,
+        { table: input.table, facet },
+      );
+    }
+  }
   const fromClause = columnstoreConfigClause(input.from);
   const up = [`ALTER TABLE ${t.ident} SET (${toClause});`];
   // `from` is the introspected current config (a live columnstore always reports its orderby), so it is
@@ -484,8 +541,11 @@ export function alterColumnstoreConfigSQL(input: AlterColumnstoreConfigInput): M
     fromClause === ''
       ? [nonDestructiveNotice('columnstore configuration', t.ident)]
       : [`ALTER TABLE ${t.ident} SET (${fromClause});`];
+  // Select the direction/nulls columns too: `orderby` alone reports only column NAMES, so an
+  // ASC↔DESC change (which this builder can emit) was invisible to the inspect query.
   const inspect =
-    `SELECT segmentby, orderby FROM _timescaledb_catalog.compression_settings cs ` +
+    `SELECT segmentby, orderby, orderby_desc, orderby_nullsfirst ` +
+    `FROM _timescaledb_catalog.compression_settings cs ` +
     `JOIN pg_class cl ON cl.oid = cs.relid JOIN pg_namespace n ON n.oid = cl.relnamespace ` +
     `WHERE n.nspname = ${quoteLiteral(t.schema)} AND cl.relname = ${quoteLiteral(t.name)};`;
   return { up, down, inspect };
@@ -496,6 +556,8 @@ export interface RemovePolicyInput {
   readonly table: string;
   /** The threshold the policy currently has — used by `down` to re-add the removed policy. */
   readonly restoreAfter: string;
+  /** The job's current `schedule_interval`, so `down` restores the cadence as well as the threshold. */
+  readonly scheduleInterval?: string;
 }
 
 /**
@@ -511,7 +573,7 @@ export function removeRetentionPolicySQL(input: RemovePolicyInput): MigrationSta
     `WHERE proc_name = 'policy_retention' AND hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`;
   return {
     up: [removeRetentionPolicyCall(t)],
-    down: [addRetentionPolicyCall(t, restore, true)],
+    down: [addRetentionPolicyCall(t, restore, true, input.scheduleInterval)],
     inspect,
   };
 }
@@ -526,7 +588,7 @@ export function removeCompressionPolicySQL(input: RemovePolicyInput): MigrationS
   const restore = assertParsableInterval(input.restoreAfter, 'restoreAfter', { positive: true });
   return {
     up: [removeCompressionPolicyCall(t)],
-    down: [addCompressionPolicyCall(t, restore, true)],
+    down: [addCompressionPolicyCall(t, restore, true, input.scheduleInterval)],
     inspect: compressionPolicyInspect(t),
   };
 }
@@ -541,15 +603,21 @@ export function alterCompressionPolicySQL(input: AlterPolicyInput): MigrationSta
   const t = parseTable(input.table);
   // `from` is the introspected current threshold (Postgres output form — may be `HH:MM:SS` for a
   // sub-day interval like `compress after '6 hours'`); accept any parseable form, not just `<n> <unit>`.
-  const to = assertParsableInterval(input.to, 'to');
-  const from = assertParsableInterval(input.from, 'from');
+  const to = assertParsableInterval(input.to, 'to', { positive: true });
+  const from = assertParsableInterval(input.from, 'from', { positive: true });
   // The add half asserts fresh (`if_not_exists => FALSE`): after the preceding remove the policy must
   // be gone, so a duplicate here means the remove did not take effect — fail loudly rather than silently
   // no-op and leave the OLD threshold in place (a silent drift). remove precedes add, so the block stays
   // idempotent on re-run.
   return {
-    up: [removeCompressionPolicyCall(t), addCompressionPolicyCall(t, to, false)],
-    down: [removeCompressionPolicyCall(t), addCompressionPolicyCall(t, from, false)],
+    up: [
+      removeCompressionPolicyCall(t),
+      addCompressionPolicyCall(t, to, false, input.scheduleInterval),
+    ],
+    down: [
+      removeCompressionPolicyCall(t),
+      addCompressionPolicyCall(t, from, false, input.scheduleInterval),
+    ],
     inspect: compressionPolicyInspect(t),
   };
 }
@@ -563,16 +631,22 @@ export function alterRetentionPolicySQL(input: AlterPolicyInput): MigrationState
   const t = parseTable(input.table);
   // `from` is the introspected current threshold (may be a sub-day `HH:MM:SS` form); accept any
   // parseable interval form, not just `<n> <unit>`.
-  const to = assertParsableInterval(input.to, 'to');
-  const from = assertParsableInterval(input.from, 'from');
+  const to = assertParsableInterval(input.to, 'to', { positive: true });
+  const from = assertParsableInterval(input.from, 'from', { positive: true });
   const inspect =
     `SELECT job_id, proc_name, schedule_interval, config FROM timescaledb_information.jobs ` +
     `WHERE proc_name = 'policy_retention' AND hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`;
   // Assert fresh (`if_not_exists => FALSE`) after the remove — a duplicate means the remove failed;
   // fail loudly rather than silently leave the old threshold. remove precedes add → block idempotent.
   return {
-    up: [removeRetentionPolicyCall(t), addRetentionPolicyCall(t, to, false)],
-    down: [removeRetentionPolicyCall(t), addRetentionPolicyCall(t, from, false)],
+    up: [
+      removeRetentionPolicyCall(t),
+      addRetentionPolicyCall(t, to, false, input.scheduleInterval),
+    ],
+    down: [
+      removeRetentionPolicyCall(t),
+      addRetentionPolicyCall(t, from, false, input.scheduleInterval),
+    ],
     inspect,
   };
 }
