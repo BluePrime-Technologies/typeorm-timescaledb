@@ -297,6 +297,63 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
   });
 
+  it('detects a CHANGED columnstore config as alterColumnstoreConfig and converges (AS3b)', async () => {
+    // Drift segmentby out-of-band (add `price`); desired (Metric) declares only `symbol`.
+    await runAll(ds, [
+      `ALTER TABLE public.metric SET (timescaledb.segmentby = '"symbol", "price"');`,
+    ]);
+
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(plan.steps).toHaveLength(1);
+    const step = plan.steps[0]!;
+    expect(step.operation.kind).toBe('alterColumnstoreConfig');
+    expect(step.safety).toBe('needs-recompress');
+    expect((step.operation as { table: string }).table).toBe('public.metric');
+
+    await runAll(
+      ds,
+      compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
+
+    // The catalog now reflects the declared segmentby (symbol only).
+    const rows: Array<{ segmentby: string[] | null }> = await ds.query(
+      `SELECT cs.segmentby FROM _timescaledb_catalog.compression_settings cs ` +
+        `JOIN pg_class cl ON cl.oid = cs.relid JOIN pg_namespace n ON n.oid = cl.relnamespace ` +
+        `WHERE n.nspname = 'public' AND cl.relname = 'metric'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.segmentby).toEqual(['symbol']);
+  });
+
+  it('detects a CHANGED columnstore orderby direction as alterColumnstoreConfig and converges (AS3b)', async () => {
+    // Drift orderby out-of-band to ASC; desired (Metric) declares `time DESC`.
+    await runAll(ds, [`ALTER TABLE public.metric SET (timescaledb.orderby = '"time" ASC');`]);
+
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]!.operation.kind).toBe('alterColumnstoreConfig');
+    const op = plan.steps[0]!.operation as {
+      to: { orderBy: { column: string; direction: string }[] };
+    };
+    expect(op.to.orderBy).toEqual([{ column: 'time', direction: 'DESC' }]);
+
+    await runAll(
+      ds,
+      compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
+
+    const rows: Array<{ orderby: string[] | null }> = await ds.query(
+      `SELECT cs.orderby FROM _timescaledb_catalog.compression_settings cs ` +
+        `JOIN pg_class cl ON cl.oid = cs.relid JOIN pg_namespace n ON n.oid = cl.relnamespace ` +
+        `WHERE n.nspname = 'public' AND cl.relname = 'metric'`,
+    );
+    expect(rows).toHaveLength(1);
+    // orderby back to the declared time DESC (catalog stores the column; direction via desc flag).
+    expect(rows[0]!.orderby).toEqual(['time']);
+  });
+
   it('renames a hypertable via renamedFrom → a single renameHypertable op; converges after applying', async () => {
     // MUST BE LAST: renames the live `metric` hypertable to `metric_v2`, so any test operating on
     // `metric` after it would fail. A second entity/DataSource against the SAME container.

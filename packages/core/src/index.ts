@@ -12,6 +12,7 @@ export {
   alterRetentionPolicySQL,
   renameHypertableSQL,
   setChunkIntervalSQL,
+  alterColumnstoreConfigSQL,
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
@@ -25,6 +26,8 @@ export type {
   AlterPolicyInput,
   RenameTableInput,
   SetChunkIntervalInput,
+  AlterColumnstoreConfigInput,
+  ColumnstoreConfig,
   CreateContinuousAggregateInput,
   ContinuousAggregateColumn,
   ContinuousAggregateFn,
@@ -157,6 +160,7 @@ export type {
   AlterRetentionPolicyOperation,
   RenameHypertableOperation,
   SetChunkIntervalOperation,
+  AlterColumnstoreConfigOperation,
 } from './operation.js';
 export { diffSchemaState, isEmptyPlan } from './diff.js';
 export type { Plan, PlanStep, DiffOptions } from './diff.js';

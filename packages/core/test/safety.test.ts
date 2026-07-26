@@ -60,6 +60,15 @@ const CASES: ReadonlyArray<{ operation: Operation; safety: SafetyClass }> = [
     operation: { kind: 'setChunkInterval', table: 'public.m', from: '1 day', to: '7 days' },
     safety: 'online-safe', // affects only future chunks, no data rewrite, reversible
   },
+  {
+    operation: {
+      kind: 'alterColumnstoreConfig',
+      table: 'public.m',
+      from: { segmentBy: ['a'], orderBy: [] },
+      to: { segmentBy: ['a', 'b'], orderBy: [] },
+    },
+    safety: 'needs-recompress',
+  },
 ];
 
 describe('classifyOperation', () => {
@@ -83,6 +92,7 @@ describe('classifyOperation', () => {
       'alterRetentionPolicy',
       'renameHypertable',
       'setChunkInterval',
+      'alterColumnstoreConfig',
     ];
     expect([...new Set(CASES.map((c) => c.operation.kind))].sort()).toEqual([...KINDS].sort());
   });
