@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   compileOperations,
+  compilePlan,
   diffSchemaState,
   isEmptyPlan,
   TimescaleError,
@@ -585,5 +586,64 @@ describe('diffSchemaState — guarded drops (AS3c, opt-in via allowDrops)', () =
     expect(() =>
       diffSchemaState(ir(intCompression), ir(columnstoreNoPolicy), { allowDrops: true }),
     ).toThrow(TimescaleError);
+  });
+});
+
+describe('compilePlan — Plan → reversible up/down SQL (M4.3a bridge)', () => {
+  it('returns empty up/down for an empty plan', () => {
+    const compiled = compilePlan({ steps: [] });
+    expect(compiled).toEqual({ up: [], down: [] });
+  });
+
+  it('concatenates up in step order and down in REVERSE step order', () => {
+    // A two-step additive plan (create bare hypertable + add retention). up is step-order;
+    // down is each step's own down, with the STEP sequence reversed (undo most-recent first).
+    const bare: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+    };
+    const withRetention: HypertableState = {
+      ...bare,
+      retentionPolicy: { kind: 'retention', after: '30 days' },
+    };
+    const plan = diffSchemaState(ir(), ir(withRetention));
+    // Plan: [createHypertable, addRetentionPolicy].
+    expect(plan.steps.map((s) => s.operation.kind)).toEqual([
+      'createHypertable',
+      'addRetentionPolicy',
+    ]);
+
+    const statements = compileOperations(plan.steps.map((s) => s.operation));
+    const expectedUp = statements.flatMap((s) => s.up);
+    const expectedDown = [...statements].reverse().flatMap((s) => s.down);
+
+    const compiled = compilePlan(plan);
+    expect(compiled.up).toEqual(expectedUp);
+    expect(compiled.down).toEqual(expectedDown);
+    // The retention (last applied) is undone first in down.
+    expect(compiled.down.join('\n')).toMatch(/remove_retention_policy/);
+  });
+
+  it('composes an alter step: up = remove-then-add, down = the reverse threshold', () => {
+    // A single alterRetentionPolicy — verifies compilePlan surfaces the op's own up/down verbatim.
+    const current: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+      retentionPolicy: { kind: 'retention', after: '90 days' },
+    };
+    const desired: HypertableState = {
+      ...current,
+      retentionPolicy: { kind: 'retention', after: '365 days' },
+    };
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(plan.steps.map((s) => s.operation.kind)).toEqual(['alterRetentionPolicy']);
+
+    const compiled = compilePlan(plan);
+    const [only] = compileOperations(plan.steps.map((s) => s.operation));
+    expect(compiled.up).toEqual(only!.up);
+    expect(compiled.down).toEqual(only!.down);
+    // up moves 90d → 365d; down moves it back.
+    expect(compiled.up.join('\n')).toContain('365 days');
+    expect(compiled.down.join('\n')).toContain('90 days');
   });
 });

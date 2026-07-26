@@ -8,6 +8,7 @@ import type {
   SchemaStateIR,
 } from './schema-state.js';
 import type { ColumnstoreConfig } from './sql/index.js';
+import { compileOperations } from './operation.js';
 import type {
   AddColumnstorePolicyOperation,
   Operation,
@@ -119,6 +120,35 @@ export interface Plan {
  * reflects only what the current diff detects (additive create-only in this slice), not full convergence. */
 export function isEmptyPlan(plan: Plan): boolean {
   return plan.steps.length === 0;
+}
+
+/** The reversible SQL for a whole {@link Plan}: `up` in step order, `down` in the exact reverse. */
+export interface CompiledPlan {
+  /** Atomic `up` statements for every step, concatenated in apply (step) order. */
+  readonly up: readonly string[];
+  /** Atomic `down` statements — each step's own reversible `down`, with the STEPS reversed so the
+   * most-recently-applied change is undone first. */
+  readonly down: readonly string[];
+}
+
+/**
+ * Compile a diff {@link Plan} into its reversible `up`/`down` SQL by routing every step's operation
+ * through the single {@link compileOperation} choke point (via {@link compileOperations}). `up` is the
+ * per-step `up` in step order; `down` is each step's own `down` with the STEP sequence reversed, so
+ * undo happens most-recent-first (the same assembly rule the decorator-driven generator uses).
+ *
+ * This is the bridge from the M4.2 diff engine to the M4.3 emitters: a `Plan` (today only previewable
+ * via `check`) becomes a committable migration. It adds no SQL of its own — each step's `down` is
+ * already reversible (or a non-destructive notice for one-way ops), so the plan's `down` never
+ * destroys data. An empty plan compiles to empty `up`/`down`.
+ */
+export function compilePlan(plan: Plan): CompiledPlan {
+  const statements = compileOperations(plan.steps.map((s) => s.operation));
+  const up: string[] = [];
+  const down: string[] = [];
+  for (const s of statements) up.push(...s.up);
+  for (const s of [...statements].reverse()) down.push(...s.down);
+  return { up, down };
 }
 
 function findDimension(h: HypertableState, kind: 'time' | 'space'): DimensionState | undefined {
