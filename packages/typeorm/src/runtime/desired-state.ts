@@ -60,6 +60,8 @@ export function compileDesiredState(dataSource: DataSource): SchemaStateIR {
     .sort((a, b) => a.tableName.localeCompare(b.tableName));
 
   const hypertables: HypertableState[] = [];
+  // Guards against TypeORM single-table inheritance emitting one entry per subclass (see below).
+  const byTable = new Map<string, HypertableState>();
 
   for (const em of entities) {
     const meta = getTimescaleMetadata(em.target as Ctor);
@@ -137,13 +139,34 @@ export function compileDesiredState(dataSource: DataSource): SchemaStateIR {
         ? undefined
         : { kind: 'retention', after: meta.options.retention.dropAfter };
 
-    hypertables.push({
+    const state: HypertableState = {
       table,
       dimensions,
       ...(columnstore !== undefined && { columnstore }),
       ...(compressionPolicy !== undefined && { compressionPolicy }),
       ...(retentionPolicy !== undefined && { retentionPolicy }),
-    });
+    };
+
+    // TypeORM single-table inheritance registers one entity metadata per SUBCLASS, all mapped to the
+    // SAME physical table. Emitting one HypertableState each produced N duplicate hypertables — an
+    // N-times-repeated migration and a diff comparing the table against itself. De-duplicate by
+    // table name (first wins), but refuse when two declarations for one table disagree: silently
+    // picking one would apply a configuration the other subclass did not ask for.
+    const existing = byTable.get(table);
+    if (existing !== undefined) {
+      if (JSON.stringify(existing) !== JSON.stringify(state)) {
+        throw new TimescaleError(
+          TimescaleErrorCode.INVALID_ARGUMENT,
+          `hypertable ${table} is declared by more than one entity with CONFLICTING @Hypertable ` +
+            `options (single-table inheritance maps every subclass to one physical table) — make the ` +
+            `declarations identical, or declare @Hypertable only on the base class`,
+          { table },
+        );
+      }
+      continue;
+    }
+    byTable.set(table, state);
+    hypertables.push(state);
   }
 
   return { hypertables, continuousAggregates: [] };

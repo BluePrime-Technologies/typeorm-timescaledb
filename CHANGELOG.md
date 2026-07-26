@@ -38,6 +38,29 @@ was reproduced and verified against live TimescaleDB 2.18-pg16 and latest-pg17.
   hypertable remapped that column with `@Column({ name })` (`sensorId` → `sensor_id`), the generated
   `CREATE MATERIALIZED VIEW` failed with `column "sensorId" does not exist`, rolling back the whole
   migration. The parent now resolves group columns through the child's own output naming.
+- **`time_bucket` with a `timezone` failed on `timestamp` columns** — the timezone argument was emitted
+  as an untyped literal, so PostgreSQL could not choose between the origin overload
+  `time_bucket(interval, timestamp, timestamp)` and the timezone overload
+  `time_bucket(interval, timestamptz, text)`, and every such query failed with
+  `function time_bucket(...) is not unique`. It is now cast to `text`.
+- **A generated `down()` was unparseable for identifiers containing `$$`** — `$` is a legal
+  PostgreSQL identifier character, so a table named e.g. `a$$b` closed the `DO $$ … $$` block early
+  and made the rollback a syntax error. The blocks now use a named dollar-quote tag.
+- **`origin` / gapfill bounds silently shifted buckets on a `timestamp` time column** — the bounds are
+  emitted as `TIMESTAMPTZ`, which made PostgreSQL coerce the column and reinterpret every naive value
+  in the session time zone. `getTimeBucket` now refuses that combination instead of returning
+  quietly-wrong buckets.
+- **`assertToolkit` cached a missing toolkit forever** — installing `timescaledb_toolkit` after the
+  first failed check could not be picked up without restarting the process. Only positive results are
+  cached now; every failure is evicted and re-checked.
+- **`-h`/`--help` was matched anywhere in argv** — `check -d ds.ts --help` printed usage and exited 0,
+  turning a CI drift gate into a silent pass. Help is now only recognised as the first argument.
+- **"DataSource file not found" was unreachable for `.js`/`.mjs`/`.cjs` paths** — a typo'd compiled
+  path surfaced Node's raw `ERR_MODULE_NOT_FOUND` instead of the actionable message. (A genuinely
+  missing npm dependency is still reported as itself.)
+- **The docs claimed the `generate` CLI emits continuous-aggregate DDL.** It does not — a CAGG is not
+  a TypeORM entity, so the classes must be passed to `generateTimescaleMigration` programmatically.
+  Corrected in `docs/query-layer.md`.
 - **Writes were refused for an unassigned optional cross-store reference** (`@blueprime/cross-store`)
   — an optional `@Resolve` field declared as `parentId?: string` and never assigned has no own
   property, which the save-time TOCTOU guard treated as unlockable: it threw `INVALID_ARGUMENT` and

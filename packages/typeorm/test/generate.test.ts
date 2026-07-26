@@ -891,7 +891,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
     // The non-destructive hypertable-down NOTICE, reconstructed independently from the builder's
     // format (nonDestructiveNotice) so the golden byte-locks the FULL string, not a self-reference.
     const htNotice = (ident: string): string =>
-      `DO $$ BEGIN RAISE NOTICE 'timescaledb: not reverting hypertable on % — reverting would lose data (non-destructive down)', '${ident}'; END $$;`;
+      `DO $tsdb_notice$ BEGIN RAISE NOTICE 'timescaledb: not reverting hypertable on % — reverting would lose data (non-destructive down)', '${ident}'; END $tsdb_notice$;`;
     expect(gen.down).toEqual([
       // CAGG teardown is unshifted to the front (remove policy before DROP).
       `SELECT remove_continuous_aggregate_policy('"public"."reading_hourly_refreshed"', if_exists => TRUE);`,

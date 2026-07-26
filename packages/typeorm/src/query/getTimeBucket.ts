@@ -112,6 +112,32 @@ export function getTimeBucket<T extends ObjectLiteral>(
     repo.metadata.findColumnWithPropertyName(property)?.databaseName ?? property;
 
   const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+
+  // `origin` and the gapfill bounds are emitted as `TIMESTAMPTZ` literals. On a `timestamp without
+  // time zone` partition column PostgreSQL then coerces the COLUMN to timestamptz to match, silently
+  // reinterpreting every naive value in the session's TimeZone — bucket boundaries shift by the UTC
+  // offset and the result type changes. Refuse rather than return quietly-wrong buckets. Only a
+  // POSITIVELY naive type is rejected; an unknown/inferred type is left alone.
+  if (options.origin !== undefined || options.gapfill !== undefined) {
+    const prop = options.timeColumn;
+    const declared =
+      prop !== undefined ? repo.metadata.findColumnWithPropertyName(prop)?.type : undefined;
+    const typeName = typeof declared === 'string' ? declared.toLowerCase() : undefined;
+    if (
+      typeName === 'timestamp' ||
+      typeName === 'timestamp without time zone' ||
+      typeName === 'date'
+    ) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `origin/gapfill bounds are emitted as TIMESTAMPTZ, but time column "${timeColumn}" is ` +
+          `"${typeName}" — PostgreSQL would coerce the column and reinterpret every value in the ` +
+          `session time zone, shifting bucket boundaries. Use a timestamptz time column, or omit ` +
+          `origin/gapfill.`,
+        { timeColumn, columnType: typeName },
+      );
+    }
+  }
   if (!options.metrics.length) {
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,

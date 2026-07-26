@@ -145,3 +145,29 @@ describe('info filters — schema scoping (audit)', () => {
     expect(calls[0]![1]).toEqual(['metrics', 'other']);
   });
 });
+
+describe('CLI argument handling (audit)', () => {
+  it('treats -h/--help as help only when it LEADS the command line', async () => {
+    // `check -d ds.ts -n --help` printed usage and exited 0, silently passing a CI drift gate.
+    const { parseArgs } = await import('../src/cli/args.js');
+    // A trailing --help must NOT be swallowed as help: it reaches parseArgs, which rejects it as an
+    // unknown option rather than letting the command exit 0 without running.
+    expect(() => parseArgs(['check', '-d', 'ds.ts', '--help'])).toThrow();
+  });
+
+  it('reports a missing -d file for a .js path, not only for .ts', async () => {
+    const { classifyLoadError } = await import('../src/cli/load.js');
+    const err = Object.assign(new Error(`Cannot find module 'dist/nope.js'`), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+    const cliError = classifyLoadError(err, 'dist/nope.js');
+    expect(cliError?.message).toMatch(/DataSource file not found/);
+  });
+
+  it('still does NOT claim "file not found" when the error is a missing npm package', async () => {
+    const { classifyLoadError } = await import('../src/cli/load.js');
+    // No path in the message → the -d file exists, a dependency it imports does not.
+    const err = Object.assign(new Error('Cannot find module'), { code: 'ERR_MODULE_NOT_FOUND' });
+    expect(classifyLoadError(err, 'dist/data-source.js')).toBeUndefined();
+  });
+});

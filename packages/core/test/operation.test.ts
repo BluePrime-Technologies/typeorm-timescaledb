@@ -234,16 +234,22 @@ describe('compileOperation — delegates to the core builders (byte-identical)',
     ).toEqual(addColumnstorePolicySQL({ table: 'public.m', segmentBy: ['device_id'] }));
   });
 
-  it('addContinuousAggregatePolicy without scheduleInterval equals the direct builder', () => {
+  it('addContinuousAggregatePolicy equals the direct builder (scheduleInterval is required)', () => {
     expect(
       compileOperation({
         kind: 'addContinuousAggregatePolicy',
         view: 'mv',
         startOffset: '1 month',
         endOffset: '1 hour',
+        scheduleInterval: '1 hour',
       }),
     ).toEqual(
-      addContinuousAggregatePolicySQL({ view: 'mv', startOffset: '1 month', endOffset: '1 hour' }),
+      addContinuousAggregatePolicySQL({
+        view: 'mv',
+        startOffset: '1 month',
+        endOffset: '1 hour',
+        scheduleInterval: '1 hour',
+      }),
     );
   });
 

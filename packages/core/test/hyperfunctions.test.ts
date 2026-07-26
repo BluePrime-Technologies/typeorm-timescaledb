@@ -62,7 +62,7 @@ describe('timeBucketExpr', () => {
 
   it('emits the timezone variant', () => {
     expect(timeBucketExpr({ interval: '1 day', column: 'ts', timezone: 'Europe/London' })).toBe(
-      `time_bucket(INTERVAL '1 day', "ts", 'Europe/London')`,
+      `time_bucket(INTERVAL '1 day', "ts", 'Europe/London'::text)`,
     );
   });
 
@@ -88,14 +88,16 @@ describe('timeBucketExpr', () => {
         offset: '6 hours',
       }),
     ).toBe(
-      `time_bucket(INTERVAL '1 day', "ts", 'UTC', TIMESTAMPTZ '2024-01-01', INTERVAL '6 hours')`,
+      `time_bucket(INTERVAL '1 day', "ts", 'UTC'::text, TIMESTAMPTZ '2024-01-01', INTERVAL '6 hours')`,
     );
   });
 
   it('uses a NULL origin placeholder for offset-only under a timezone', () => {
     expect(
       timeBucketExpr({ interval: '1 day', column: 'ts', timezone: 'UTC', offset: '6 hours' }),
-    ).toBe(`time_bucket(INTERVAL '1 day', "ts", 'UTC', NULL::timestamptz, INTERVAL '6 hours')`);
+    ).toBe(
+      `time_bucket(INTERVAL '1 day', "ts", 'UTC'::text, NULL::timestamptz, INTERVAL '6 hours')`,
+    );
   });
 
   it('rejects origin + offset without a timezone', () => {
@@ -119,7 +121,7 @@ describe('timeBucketExpr', () => {
   it('escapes a single-quote in the timezone literal', () => {
     // not a real tz, but proves the literal is escaped rather than breaking out
     expect(timeBucketExpr({ interval: '1 day', column: 'ts', timezone: "a'b" })).toBe(
-      `time_bucket(INTERVAL '1 day', "ts", 'a''b')`,
+      `time_bucket(INTERVAL '1 day', "ts", 'a''b'::text)`,
     );
   });
 });

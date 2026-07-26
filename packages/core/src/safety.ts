@@ -1,4 +1,24 @@
 import type { Operation } from './operation.js';
+import { canonicalizeInterval } from './normalize.js';
+
+/**
+ * `true` when a retention/compression threshold is being SHORTENED — the change that has a real data
+ * effect. Comparable only when both sides canonicalize to a duration (a `raw:` quarantine or an
+ * integer-time value returns `undefined`, in which case we cannot prove it is safe).
+ */
+function isShortening(from: string, to: string): boolean | undefined {
+  const a = canonicalizeInterval(from);
+  const b = canonicalizeInterval(to);
+  if (a.startsWith('raw:') || b.startsWith('raw:')) return undefined;
+  const us = (v: string): number | undefined => {
+    const m = /^us:(-?\d+)$/.exec(v);
+    return m ? Number(m[1]) : undefined;
+  };
+  const x = us(a);
+  const y = us(b);
+  if (x === undefined || y === undefined) return undefined;
+  return y < x;
+}
 
 /**
  * The safety classification of a migration {@link Operation} (M4.2, H4 research). It tells the diff/plan
@@ -81,12 +101,28 @@ export function classifyOperation(operation: Operation): OperationSafety {
         reason:
           'changes when compression runs (remove-then-add of a background job) — rewrites no data; down() restores the prior threshold',
       };
-    case 'alterRetentionPolicy':
+    case 'alterRetentionPolicy': {
+      // SHORTENING drop_after is the one policy alter with a real data effect: the apply itself
+      // deletes nothing, but the next scheduler tick drops chunks that were previously retained, and
+      // `down()` cannot bring them back. That is not "online-safe" — it must be opted into, exactly
+      // like any other irreversible data loss. Lengthening (or an unprovable comparison) keeps the
+      // reversible classification.
+      const shortening = isShortening(operation.from, operation.to);
+      if (shortening === true) {
+        return {
+          safety: 'refuse-by-default',
+          reason:
+            `shortens drop_after (${operation.from} → ${operation.to}) — the apply deletes nothing, but the next ` +
+            'retention run drops chunks that were previously retained and down() cannot restore them; ' +
+            'opt in explicitly to accept the data loss',
+        };
+      }
       return {
         safety: 'online-safe',
         reason:
-          're-schedules future chunk drops (remove-then-add of a background job) — deletes no data at apply; down() restores the prior threshold. ⚠️ SHORTENING drop_after means the next scheduler tick drops chunks that were previously retained (declared intent, but review the from→to direction)',
+          're-schedules future chunk drops (remove-then-add of a background job) — deletes no data at apply; down() restores the prior threshold. The threshold is not shortened, so no previously-retained chunk becomes eligible for dropping',
       };
+    }
     case 'renameHypertable':
       return {
         safety: 'online-safe',

@@ -47,9 +47,9 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  *     disabling a columnstore (decompress). Data-destructive / no data-safe `down()`; they need their own
  *     explicit destructive opt-in + irreversible-op design (a follow-up beyond M4.2). A whole
  *     current-only hypertable is simply never visited, so it is never dropped. Corollary: if `desired`
- *     removes an entire columnstore while `current` still has a compression policy on it, no
- *     `removeCompressionPolicy` is emitted (that gate requires the columnstore to remain in both). The
- *     plan is safe but non-convergent for that scenario until the destructive-drop slice lands.
+ *     removes an entire columnstore while `current` still has a compression policy on it, the
+ *     (reversible) `removeCompressionPolicy` IS emitted under `allowDrops` — only the columnstore
+ *     itself is left alone — so the plan does not strand a policy it can safely remove.
  *
  * **Step order is significant.** Steps are emitted in dependency order (e.g. a `renameHypertable`
  * precedes any policy op that targets the new name) and `compileOperations` preserves it. Consumers
@@ -80,9 +80,10 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * `renameHypertable` first and re-keys the current entry to its new name, so every later lookup sees
  * post-rename identity regardless of iteration order — which is what makes reusing a freed name
  * (rename `metrics`→`trades`, then declare a NEW `metrics`) correct rather than order-dependent.
- * A rename whose source no longer exists is a no-op; a target name already occupied in the database
- * (a mutual A↔B swap, inexpressible as a bare `ALTER ... RENAME`) emits no rename and converges
- * per-facet instead. Two desired hypertables claiming the same source (an ambiguous rename) THROWS.
+ * A rename whose source no longer exists is a no-op. A target name already occupied in the database
+ * (a mutual A↔B swap, inexpressible as a bare `ALTER ... RENAME` without an intermediate name)
+ * THROWS rather than quietly converging per-facet and leaving the data unswapped. Two desired
+ * hypertables claiming the same source (an ambiguous rename) THROWS.
  *
  * {@link isEmptyPlan} means "no operation IN SCOPE is needed" — not a guarantee of full convergence
  * (drops and CAGGs are still out of scope).
@@ -236,19 +237,31 @@ function stringThreshold(value: IntervalOrInt | undefined, table: string, what: 
   return value;
 }
 
-/** Do two same-kind compression/retention policies have the same THRESHOLD? Compares `after` +
- * `createdBefore` via the M4.0 normalizers; deliberately IGNORES `scheduleInterval` — the desired
- * (decorator) side never sets it, and the engine fills a default the introspected current always
- * carries, so comparing it would be false drift (see the S1 characterization tests).
- * TODO: when the decorator surface exposes a custom policy schedule, compare scheduleInterval too
- * (only when the desired side sets it) — otherwise a deliberately-changed schedule would be missed. */
-function policyThresholdEqual(a: PolicyState, b: PolicyState): boolean {
-  if (a.kind !== b.kind) return false;
+/** Do two same-kind compression/retention policies match? Compares `after` + `createdBefore` via the
+ * M4.0 normalizers, plus `scheduleInterval` — but the schedule ONLY when the desired side declares
+ * one. The engine fills a default cadence that the introspected current always carries, so comparing
+ * it unconditionally would be permanent false drift (the S1 characterization contract); ignoring it
+ * entirely would silently miss a deliberately-changed schedule once the decorator surface can
+ * express one. Argument order is therefore significant: (current, desired). */
+function policyThresholdEqual(current: PolicyState, desired: PolicyState): boolean {
+  if (current.kind !== desired.kind) return false;
   if (
-    (a.kind === 'compression' || a.kind === 'retention') &&
-    (b.kind === 'compression' || b.kind === 'retention')
+    (current.kind === 'compression' || current.kind === 'retention') &&
+    (desired.kind === 'compression' || desired.kind === 'retention')
   ) {
-    return intervalsEqual(a.after, b.after) && intervalsEqual(a.createdBefore, b.createdBefore);
+    // `scheduleInterval` is compared ONLY when the desired side actually declares one. The
+    // introspected current always carries the engine-filled default, so comparing unconditionally
+    // would be permanent false drift; ignoring it entirely would silently miss a deliberately
+    // changed cadence the day the decorator surface can express it. Directional check, so argument
+    // order matters here (current, desired).
+    const scheduleEqual =
+      desired.scheduleInterval === undefined ||
+      intervalsEqual(current.scheduleInterval, desired.scheduleInterval);
+    return (
+      intervalsEqual(current.after, desired.after) &&
+      intervalsEqual(current.createdBefore, desired.createdBefore) &&
+      scheduleEqual
+    );
   }
   return false;
 }
@@ -394,11 +407,18 @@ export function diffSchemaState(
       );
     }
     renamedFromTable.set(oldTable, d.table);
-    // The target name is already occupied in the live DB (e.g. a mutual A↔B swap, which a bare
-    // ALTER ... RENAME cannot express without a temporary name). Claim it so the ambiguity check
-    // above still applies, but emit no rename: the per-facet diff below converges each table on
-    // its own, which is correct and avoids emitting SQL that would fail on a real database.
-    if (currentByTable.has(d.table)) continue;
+    // The target name is already occupied in the live DB — e.g. a mutual A↔B swap. A bare
+    // `ALTER TABLE ... RENAME` cannot express that without a temporary name, and quietly converging
+    // each table per-facet instead would leave the DATA unswapped while reporting success. Refuse.
+    if (currentByTable.has(d.table)) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `cannot rename ${oldTable} → ${d.table}: ${d.table} already exists in the database ` +
+          `(a mutual swap needs an intermediate name). Perform the rename in a hand-written ` +
+          `migration, or drop the stale renamedFrom declaration.`,
+        { oldTable, table: d.table },
+      );
+    }
     operations.push({ kind: 'renameHypertable', from: oldTable, to: d.table });
     currentByTable.set(d.table, currentByTable.get(oldTable)!);
     // Free the old key: the physical table no longer exists under that name after the rename, so a
@@ -566,9 +586,11 @@ export function diffSchemaState(
           restoreAfter: stringThreshold(retentionAfter(c), d.table, 'current retention after'),
         });
       }
-      // Only when the columnstore itself stays (present in both) — otherwise it's a columnstore drop.
+      // Removing the POLICY is independently safe and reversible, so emit it whenever current has
+      // one and desired does not — including when desired abandons the columnstore entirely. (The
+      // columnstore itself is never dropped; previously this case emitted nothing, leaving a
+      // stranded policy and a plan that could never converge.)
       if (
-        d.columnstore !== undefined &&
         c.columnstore !== undefined &&
         c.compressionPolicy !== undefined &&
         d.compressionPolicy === undefined

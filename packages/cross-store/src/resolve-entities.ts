@@ -169,7 +169,26 @@ export async function resolveEntities(
   // returns, so the final result preserves input order regardless of which fields short-circuited.
   const slots: Array<EntityFieldVerdict | PendingSlot> = [];
   for (const entity of entities) {
-    const meta = getResolveMetadata(entityClassOf(entity));
+    // A non-object / plain-object row cannot carry @Resolve metadata. On the WRITE path that must
+    // fail closed (throw). In sweep mode it must NOT: `verifyReferences` documents that it never
+    // throws precisely so one bad row cannot wedge a paged reconciliation job — report the row as
+    // an `invalid` verdict and carry on with the rest of the batch.
+    let meta: ReturnType<typeof getResolveMetadata>;
+    try {
+      meta = getResolveMetadata(entityClassOf(entity));
+    } catch (e) {
+      if (!report || !(e instanceof CrossStoreError)) throw e;
+      slots.push(
+        invalidVerdict(
+          (entity ?? {}) as object,
+          '',
+          entity,
+          { store: '', table: '', column: '' },
+          e,
+        ),
+      );
+      continue;
+    }
     for (const field of meta) {
       const value = (entity as Record<string, unknown>)[field.property];
       if (value === null || value === undefined) {

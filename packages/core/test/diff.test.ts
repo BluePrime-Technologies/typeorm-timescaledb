@@ -707,19 +707,21 @@ describe('diffSchemaState — rename resolution (audit)', () => {
     ).toThrow(TimescaleError);
   });
 
-  it('does not emit an impossible rename for a mutual A↔B swap (converges per-facet instead)', () => {
-    const plan = diffSchemaState(
-      ir(ht('public.a', '1 day'), ht('public.b', '2 days')),
-      ir(ht('public.a', '2 days'), ht('public.b', '1 day')),
-      {
-        renames: new Map([
-          ['public.a', 'public.b'],
-          ['public.b', 'public.a'],
-        ]),
-      },
-    );
-    // A bare ALTER ... RENAME cannot express a swap without a temp name, so no rename is emitted.
-    expect(ops(plan).some((o) => o.kind === 'renameHypertable')).toBe(false);
+  it('REFUSES a mutual A↔B swap instead of quietly converging per-facet', () => {
+    // A bare `ALTER TABLE ... RENAME` cannot express a swap without an intermediate name. Silently
+    // diffing each table per-facet would report success while leaving the DATA unswapped.
+    expect(() =>
+      diffSchemaState(
+        ir(ht('public.a', '1 day'), ht('public.b', '2 days')),
+        ir(ht('public.a', '2 days'), ht('public.b', '1 day')),
+        {
+          renames: new Map([
+            ['public.a', 'public.b'],
+            ['public.b', 'public.a'],
+          ]),
+        },
+      ),
+    ).toThrow(/already exists in the database/);
   });
 });
 
@@ -797,5 +799,43 @@ describe('diffSchemaState — space dimensions (audit)', () => {
 
   it('is a no-op when the declared space dimension matches the database', () => {
     expect(isEmptyPlan(diffSchemaState(ir(withSpace(4)), ir(withSpace(4))))).toBe(true);
+  });
+});
+
+describe('diffSchemaState — policy schedule + stranded policy (audit)', () => {
+  const base = (scheduleInterval?: string): HypertableState => ({
+    table: 'public.m',
+    dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+    retentionPolicy: {
+      kind: 'retention',
+      after: '90 days',
+      ...(scheduleInterval !== undefined && { scheduleInterval }),
+    },
+  });
+
+  it('ignores scheduleInterval when the desired side does not declare one (no false drift)', () => {
+    // The introspected current always carries the engine-filled default cadence.
+    expect(isEmptyPlan(diffSchemaState(ir(base('12 hours')), ir(base())))).toBe(true);
+  });
+
+  it('detects a changed scheduleInterval when the desired side DOES declare one', () => {
+    const plan = diffSchemaState(ir(base('12 hours')), ir(base('1 hour')));
+    expect(ops(plan).map((o) => o.kind)).toEqual(['alterRetentionPolicy']);
+  });
+
+  it('emits the reversible compression-policy removal even when desired abandons the columnstore', () => {
+    // Previously nothing was emitted here, stranding the policy and leaving the plan unconvergeable.
+    const current: HypertableState = {
+      table: 'public.m',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+      columnstore: { segmentBy: ['d'], orderBy: [{ column: 'ts', desc: true, nullsFirst: true }] },
+      compressionPolicy: { kind: 'compression', after: '7 days' },
+    };
+    const desired: HypertableState = {
+      table: 'public.m',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+    };
+    const plan = diffSchemaState(ir(current), ir(desired), { allowDrops: true });
+    expect(ops(plan).map((o) => o.kind)).toContain('removeCompressionPolicy');
   });
 });
