@@ -491,6 +491,46 @@ export function alterColumnstoreConfigSQL(input: AlterColumnstoreConfigInput): M
   return { up, down, inspect };
 }
 
+export interface RemovePolicyInput {
+  /** Table name, optionally `schema.table`. */
+  readonly table: string;
+  /** The threshold the policy currently has — used by `down` to re-add the removed policy. */
+  readonly restoreAfter: string;
+}
+
+/**
+ * Remove a hypertable's retention policy (a background job). `up` removes it (`if_exists`); `down`
+ * re-adds it at `restoreAfter` (the threshold it had when removed) — so the removal is cleanly
+ * reversible. Non-destructive: removing the policy only STOPS future chunk drops, it deletes nothing.
+ */
+export function removeRetentionPolicySQL(input: RemovePolicyInput): MigrationStatement {
+  const t = parseTable(input.table);
+  const restore = assertParsableInterval(input.restoreAfter, 'restoreAfter', { positive: true });
+  const inspect =
+    `SELECT job_id, proc_name, schedule_interval, config FROM timescaledb_information.jobs ` +
+    `WHERE proc_name = 'policy_retention' AND hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`;
+  return {
+    up: [removeRetentionPolicyCall(t)],
+    down: [addRetentionPolicyCall(t, restore, true)],
+    inspect,
+  };
+}
+
+/**
+ * Remove a hypertable's compression (columnstore) policy job — leaving the columnstore itself enabled.
+ * `up` removes it (`if_exists`); `down` re-adds it at `restoreAfter`. Non-destructive and reversible:
+ * removing the policy only STOPS future auto-compression; existing compressed chunks are untouched.
+ */
+export function removeCompressionPolicySQL(input: RemovePolicyInput): MigrationStatement {
+  const t = parseTable(input.table);
+  const restore = assertParsableInterval(input.restoreAfter, 'restoreAfter', { positive: true });
+  return {
+    up: [removeCompressionPolicyCall(t)],
+    down: [addCompressionPolicyCall(t, restore, true)],
+    inspect: compressionPolicyInspect(t),
+  };
+}
+
 /**
  * Change a compression policy's `after` threshold. A policy's threshold is not editable in place, so
  * this is a **remove-then-add**: `up` removes the current policy and adds one at `to`; `down` removes

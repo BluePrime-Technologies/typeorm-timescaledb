@@ -39,10 +39,24 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * comparing it would be false drift (per the S1 characterization tests). So an unchanged schema still
  * yields an **empty plan**.
  *
- * It deliberately does **NOT** yet emit:
- *   - **drops** of a compression policy present in current but not desired — deferred (AS3c).
- *   - **drops** — an object in `current` but not `desired` (destructive; migration `down()` never
- *     destroys data). Deferred, will require safety classification + an explicit opt-in.
+ * **Guarded drops (opt-in via `DiffOptions.allowDrops`, default off).** When enabled, the diff emits the
+ * SAFE, reversible removals of objects present in `current` but absent from `desired`:
+ * `removeRetentionPolicy` / `removeCompressionPolicy` (removing a background job deletes no data;
+ * `down` re-adds it at the prior threshold). With `allowDrops` off (the default), NO drop is emitted, so
+ * omitting a decorator option is never silently destructive.
+ *
+ * It deliberately does **NOT** emit (even with `allowDrops`):
+ *   - **destructive drops** — dropping a hypertable (present in current, absent from the entity set) or
+ *     disabling a columnstore (decompress). Data-destructive / no data-safe `down()`; they need their own
+ *     explicit destructive opt-in + irreversible-op design (a follow-up beyond M4.2). A whole
+ *     current-only hypertable is simply never visited, so it is never dropped. Corollary: if `desired`
+ *     removes an entire columnstore while `current` still has a compression policy on it, no
+ *     `removeCompressionPolicy` is emitted (that gate requires the columnstore to remain in both). The
+ *     plan is safe but non-convergent for that scenario until the destructive-drop slice lands.
+ *
+ * **Step order is significant.** Steps are emitted in dependency order (e.g. a `renameHypertable`
+ * precedes any policy op that targets the new name) and `compileOperations` preserves it. Consumers
+ * must execute `Plan.steps` in order and MUST NOT re-sort them (e.g. by safety class).
  *   - **continuous aggregates** — `compileDesiredState()` does not yet compile them, so acting on them
  *     would drop every live CAGG. The diff is hypertable-scoped and ignores `continuousAggregates`.
  *   - **clearing a columnstore facet** — an EMPTY desired `segmentBy`/`orderBy` means "unmanaged / accept
@@ -78,6 +92,15 @@ export interface DiffOptions {
    * `renameHypertable` op instead of a drop-then-create.
    */
   readonly renames?: ReadonlyMap<string, string>;
+  /**
+   * Opt-in to emitting DROP operations for objects present in `current` but absent from `desired`.
+   * Default `false` (drops are never emitted, so omitting a decorator option is not silently
+   * destructive). When `true`, the diff emits only the SAFE, reversible removals — `removeRetentionPolicy`
+   * / `removeCompressionPolicy` (removing a background job deletes no data; `down` re-adds it). Truly
+   * destructive drops (dropping a hypertable, disabling a columnstore) are still NOT emitted — they need
+   * an explicit destructive opt-in and an irreversible-op design (a follow-up beyond M4.2).
+   */
+  readonly allowDrops?: boolean;
 }
 
 /** One step of a {@link Plan}: an operation plus its {@link OperationSafety} classification. */
@@ -285,6 +308,7 @@ export function diffSchemaState(
     current.hypertables.map((h) => [h.table, h]),
   );
   const renames = options.renames ?? new Map<string, string>();
+  const allowDrops = options.allowDrops ?? false;
   // Tracks which OLD (current) table a rename has already resolved to this pass, so two desired
   // hypertables can never both claim the same current entry (an ambiguous/duplicate rename) — caught
   // below rather than silently diffing one of them as a spurious create.
@@ -414,6 +438,33 @@ export function diffSchemaState(
         from: stringThreshold(retentionAfter(c), d.table, 'current retention after'),
         to: stringThreshold(retentionAfter(d), d.table, 'desired retention after'),
       });
+    }
+
+    // Guarded DROPS (opt-in via allowDrops; off by default so omitting a decorator option is never
+    // silently destructive). Only the SAFE, reversible policy removals are emitted — a policy present
+    // in current but absent in desired. removeRetentionPolicy carries the current threshold so `down`
+    // re-adds it. (Dropping the hypertable / disabling the columnstore is destructive and out of scope.)
+    if (allowDrops) {
+      if (c.retentionPolicy !== undefined && d.retentionPolicy === undefined) {
+        operations.push({
+          kind: 'removeRetentionPolicy',
+          table: d.table,
+          restoreAfter: stringThreshold(retentionAfter(c), d.table, 'current retention after'),
+        });
+      }
+      // Only when the columnstore itself stays (present in both) — otherwise it's a columnstore drop.
+      if (
+        d.columnstore !== undefined &&
+        c.columnstore !== undefined &&
+        c.compressionPolicy !== undefined &&
+        d.compressionPolicy === undefined
+      ) {
+        operations.push({
+          kind: 'removeCompressionPolicy',
+          table: d.table,
+          restoreAfter: stringThreshold(compressionAfter(c), d.table, 'current compression after'),
+        });
+      }
     }
   }
 

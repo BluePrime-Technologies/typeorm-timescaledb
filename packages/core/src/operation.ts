@@ -7,6 +7,8 @@ import {
   alterRetentionPolicySQL,
   setChunkIntervalSQL,
   alterColumnstoreConfigSQL,
+  removeRetentionPolicySQL,
+  removeCompressionPolicySQL,
   createContinuousAggregateSQL,
   createHypertableSQL,
   renameHypertableSQL,
@@ -14,6 +16,7 @@ import {
   type AlterPolicyInput,
   type SetChunkIntervalInput,
   type AlterColumnstoreConfigInput,
+  type RemovePolicyInput,
   type ColumnstorePolicyInput,
   type ContinuousAggregatePolicyInput,
   type CreateContinuousAggregateInput,
@@ -106,6 +109,16 @@ export interface AlterColumnstoreConfigOperation extends AlterColumnstoreConfigI
   readonly kind: 'alterColumnstoreConfig';
 }
 
+/** Remove a retention policy present in the DB but not desired (`down` re-adds it at `restoreAfter`). */
+export interface RemoveRetentionPolicyOperation extends RemovePolicyInput {
+  readonly kind: 'removeRetentionPolicy';
+}
+
+/** Remove a compression policy present in the DB but not desired (`down` re-adds it at `restoreAfter`). */
+export interface RemoveCompressionPolicyOperation extends RemovePolicyInput {
+  readonly kind: 'removeCompressionPolicy';
+}
+
 /**
  * The migration operation IR — a discriminated union over `kind`. Every variant that can be
  * emitted into a generated TimescaleDB migration today is represented; the union is the
@@ -122,7 +135,9 @@ export type Operation =
   | AlterRetentionPolicyOperation
   | RenameHypertableOperation
   | SetChunkIntervalOperation
-  | AlterColumnstoreConfigOperation;
+  | AlterColumnstoreConfigOperation
+  | RemoveRetentionPolicyOperation
+  | RemoveCompressionPolicyOperation;
 
 /** The set of {@link Operation} discriminants. */
 export type OperationKind = Operation['kind'];
@@ -158,6 +173,10 @@ export function compileOperation(operation: Operation): MigrationStatement {
       return setChunkIntervalSQL(operation);
     case 'alterColumnstoreConfig':
       return alterColumnstoreConfigSQL(operation);
+    case 'removeRetentionPolicy':
+      return removeRetentionPolicySQL(operation);
+    case 'removeCompressionPolicy':
+      return removeCompressionPolicySQL(operation);
     default: {
       // Exhaustiveness: if a new Operation variant is added without a case, this fails to compile.
       // At runtime it guards a caller that (via `any`) passes an unknown discriminant.
