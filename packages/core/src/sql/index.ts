@@ -6,6 +6,7 @@ export {
   alterCompressionPolicySQL,
   alterRetentionPolicySQL,
   renameHypertableSQL,
+  setChunkIntervalSQL,
   TIMESCALEDB_PRESENCE_SQL,
 } from './hypertable.js';
 export {
@@ -27,6 +28,7 @@ export type {
   AddCompressionPolicyInput,
   AlterPolicyInput,
   RenameTableInput,
+  SetChunkIntervalInput,
 } from './hypertable.js';
 export {
   timeBucketExpr,

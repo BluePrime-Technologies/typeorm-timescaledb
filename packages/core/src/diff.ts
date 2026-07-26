@@ -11,7 +11,7 @@ import type {
   RenameHypertableOperation,
 } from './operation.js';
 import { classifyOperation, type OperationSafety } from './safety.js';
-import { intervalsEqual } from './normalize.js';
+import { intervalsEqual, TIMESCALE_DEFAULTS } from './normalize.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
 
 /**
@@ -27,7 +27,9 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  *     `current` → that add; a compression policy present in `desired` but missing on an already-enabled
  *     columnstore → an `addCompressionPolicy` (policy-only, closes the former gap); a compression or
  *     retention **threshold that changed** → an `alter{Compression,Retention}Policy` (remove-then-add,
- *     `down()` restores the prior threshold).
+ *     `down()` restores the prior threshold); a **time-dimension chunk interval that changed** →
+ *     `setChunkInterval` (affects future chunks only; reconciled against `TIMESCALE_DEFAULTS.chunkInterval`
+ *     when desired omits it, so a bare hypertable at the engine default is not false drift).
  *
  * Policy threshold comparison uses the M4.0 normalizers and IGNORES `scheduleInterval` — the desired
  * side never sets it and the engine fills a default the introspected current always carries, so
@@ -35,8 +37,7 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * yields an **empty plan**.
  *
  * It deliberately does **NOT** yet emit:
- *   - **columnstore-config alters** (changed segmentby/orderby → `needs-recompress`) and **chunk-interval
- *     alters** — deferred to the next slice (AS3).
+ *   - **columnstore-config alters** (changed segmentby/orderby → `needs-recompress`) — deferred.
  *   - **drops** — an object in `current` but not `desired` (destructive; migration `down()` never
  *     destroys data). Deferred, will require safety classification + an explicit opt-in.
  *   - **continuous aggregates** — `compileDesiredState()` does not yet compile them, so acting on them
@@ -294,9 +295,28 @@ export function diffSchemaState(
       continue;
     }
     if (renameOp !== undefined) operations.push(renameOp);
-    // Existing table (possibly just renamed above). Additive: enable a wholly-missing columnstore. On
-    // an already-columnstore table, handle the compression POLICY (add the missing one — the S2 gap;
-    // or alter a changed threshold).
+
+    // Existing table (possibly just renamed above). Time-dimension chunk interval change →
+    // set_chunk_time_interval. Reconcile the engine default: when desired omits chunkInterval it means
+    // "the create-time default", which introspect() reads back as the concrete
+    // TIMESCALE_DEFAULTS.chunkInterval — so compare against that, not undefined, to avoid false drift on
+    // a bare hypertable (the S1 characterization contract).
+    const currentTime = findDimension(c, 'time');
+    const desiredTime = findDimension(d, 'time');
+    if (currentTime !== undefined && desiredTime !== undefined) {
+      const desiredInterval = desiredTime.chunkInterval ?? TIMESCALE_DEFAULTS.chunkInterval;
+      if (!intervalsEqual(currentTime.chunkInterval, desiredInterval)) {
+        operations.push({
+          kind: 'setChunkInterval',
+          table: d.table,
+          from: stringThreshold(currentTime.chunkInterval, d.table, 'current chunk interval'),
+          to: stringThreshold(desiredInterval, d.table, 'desired chunk interval'),
+        });
+      }
+    }
+
+    // Additive: enable a wholly-missing columnstore. On an already-columnstore table, handle the
+    // compression POLICY (add the missing one — the S2 gap; or alter a changed threshold).
     if (d.columnstore !== undefined && c.columnstore === undefined) {
       operations.push(columnstoreOperation(d));
     } else if (d.columnstore !== undefined && c.columnstore !== undefined) {

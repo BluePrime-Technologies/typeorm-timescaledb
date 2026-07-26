@@ -237,8 +237,7 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     expect(lines.at(-1)).toContain('Drift detected');
     expect(lines.at(-1)).toContain('alter retention policy on public.metric');
 
-    // Restore convergence — the rename test below depends on `metric`'s live state matching the
-    // Metric entity's declared config exactly.
+    // Restore convergence — later tests depend on `metric` matching the Metric entity's declared config.
     const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
     await runAll(
       ds,
@@ -247,10 +246,60 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     expect(await checkCommand(ds, logger)).toBe(false);
   });
 
+  it('detects a CHANGED chunk interval as setChunkInterval and converges after applying (AS3)', async () => {
+    // Drift the time-dimension chunk interval out-of-band from the declared 1 day to 7 days.
+    await runAll(ds, [`SELECT set_chunk_time_interval('public.metric', INTERVAL '7 days');`]);
+
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(plan.steps).toHaveLength(1);
+    const step = plan.steps[0]!;
+    expect(step.operation.kind).toBe('setChunkInterval');
+    expect(step.safety).toBe('online-safe');
+    const op = step.operation as { table: string; from: string; to: string };
+    expect(op.table).toBe('public.metric');
+    expect(intervalsEqual(op.from, '7 days')).toBe(true);
+    expect(intervalsEqual(op.to, '1 day')).toBe(true);
+
+    await runAll(
+      ds,
+      compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
+
+    const rows: Array<{ time_interval: string }> = await ds.query(
+      // ::text — node-pg parses a bare `interval` column into an object; the text form is what
+      // intervalsEqual (and introspect itself) can canonicalize.
+      `SELECT time_interval::text AS time_interval FROM timescaledb_information.dimensions ` +
+        `WHERE hypertable_schema = 'public' AND hypertable_name = 'metric' AND dimension_type = 'Time' ` +
+        `ORDER BY dimension_number LIMIT 1`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(intervalsEqual(rows[0]!.time_interval, '1 day')).toBe(true);
+  });
+
+  it('handles a SUB-DAY current chunk interval (introspected HH:MM:SS from) without crashing', async () => {
+    // Regression for the AS3a red-team HIGH: drift to a sub-day interval (1 hour), which introspect
+    // reads back as the Postgres time form '01:00:00'. The setChunkInterval op then carries
+    // from:'01:00:00'; compiling+applying it must NOT throw (the builder accepts Postgres output forms).
+    await runAll(ds, [`SELECT set_chunk_time_interval('public.metric', INTERVAL '1 hour');`]);
+
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(plan.steps).toHaveLength(1);
+    const op = plan.steps[0]!.operation as { kind: string; from: string; to: string };
+    expect(op.kind).toBe('setChunkInterval');
+    expect(intervalsEqual(op.from, '1 hour')).toBe(true); // introspected as '01:00:00', equals 1 hour
+    expect(intervalsEqual(op.to, '1 day')).toBe(true);
+
+    await runAll(
+      ds,
+      compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
+  });
+
   it('renames a hypertable via renamedFrom → a single renameHypertable op; converges after applying', async () => {
-    // A second entity mapped to a NEW table name, declaring the SAME config as Metric plus
-    // renamedFrom — a separate DataSource against the SAME container, so it never touches `ds`'s
-    // own entity set.
+    // MUST BE LAST: renames the live `metric` hypertable to `metric_v2`, so any test operating on
+    // `metric` after it would fail. A second entity/DataSource against the SAME container.
     class MetricRenamed {}
     Entity('metric_v2')(MetricRenamed);
     PrimaryColumn({ type: 'timestamptz' })(MetricRenamed.prototype, 'time');

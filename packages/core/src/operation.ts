@@ -5,11 +5,13 @@ import {
   addRetentionPolicySQL,
   alterCompressionPolicySQL,
   alterRetentionPolicySQL,
+  setChunkIntervalSQL,
   createContinuousAggregateSQL,
   createHypertableSQL,
   renameHypertableSQL,
   type AddCompressionPolicyInput,
   type AlterPolicyInput,
+  type SetChunkIntervalInput,
   type ColumnstorePolicyInput,
   type ContinuousAggregatePolicyInput,
   type CreateContinuousAggregateInput,
@@ -92,6 +94,11 @@ export interface RenameHypertableOperation extends RenameTableInput {
   readonly kind: 'renameHypertable';
 }
 
+/** Change the time-dimension chunk interval (`set_chunk_time_interval`; `down` restores `from`). */
+export interface SetChunkIntervalOperation extends SetChunkIntervalInput {
+  readonly kind: 'setChunkInterval';
+}
+
 /**
  * The migration operation IR — a discriminated union over `kind`. Every variant that can be
  * emitted into a generated TimescaleDB migration today is represented; the union is the
@@ -106,7 +113,8 @@ export type Operation =
   | AddCompressionPolicyOperation
   | AlterCompressionPolicyOperation
   | AlterRetentionPolicyOperation
-  | RenameHypertableOperation;
+  | RenameHypertableOperation
+  | SetChunkIntervalOperation;
 
 /** The set of {@link Operation} discriminants. */
 export type OperationKind = Operation['kind'];
@@ -138,6 +146,8 @@ export function compileOperation(operation: Operation): MigrationStatement {
       return alterRetentionPolicySQL(operation);
     case 'renameHypertable':
       return renameHypertableSQL(operation);
+    case 'setChunkInterval':
+      return setChunkIntervalSQL(operation);
     default: {
       // Exhaustiveness: if a new Operation variant is added without a case, this fails to compile.
       // At runtime it guards a caller that (via `any`) passes an unknown discriminant.

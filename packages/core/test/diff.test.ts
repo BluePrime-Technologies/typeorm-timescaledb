@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  compileOperations,
   diffSchemaState,
   isEmptyPlan,
   TimescaleError,
@@ -144,6 +145,73 @@ describe('diffSchemaState — additive (create-only) plan', () => {
     const current: HypertableState = {
       ...metric(),
       retentionPolicy: { kind: 'retention', after: '8760 hours' }, // 365 * 24
+    };
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([]);
+  });
+
+  it('emits setChunkInterval when the time-dimension chunk interval changed', () => {
+    const desired = metric(); // chunkInterval '1 day'
+    const current: HypertableState = {
+      ...metric(),
+      dimensions: [
+        { column: 'ts', kind: 'time', chunkInterval: '7 days' },
+        { column: 'device_id', kind: 'space', numPartitions: 4 },
+      ],
+    };
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([
+      { kind: 'setChunkInterval', table: 'public.metric', from: '7 days', to: '1 day' },
+    ]);
+  });
+
+  it('emits setChunkInterval when current is a SUB-DAY (HH:MM:SS) introspected interval — no builder crash', () => {
+    // Regression: introspect renders a sub-day chunk interval as Postgres time form '01:00:00'. The
+    // op's `from` carries that; compiling it must NOT throw (the builder accepts Postgres output forms).
+    const desired: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '30 minutes' }],
+    };
+    const current: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '01:00:00' }], // 1 hour, introspected form
+    };
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([
+      { kind: 'setChunkInterval', table: 'public.metric', from: '01:00:00', to: '30 minutes' },
+    ]);
+    // The whole point: compiling the plan does not throw on the sub-day `from`.
+    expect(() => compileOperations(ops(plan))).not.toThrow();
+  });
+
+  it('emits alterRetentionPolicy with a SUB-DAY introspected from without a builder crash', () => {
+    const desired: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+      retentionPolicy: { kind: 'retention', after: '3 hours' },
+    };
+    const current: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+      retentionPolicy: { kind: 'retention', after: '06:00:00' }, // 6 hours, introspected form
+    };
+    const plan = diffSchemaState(ir(current), ir(desired));
+    expect(ops(plan)).toEqual([
+      { kind: 'alterRetentionPolicy', table: 'public.metric', from: '06:00:00', to: '3 hours' },
+    ]);
+    expect(() => compileOperations(ops(plan))).not.toThrow();
+  });
+
+  it('does NOT emit setChunkInterval when desired omits chunkInterval and current is the engine default', () => {
+    // desired bare (no chunkInterval → engine default '7 days'); current introspected as '7 days'.
+    // Reconciling against TIMESCALE_DEFAULTS.chunkInterval must suppress this false drift (S1 contract).
+    const desired: HypertableState = {
+      table: 'public.events',
+      dimensions: [{ column: 'ts', kind: 'time' }],
+    };
+    const current: HypertableState = {
+      table: 'public.events',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '7 days' }],
     };
     const plan = diffSchemaState(ir(current), ir(desired));
     expect(ops(plan)).toEqual([]);
