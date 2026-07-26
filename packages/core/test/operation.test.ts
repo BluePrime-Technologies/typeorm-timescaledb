@@ -11,6 +11,7 @@ import {
   createContinuousAggregateSQL,
   createHypertableSQL,
   renameHypertableSQL,
+  setChunkIntervalSQL,
   TimescaleError,
   TimescaleErrorCode,
   type Operation,
@@ -144,6 +145,11 @@ const CASES: ReadonlyArray<{
     operation: { kind: 'renameHypertable', from: 'public.old_metric', to: 'public.metric' },
     direct: () => renameHypertableSQL({ from: 'public.old_metric', to: 'public.metric' }),
   },
+  {
+    kind: 'setChunkInterval',
+    operation: { kind: 'setChunkInterval', table: 'public.metric', from: '1 day', to: '7 days' },
+    direct: () => setChunkIntervalSQL({ table: 'public.metric', from: '1 day', to: '7 days' }),
+  },
 ];
 
 describe('compileOperation — delegates to the core builders (byte-identical)', () => {
@@ -164,6 +170,7 @@ describe('compileOperation — delegates to the core builders (byte-identical)',
       'alterCompressionPolicy',
       'alterRetentionPolicy',
       'renameHypertable',
+      'setChunkInterval',
     ];
     // The cases exercise each declared kind exactly once — a new union member without a test fails here.
     expect([...new Set(CASES.map((c) => c.kind))].sort()).toEqual([...KINDS].sort());

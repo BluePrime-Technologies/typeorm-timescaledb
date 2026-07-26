@@ -11,6 +11,7 @@ export {
   alterCompressionPolicySQL,
   alterRetentionPolicySQL,
   renameHypertableSQL,
+  setChunkIntervalSQL,
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
@@ -23,6 +24,7 @@ export type {
   AddCompressionPolicyInput,
   AlterPolicyInput,
   RenameTableInput,
+  SetChunkIntervalInput,
   CreateContinuousAggregateInput,
   ContinuousAggregateColumn,
   ContinuousAggregateFn,
@@ -133,6 +135,7 @@ export type {
 export {
   canonicalizeInterval,
   intervalsEqual,
+  assertParsableInterval,
   parsePolicyConfig,
   policiesEqual,
   normalizeCaggDefinition,
@@ -153,6 +156,7 @@ export type {
   AlterCompressionPolicyOperation,
   AlterRetentionPolicyOperation,
   RenameHypertableOperation,
+  SetChunkIntervalOperation,
 } from './operation.js';
 export { diffSchemaState, isEmptyPlan } from './diff.js';
 export type { Plan, PlanStep, DiffOptions } from './diff.js';

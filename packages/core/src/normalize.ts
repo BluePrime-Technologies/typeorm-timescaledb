@@ -17,6 +17,7 @@
  */
 
 import type { ContinuousAggregateState, IntervalOrInt, PolicyState } from './schema-state.js';
+import { TimescaleError, TimescaleErrorCode } from './errors.js';
 
 const USECS_PER_DAY = 86_400_000_000n;
 // Postgres `interval_cmp_value` (which `interval_eq` / the `=` operator uses) canonicalizes with a
@@ -127,6 +128,47 @@ export function intervalsEqual(
 ): boolean {
   if (a === undefined || b === undefined) return a === b;
   return canonicalizeInterval(a) === canonicalizeInterval(b);
+}
+
+/**
+ * Assert a string is an interval this engine can parse — accepting ANY Postgres `intervalstyle=postgres`
+ * OUTPUT form: `<n> <unit>`, the `HH:MM:SS[.ffffff]` time form, a compound form (`1 day 02:00:00`), and
+ * mixed-sign. Use this for interval values that ORIGINATE from catalog introspection (the current-state
+ * `from` of an alter), where the strict `<n> <unit>` `INTERVAL_PATTERN` (`interval.ts`) is too narrow and
+ * would reject a legitimate sub-day/compound interval — while `quoteLiteral` still makes the emitted
+ * literal injection-safe. Validates via {@link canonicalizeInterval} (ReDoS-safe): an unrecognized value
+ * canonicalizes to `raw:` and is rejected. With `positive`, also rejects a zero/negative interval.
+ */
+export function assertParsableInterval(
+  value: string,
+  role = 'interval',
+  options?: { readonly positive?: boolean },
+): string {
+  if (typeof value !== 'string') {
+    throw new TimescaleError(TimescaleErrorCode.INVALID_ARGUMENT, `${role} must be a string`, {
+      role,
+    });
+  }
+  const key = canonicalizeInterval(value);
+  if (key.startsWith('raw:')) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `${role} is not a recognized Postgres interval (intervalstyle=postgres): ${value}`,
+      { role, value },
+    );
+  }
+  if (options?.positive) {
+    // key is `us:<micros>` or `int:<n>`; both carry the magnitude after the colon.
+    const magnitude = BigInt(key.slice(key.indexOf(':') + 1));
+    if (magnitude <= 0n) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `${role} must be a positive interval, got: ${value}`,
+        { role, value },
+      );
+    }
+  }
+  return value;
 }
 
 /**

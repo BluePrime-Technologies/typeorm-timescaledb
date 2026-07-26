@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { TimescaleError } from '../src/index.js';
 import {
+  assertParsableInterval,
   canonicalizeInterval,
   intervalsEqual,
   parsePolicyConfig,
@@ -210,5 +212,37 @@ describe('CAGG definition normalization (case-preserving)', () => {
     expect(caggDefinitionsEqual('SELECT avg(v) FROM reading', 'SELECT sum(v) FROM reading')).toBe(
       false,
     );
+  });
+});
+
+describe('assertParsableInterval', () => {
+  it('accepts <n> <unit> form', () => {
+    expect(assertParsableInterval('30 minutes', 'x')).toBe('30 minutes');
+    expect(assertParsableInterval('1 day', 'x')).toBe('1 day');
+  });
+
+  it('accepts Postgres HH:MM:SS time form (sub-day introspected intervals)', () => {
+    expect(assertParsableInterval('01:00:00', 'x')).toBe('01:00:00');
+    expect(assertParsableInterval('00:30:00', 'x')).toBe('00:30:00');
+  });
+
+  it('accepts the compound form Postgres emits for >24h non-day-aligned intervals', () => {
+    expect(assertParsableInterval('1 day 02:00:00', 'x')).toBe('1 day 02:00:00');
+  });
+
+  it('rejects an unrecognized value (would canonicalize to raw:)', () => {
+    expect(() => assertParsableInterval('every 5 minutes', 'x')).toThrow(TimescaleError);
+    expect(() => assertParsableInterval('not-an-interval', 'x')).toThrow(TimescaleError);
+  });
+
+  it('with { positive } rejects zero and negative intervals', () => {
+    expect(() => assertParsableInterval('0 seconds', 'x', { positive: true })).toThrow(
+      TimescaleError,
+    );
+    expect(() => assertParsableInterval('-1 hour', 'x', { positive: true })).toThrow(
+      TimescaleError,
+    );
+    expect(assertParsableInterval('1 hour', 'x', { positive: true })).toBe('1 hour');
+    expect(assertParsableInterval('00:30:00', 'x', { positive: true })).toBe('00:30:00');
   });
 });

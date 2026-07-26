@@ -34,6 +34,8 @@ function describeOperation(operation: Operation): string {
       return `alter retention policy on ${operation.table}: ${operation.from} -> ${operation.to}`;
     case 'renameHypertable':
       return `rename hypertable ${operation.from} -> ${operation.to}`;
+    case 'setChunkInterval':
+      return `set chunk interval on ${operation.table}: ${operation.from} -> ${operation.to}`;
     default: {
       // Exhaustiveness: a new Operation variant without a case fails to compile here.
       const unhandled: never = operation;

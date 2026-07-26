@@ -1,6 +1,7 @@
 import { assertSafeIdentifier, quoteIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
 import { assertInterval, assertPositiveInterval } from '../interval.js';
+import { assertParsableInterval } from '../normalize.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /**
@@ -391,6 +392,36 @@ export interface AlterPolicyInput {
   readonly to: string;
 }
 
+export interface SetChunkIntervalInput {
+  /** Table name, optionally `schema.table`. */
+  readonly table: string;
+  /** The current time-dimension chunk interval (for `down`). */
+  readonly from: string;
+  /** The desired time-dimension chunk interval (for `up`). */
+  readonly to: string;
+}
+
+/**
+ * Change the time (range) dimension's chunk interval via `set_chunk_time_interval`. This affects only
+ * FUTURE chunks — existing chunks keep their size — so it rewrites no data and is online-safe; `down`
+ * restores the prior interval. Uses the two-argument form, which targets the hypertable's primary
+ * time/range dimension.
+ */
+export function setChunkIntervalSQL(input: SetChunkIntervalInput): MigrationStatement {
+  const t = parseTable(input.table);
+  // `from` originates from introspection (Postgres output form — may be `HH:MM:SS` for a sub-day
+  // interval), so accept any parseable interval form, not just `<n> <unit>`; still require positivity.
+  const to = assertParsableInterval(input.to, 'to', { positive: true });
+  const from = assertParsableInterval(input.from, 'from', { positive: true });
+  const setInterval = (iv: string): string =>
+    `SELECT set_chunk_time_interval(${t.regclass}, INTERVAL ${quoteLiteral(iv)});`;
+  const inspect =
+    `SELECT time_interval FROM timescaledb_information.dimensions ` +
+    `WHERE hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)} ` +
+    `AND dimension_type = 'Time' ORDER BY dimension_number LIMIT 1;`;
+  return { up: [setInterval(to)], down: [setInterval(from)], inspect };
+}
+
 /**
  * Change a compression policy's `after` threshold. A policy's threshold is not editable in place, so
  * this is a **remove-then-add**: `up` removes the current policy and adds one at `to`; `down` removes
@@ -399,8 +430,10 @@ export interface AlterPolicyInput {
  */
 export function alterCompressionPolicySQL(input: AlterPolicyInput): MigrationStatement {
   const t = parseTable(input.table);
-  const to = assertInterval(input.to, 'to');
-  const from = assertInterval(input.from, 'from');
+  // `from` is the introspected current threshold (Postgres output form — may be `HH:MM:SS` for a
+  // sub-day interval like `compress after '6 hours'`); accept any parseable form, not just `<n> <unit>`.
+  const to = assertParsableInterval(input.to, 'to');
+  const from = assertParsableInterval(input.from, 'from');
   // The add half asserts fresh (`if_not_exists => FALSE`): after the preceding remove the policy must
   // be gone, so a duplicate here means the remove did not take effect — fail loudly rather than silently
   // no-op and leave the OLD threshold in place (a silent drift). remove precedes add, so the block stays
@@ -419,8 +452,10 @@ export function alterCompressionPolicySQL(input: AlterPolicyInput): MigrationSta
  */
 export function alterRetentionPolicySQL(input: AlterPolicyInput): MigrationStatement {
   const t = parseTable(input.table);
-  const to = assertInterval(input.to, 'to');
-  const from = assertInterval(input.from, 'from');
+  // `from` is the introspected current threshold (may be a sub-day `HH:MM:SS` form); accept any
+  // parseable interval form, not just `<n> <unit>`.
+  const to = assertParsableInterval(input.to, 'to');
+  const from = assertParsableInterval(input.from, 'from');
   const inspect =
     `SELECT job_id, proc_name, schedule_interval, config FROM timescaledb_information.jobs ` +
     `WHERE proc_name = 'policy_retention' AND hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`;

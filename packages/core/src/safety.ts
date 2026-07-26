@@ -92,6 +92,12 @@ export function classifyOperation(operation: Operation): OperationSafety {
         reason:
           'ALTER TABLE ... RENAME TO is a catalog-only metadata change — no data rewrite, no lock beyond the instant rename — and is cleanly reversible (down() renames back); TimescaleDB updates the hypertable/chunk/CAGG catalog automatically',
       };
+    case 'setChunkInterval':
+      return {
+        safety: 'online-safe',
+        reason:
+          'set_chunk_time_interval affects only FUTURE chunks — existing chunks keep their size, no data is rewritten; down() restores the prior interval',
+      };
     default: {
       // Exhaustiveness: a new Operation variant without a case fails to compile here.
       const unhandled: never = operation;
