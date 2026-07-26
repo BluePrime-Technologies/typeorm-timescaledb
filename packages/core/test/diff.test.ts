@@ -3,6 +3,8 @@ import {
   diffSchemaState,
   isEmptyPlan,
   TimescaleError,
+  type Operation,
+  type Plan,
   type SchemaStateIR,
   type HypertableState,
 } from '../src/index.js';
@@ -12,6 +14,9 @@ const ir = (...hypertables: HypertableState[]): SchemaStateIR => ({
   hypertables,
   continuousAggregates: [],
 });
+
+// The plan is now a list of {operation, safety, reason} steps; most assertions care about the operations.
+const ops = (plan: Plan): Operation[] => plan.steps.map((s) => s.operation);
 
 // A fully-configured hypertable: time+space dims, columnstore, compression + retention policies.
 const metric = (): HypertableState => ({
@@ -37,7 +42,7 @@ const events = (): HypertableState => ({
 describe('diffSchemaState — additive (create-only) plan', () => {
   it('emits the full create sequence for a hypertable missing from current', () => {
     const plan = diffSchemaState(ir(), ir(metric()));
-    expect(plan.operations).toEqual([
+    expect(ops(plan)).toEqual([
       {
         kind: 'createHypertable',
         table: 'public.metric',
@@ -58,7 +63,7 @@ describe('diffSchemaState — additive (create-only) plan', () => {
 
   it('emits create_hypertable only (no columnstore/policy) for a bare hypertable', () => {
     const plan = diffSchemaState(ir(), ir(events()));
-    expect(plan.operations).toEqual([
+    expect(ops(plan)).toEqual([
       {
         kind: 'createHypertable',
         table: 'public.events',
@@ -70,7 +75,7 @@ describe('diffSchemaState — additive (create-only) plan', () => {
 
   it('yields an EMPTY plan when current equals desired (no false drift)', () => {
     const plan = diffSchemaState(ir(metric(), events()), ir(metric(), events()));
-    expect(plan.operations).toEqual([]);
+    expect(ops(plan)).toEqual([]);
     expect(isEmptyPlan(plan)).toBe(true);
   });
 
@@ -78,7 +83,7 @@ describe('diffSchemaState — additive (create-only) plan', () => {
     const withoutRetention: HypertableState = { ...metric() };
     delete (withoutRetention as { retentionPolicy?: unknown }).retentionPolicy;
     const plan = diffSchemaState(ir(withoutRetention), ir(metric()));
-    expect(plan.operations).toEqual([
+    expect(ops(plan)).toEqual([
       { kind: 'addRetentionPolicy', table: 'public.metric', dropAfter: '365 days' },
     ]);
   });
@@ -90,7 +95,7 @@ describe('diffSchemaState — additive (create-only) plan', () => {
     };
     const plan = diffSchemaState(ir(bare), ir(metric()));
     // columnstore add carries the compression `after`; retention is also missing → both added.
-    expect(plan.operations).toEqual([
+    expect(ops(plan)).toEqual([
       {
         kind: 'addColumnstorePolicy',
         table: 'public.metric',
@@ -105,7 +110,7 @@ describe('diffSchemaState — additive (create-only) plan', () => {
   it('does NOT emit a drop for a hypertable in current but absent from desired (additive-only)', () => {
     const plan = diffSchemaState(ir(metric(), events()), ir(metric()));
     // events is only in current → no drop emitted; metric unchanged → nothing.
-    expect(plan.operations).toEqual([]);
+    expect(ops(plan)).toEqual([]);
   });
 
   it('does NOT emit an alter when an existing object differs in content (deferred)', () => {
@@ -116,12 +121,12 @@ describe('diffSchemaState — additive (create-only) plan', () => {
       retentionPolicy: { kind: 'retention', after: '90 days' },
     };
     const plan = diffSchemaState(ir(current), ir(desired));
-    expect(plan.operations).toEqual([]);
+    expect(ops(plan)).toEqual([]);
   });
 
   it('processes multiple new hypertables in desired order', () => {
     const plan = diffSchemaState(ir(), ir(events(), metric()));
-    const tables = plan.operations.map((o) => (o as { table: string }).table);
+    const tables = ops(plan).map((o) => (o as { table: string }).table);
     // events ops first (all for events), then metric ops — desired order preserved.
     expect(tables[0]).toBe('public.events');
     expect(tables.filter((t) => t === 'public.metric').length).toBeGreaterThan(0);
@@ -134,14 +139,24 @@ describe('diffSchemaState — additive (create-only) plan', () => {
       dimensions: [{ column: 'ts', kind: 'time' }],
     };
     const plan = diffSchemaState(ir(), ir(bare));
-    expect(plan.operations).toEqual([
+    expect(ops(plan)).toEqual([
       { kind: 'createHypertable', table: 'public.bare', timeColumn: 'ts' },
     ]);
   });
 
   it('isEmptyPlan reflects the operation count', () => {
-    expect(isEmptyPlan({ operations: [] })).toBe(true);
+    expect(isEmptyPlan({ steps: [] })).toBe(true);
     expect(isEmptyPlan(diffSchemaState(ir(), ir(events())))).toBe(false);
+  });
+
+  it('tags each step with its safety class + reason', () => {
+    const plan = diffSchemaState(ir(), ir(metric()));
+    const byKind = new Map(plan.steps.map((s) => [s.operation.kind, s]));
+    // hypertable conversion + columnstore enable are one-way; a retention policy is online-safe.
+    expect(byKind.get('createHypertable')?.safety).toBe('one-way');
+    expect(byKind.get('addColumnstorePolicy')?.safety).toBe('one-way');
+    expect(byKind.get('addRetentionPolicy')?.safety).toBe('online-safe');
+    for (const step of plan.steps) expect(step.reason.length).toBeGreaterThan(0);
   });
 });
 
@@ -210,6 +225,6 @@ describe('diffSchemaState — unrepresentable desired state throws (no silent fa
       compressionPolicy: { kind: 'compression', after: '30 days' },
     };
     const plan = diffSchemaState(ir(current), ir(desired));
-    expect(plan.operations).toEqual([]);
+    expect(ops(plan)).toEqual([]);
   });
 });

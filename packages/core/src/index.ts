@@ -144,4 +144,6 @@ export type {
   AddContinuousAggregatePolicyOperation,
 } from './operation.js';
 export { diffSchemaState, isEmptyPlan } from './diff.js';
-export type { Plan } from './diff.js';
+export type { Plan, PlanStep } from './diff.js';
+export { classifyOperation } from './safety.js';
+export type { SafetyClass, OperationSafety } from './safety.js';

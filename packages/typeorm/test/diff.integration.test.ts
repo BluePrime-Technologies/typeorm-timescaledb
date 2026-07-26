@@ -91,7 +91,7 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     const plan = diffSchemaState(current, desired);
     // The hypertable, columnstore, and compression policy are all present → no drift for them.
     // Only the declared-but-unapplied retention policy is missing.
-    expect(plan.operations).toEqual([
+    expect(plan.steps.map((s) => s.operation)).toEqual([
       { kind: 'addRetentionPolicy', table: 'public.metric', dropAfter: '90 days' },
     ]);
   });
@@ -101,12 +101,12 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     const before = diffSchemaState(await introspect(ds), compileDesiredState(ds));
     await runAll(
       ds,
-      compileOperations(before.operations).flatMap((s) => [...s.up]),
+      compileOperations(before.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
     );
 
     // Re-introspect: desired == current now → empty plan.
     const afterPlan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
-    expect(afterPlan.operations).toEqual([]);
+    expect(afterPlan.steps.map((s) => s.operation)).toEqual([]);
     expect(isEmptyPlan(afterPlan)).toBe(true);
 
     // The retention job really exists in the catalog now.
@@ -117,7 +117,7 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
 
     // Diffing again changes nothing (a no-op plan applied twice stays a no-op).
     const again = diffSchemaState(await introspect(ds), compileDesiredState(ds));
-    expect(again.operations).toEqual([]);
+    expect(again.steps.map((s) => s.operation)).toEqual([]);
   });
 
   it('a fully round-tripped schema (generate → introspect) diffs to empty vs desired', async () => {

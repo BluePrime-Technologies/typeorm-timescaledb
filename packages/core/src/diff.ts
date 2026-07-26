@@ -1,5 +1,6 @@
 import type { DimensionState, HypertableState, SchemaStateIR } from './schema-state.js';
 import type { AddColumnstorePolicyOperation, Operation } from './operation.js';
+import { classifyOperation, type OperationSafety } from './safety.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
 
 /**
@@ -45,15 +46,22 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * alters, drops, CAGGs, and the compression-policy-on-existing-columnstore gap are out of this slice.
  */
 
-/** An ordered migration plan — the operations to converge the current schema toward the desired one. */
-export interface Plan {
-  /** Operations in apply order. Empty ⇒ no drift. */
-  readonly operations: readonly Operation[];
+/** One step of a {@link Plan}: an operation plus its {@link OperationSafety} classification. */
+export interface PlanStep extends OperationSafety {
+  readonly operation: Operation;
 }
 
-/** `true` when the plan has no operations (no drift) — the `check`-verb gate (a later slice). */
+/** An ordered migration plan — the steps to converge the current schema toward the desired one, each
+ * tagged with its safety class so the `check`/`generate` verbs can gate or refuse per step. */
+export interface Plan {
+  /** Steps in apply order. Empty ⇒ no drift. */
+  readonly steps: readonly PlanStep[];
+}
+
+/** `true` when the plan has no steps (no drift) — the `check`-verb gate (a later slice). NOTE: this
+ * reflects only what the current diff detects (additive create-only in this slice), not full convergence. */
 export function isEmptyPlan(plan: Plan): boolean {
-  return plan.operations.length === 0;
+  return plan.steps.length === 0;
 }
 
 function findDimension(h: HypertableState, kind: 'time' | 'space'): DimensionState | undefined {
@@ -189,5 +197,5 @@ export function diffSchemaState(current: SchemaStateIR, desired: SchemaStateIR):
     }
   }
 
-  return { operations };
+  return { steps: operations.map((operation) => ({ operation, ...classifyOperation(operation) })) };
 }
