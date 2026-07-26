@@ -7,6 +7,7 @@ import {
   revertMigrationCommand,
   runMigrationsCommand,
   statusCommand,
+  checkCommand,
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
@@ -46,6 +47,11 @@ async function main(argv: readonly string[]): Promise<void> {
       case 'status':
         await statusCommand(dataSource, logger);
         break;
+      case 'check': {
+        const drift = await checkCommand(dataSource, logger);
+        if (drift) process.exitCode = 1;
+        break;
+      }
     }
   } finally {
     if (dataSource.isInitialized) await dataSource.destroy();

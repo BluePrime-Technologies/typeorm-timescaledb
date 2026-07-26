@@ -24,8 +24,8 @@ describe('parseArgs', () => {
     expect(a.name).toBe('InitHypertables');
   });
 
-  it('parses run / revert / status', () => {
-    for (const c of ['run', 'revert', 'status'] as const) {
+  it('parses run / revert / status / check', () => {
+    for (const c of ['run', 'revert', 'status', 'check'] as const) {
       expect(parseArgs([c, '-d', 'ds.ts']).command).toBe(c);
     }
   });

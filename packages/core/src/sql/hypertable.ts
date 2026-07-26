@@ -188,6 +188,49 @@ export function createHypertableSQL(input: CreateHypertableInput): MigrationStat
   return { up, down: [nonDestructiveNotice('hypertable', t.ident)], inspect };
 }
 
+export interface RenameTableInput {
+  /** The hypertable's current (before) table name, optionally `schema.table`. */
+  readonly from: string;
+  /** The hypertable's new (after) table name, optionally `schema.table` — must be the SAME schema
+   * as `from` (a cross-schema move needs `ALTER TABLE ... SET SCHEMA`, which this does not emit). */
+  readonly to: string;
+}
+
+/**
+ * Rename a hypertable's underlying table (`ALTER TABLE ... RENAME TO ...`). TimescaleDB updates the
+ * hypertable catalog (and dependent chunks/CAGGs) automatically on a standard table rename — this is
+ * a catalog-only, near-instant metadata change, not a data rewrite.
+ *
+ * `down` renames back to `from`, so it is cleanly, losslessly reversible (unlike every other
+ * destructive/irreversible builder in this module).
+ */
+export function renameHypertableSQL(input: RenameTableInput): MigrationStatement {
+  const from = parseTable(input.from);
+  const to = parseTable(input.to);
+  if (from.schema !== to.schema) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `renaming a hypertable across schemas is not supported (${from.ident} -> ${to.ident}) — use a schema-move migration instead`,
+      { from: input.from, to: input.to },
+    );
+  }
+  if (from.name === to.name) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `renamedFrom must differ from the current table name (${from.ident})`,
+      { table: input.from },
+    );
+  }
+
+  const up = [`ALTER TABLE ${from.ident} RENAME TO ${quoteIdent(to.name)};`];
+  const down = [`ALTER TABLE ${to.ident} RENAME TO ${quoteIdent(from.name)};`];
+  const inspect =
+    `SELECT hypertable_schema, hypertable_name FROM timescaledb_information.hypertables ` +
+    `WHERE hypertable_schema = ${quoteLiteral(to.schema)} AND hypertable_name = ${quoteLiteral(to.name)};`;
+
+  return { up, down, inspect };
+}
+
 export interface ColumnstorePolicyInput {
   /** Table name, optionally `schema.table`. */
   readonly table: string;

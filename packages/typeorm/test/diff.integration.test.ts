@@ -10,9 +10,11 @@ import {
   TimeColumn,
   HypertablePrimaryKey,
   compileDesiredState,
+  collectRenames,
   generateTimescaleMigration,
   introspect,
 } from '../src/index.js';
+import { checkCommand, type Logger } from '../src/cli/index.js';
 import {
   compileOperations,
   diffSchemaState,
@@ -216,5 +218,98 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     );
     expect(rows).toHaveLength(1);
     expect(intervalsEqual(rows[0]!.compress_after, '7 days')).toBe(true);
+  });
+
+  it('checkCommand: no drift when converged; reports + returns true when drifted (CI-gate signal)', async () => {
+    const lines: string[] = [];
+    const logger: Logger = { log: (m) => lines.push(m), error: (m) => lines.push(`ERR:${m}`) };
+
+    // Baseline: the prior tests already converged `metric` to the Metric entity's declared config.
+    expect(await checkCommand(ds, logger)).toBe(false);
+    expect(lines.at(-1)).toContain('No drift detected');
+
+    // Drift retention out-of-band (mirrors the earlier "detects a CHANGED retention threshold" test).
+    await runAll(ds, [
+      `SELECT remove_retention_policy('public.metric', if_exists => TRUE);`,
+      `SELECT add_retention_policy('public.metric', drop_after => INTERVAL '30 days');`,
+    ]);
+    expect(await checkCommand(ds, logger)).toBe(true);
+    expect(lines.at(-1)).toContain('Drift detected');
+    expect(lines.at(-1)).toContain('alter retention policy on public.metric');
+
+    // Restore convergence — the rename test below depends on `metric`'s live state matching the
+    // Metric entity's declared config exactly.
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    await runAll(
+      ds,
+      compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    expect(await checkCommand(ds, logger)).toBe(false);
+  });
+
+  it('renames a hypertable via renamedFrom → a single renameHypertable op; converges after applying', async () => {
+    // A second entity mapped to a NEW table name, declaring the SAME config as Metric plus
+    // renamedFrom — a separate DataSource against the SAME container, so it never touches `ds`'s
+    // own entity set.
+    class MetricRenamed {}
+    Entity('metric_v2')(MetricRenamed);
+    PrimaryColumn({ type: 'timestamptz' })(MetricRenamed.prototype, 'time');
+    Column({ type: 'text' })(MetricRenamed.prototype, 'symbol');
+    Column({ type: 'double precision' })(MetricRenamed.prototype, 'price');
+    Hypertable({
+      chunkInterval: '1 day',
+      columnstore: {
+        segmentBy: ['symbol'],
+        orderBy: [{ column: 'time', direction: 'DESC' }],
+        compressAfter: '7 days',
+      },
+      retention: { dropAfter: '90 days' },
+      renamedFrom: 'metric',
+    })(MetricRenamed);
+    TimeColumn()(MetricRenamed.prototype, 'time');
+    HypertablePrimaryKey()(MetricRenamed.prototype, 'time');
+
+    const renamedDs = new DataSource({
+      type: 'postgres',
+      host: container.getHost(),
+      port: container.getMappedPort(5432),
+      username: 'postgres',
+      password: 'test',
+      database: 'test',
+      entities: [MetricRenamed],
+      synchronize: false,
+    });
+    await renamedDs.initialize();
+    try {
+      const desired = compileDesiredState(renamedDs);
+      const renames = collectRenames(renamedDs);
+      expect(renames.get('public.metric_v2')).toBe('public.metric');
+
+      const plan = diffSchemaState(await introspect(renamedDs), desired, { renames });
+      expect(plan.steps.map((s) => s.operation)).toEqual([
+        { kind: 'renameHypertable', from: 'public.metric', to: 'public.metric_v2' },
+      ]);
+      expect(plan.steps[0]!.safety).toBe('online-safe');
+
+      await runAll(
+        renamedDs,
+        compileOperations(plan.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+      );
+
+      // Re-diff post-rename: columnstore + policies transferred automatically (Postgres RENAME
+      // preserves everything but the name) — fully converged, no leftover alters.
+      const after = diffSchemaState(await introspect(renamedDs), compileDesiredState(renamedDs), {
+        renames: collectRenames(renamedDs),
+      });
+      expect(isEmptyPlan(after)).toBe(true);
+
+      const hyps: Array<{ hypertable_name: string }> = await renamedDs.query(
+        `SELECT hypertable_name FROM timescaledb_information.hypertables WHERE hypertable_schema = 'public'`,
+      );
+      expect(hyps.map((h) => h.hypertable_name)).toContain('metric_v2');
+      expect(hyps.map((h) => h.hypertable_name)).not.toContain('metric');
+    } finally {
+      await renamedDs.destroy();
+    }
   });
 });

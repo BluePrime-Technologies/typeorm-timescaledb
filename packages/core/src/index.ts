@@ -10,6 +10,7 @@ export {
   addCompressionPolicySQL,
   alterCompressionPolicySQL,
   alterRetentionPolicySQL,
+  renameHypertableSQL,
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
@@ -21,6 +22,7 @@ export type {
   RetentionPolicyInput,
   AddCompressionPolicyInput,
   AlterPolicyInput,
+  RenameTableInput,
   CreateContinuousAggregateInput,
   ContinuousAggregateColumn,
   ContinuousAggregateFn,
@@ -150,8 +152,9 @@ export type {
   AddCompressionPolicyOperation,
   AlterCompressionPolicyOperation,
   AlterRetentionPolicyOperation,
+  RenameHypertableOperation,
 } from './operation.js';
 export { diffSchemaState, isEmptyPlan } from './diff.js';
-export type { Plan, PlanStep } from './diff.js';
+export type { Plan, PlanStep, DiffOptions } from './diff.js';
 export { classifyOperation } from './safety.js';
 export type { SafetyClass, OperationSafety } from './safety.js';

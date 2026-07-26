@@ -5,7 +5,11 @@ import type {
   PolicyState,
   SchemaStateIR,
 } from './schema-state.js';
-import type { AddColumnstorePolicyOperation, Operation } from './operation.js';
+import type {
+  AddColumnstorePolicyOperation,
+  Operation,
+  RenameHypertableOperation,
+} from './operation.js';
 import { classifyOperation, type OperationSafety } from './safety.js';
 import { intervalsEqual } from './normalize.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
@@ -42,9 +46,31 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * can't be expressed by the string-only builders, so the diff raises `INVALID_ARGUMENT` rather than a
  * wrong op or a false "converged". (The decorator path only produces string `after` thresholds.)
  *
+ * **Rename resolution.** A hypertable renamed at the decorator level (new `table`, no matching
+ * `current` entry) would otherwise diff as a drop-then-create — the Prisma/EF anti-pattern the M4.2
+ * plan calls out, and worse here: `createHypertableOperations` would attempt `create_hypertable` on a
+ * table that already IS one under its old name. Callers pass a `renames` map (desired table → current
+ * table, collected from `@Hypertable({ renamedFrom })`) via {@link DiffOptions}; when `desired.table`
+ * has no direct `current` match but resolves through `renames` to one that does, the diff matches the
+ * two as the SAME hypertable: it emits a single `renameHypertable` op first, then diffs the rest
+ * (columnstore/policies) against the matched current entry exactly as an existing-table update. Two
+ * desired hypertables resolving to the same current one (an ambiguous rename) THROWS.
+ *
  * {@link isEmptyPlan} means "no operation IN SCOPE is needed" — not a guarantee of full convergence
  * (columnstore-config alters, chunk-interval alters, drops, and CAGGs are still out of scope).
  */
+
+/** Options for {@link diffSchemaState}. */
+export interface DiffOptions {
+  /**
+   * Rename resolution map: desired (new) schema-qualified table name → current (old) schema-qualified
+   * table name. Collected from `@Hypertable({ renamedFrom })` declarations (see the `typeorm` package's
+   * `collectRenames`). When a desired hypertable isn't found in `current` under its own name but
+   * resolves through this map to one that is, the diff treats them as the same hypertable and emits a
+   * `renameHypertable` op instead of a drop-then-create.
+   */
+  readonly renames?: ReadonlyMap<string, string>;
+}
 
 /** One step of a {@link Plan}: an operation plus its {@link OperationSafety} classification. */
 export interface PlanStep extends OperationSafety {
@@ -214,10 +240,19 @@ function createHypertableOperations(h: HypertableState): Operation[] {
  * module doc for the exact (create-only) scope. Hypertables are processed in `desired` order (which is
  * deterministic — both producers sort by table name).
  */
-export function diffSchemaState(current: SchemaStateIR, desired: SchemaStateIR): Plan {
+export function diffSchemaState(
+  current: SchemaStateIR,
+  desired: SchemaStateIR,
+  options: DiffOptions = {},
+): Plan {
   const currentByTable = new Map<string, HypertableState>(
     current.hypertables.map((h) => [h.table, h]),
   );
+  const renames = options.renames ?? new Map<string, string>();
+  // Tracks which OLD (current) table a rename has already resolved to this pass, so two desired
+  // hypertables can never both claim the same current entry (an ambiguous/duplicate rename) — caught
+  // below rather than silently diffing one of them as a spurious create.
+  const renamedFromTable = new Map<string, string>();
   const operations: Operation[] = [];
 
   for (const d of desired.hypertables) {
@@ -231,14 +266,37 @@ export function diffSchemaState(current: SchemaStateIR, desired: SchemaStateIR):
         { table: d.table },
       );
     }
-    const c = currentByTable.get(d.table);
+
+    let c = currentByTable.get(d.table);
+    let renameOp: RenameHypertableOperation | undefined;
+
     if (c === undefined) {
-      // Whole hypertable missing → emit the full create sequence.
+      const oldTable = renames.get(d.table);
+      const oldEntry = oldTable === undefined ? undefined : currentByTable.get(oldTable);
+      if (oldTable !== undefined && oldEntry !== undefined) {
+        const claimedBy = renamedFromTable.get(oldTable);
+        if (claimedBy !== undefined) {
+          throw new TimescaleError(
+            TimescaleErrorCode.INVALID_ARGUMENT,
+            `ambiguous rename: both ${claimedBy} and ${d.table} declare renamedFrom(${oldTable})`,
+            { oldTable, desired: [claimedBy, d.table] },
+          );
+        }
+        renamedFromTable.set(oldTable, d.table);
+        c = oldEntry;
+        renameOp = { kind: 'renameHypertable', from: oldTable, to: d.table };
+      }
+    }
+
+    if (c === undefined) {
+      // Whole hypertable missing (and no rename resolves it) → emit the full create sequence.
       operations.push(...createHypertableOperations(d));
       continue;
     }
-    // Existing table. Additive: enable a wholly-missing columnstore. On an already-columnstore table,
-    // handle the compression POLICY (add the missing one — the S2 gap; or alter a changed threshold).
+    if (renameOp !== undefined) operations.push(renameOp);
+    // Existing table (possibly just renamed above). Additive: enable a wholly-missing columnstore. On
+    // an already-columnstore table, handle the compression POLICY (add the missing one — the S2 gap;
+    // or alter a changed threshold).
     if (d.columnstore !== undefined && c.columnstore === undefined) {
       operations.push(columnstoreOperation(d));
     } else if (d.columnstore !== undefined && c.columnstore !== undefined) {

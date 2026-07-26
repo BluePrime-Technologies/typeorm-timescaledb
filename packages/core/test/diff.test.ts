@@ -271,3 +271,96 @@ describe('diffSchemaState — unrepresentable desired state throws (no silent fa
     ]);
   });
 });
+
+describe('diffSchemaState — rename resolution (renamedFrom)', () => {
+  it('resolves a pure rename to a single renameHypertable op (not drop+create)', () => {
+    const current = ir(events()); // table: public.events
+    const desired = ir({ ...events(), table: 'public.events_v2' });
+    const plan = diffSchemaState(current, desired, {
+      renames: new Map([['public.events_v2', 'public.events']]),
+    });
+    expect(ops(plan)).toEqual([
+      { kind: 'renameHypertable', from: 'public.events', to: 'public.events_v2' },
+    ]);
+    expect(plan.steps[0]!.safety).toBe('online-safe');
+  });
+
+  it('emits the rename FIRST, then diffs the rest against the matched (old) entry', () => {
+    // current: public.metric_old with the metric() config but retention 90 days instead of 365.
+    const current = ir({
+      ...metric(),
+      table: 'public.metric_old',
+      retentionPolicy: { kind: 'retention', after: '90 days' },
+    });
+    const desired = ir({ ...metric(), table: 'public.metric_new' });
+    const plan = diffSchemaState(current, desired, {
+      renames: new Map([['public.metric_new', 'public.metric_old']]),
+    });
+    expect(ops(plan)).toEqual([
+      { kind: 'renameHypertable', from: 'public.metric_old', to: 'public.metric_new' },
+      {
+        kind: 'alterRetentionPolicy',
+        table: 'public.metric_new',
+        from: '90 days',
+        to: '365 days',
+      },
+    ]);
+  });
+
+  it('without a renames option, a renamed table diffs as an unrelated create (default behavior unchanged)', () => {
+    const current = ir(events());
+    const desired = ir({ ...events(), table: 'public.events_v2' });
+    const plan = diffSchemaState(current, desired); // no options — old call shape still works
+    expect(ops(plan)).toEqual([
+      {
+        kind: 'createHypertable',
+        table: 'public.events_v2',
+        timeColumn: 'ts',
+        chunkInterval: '1 hour',
+      },
+    ]);
+  });
+
+  it('falls through to create when the rename target does not exist in current', () => {
+    const current = ir(); // nothing exists yet — a stale/bogus renamedFrom
+    const desired = ir({ ...events(), table: 'public.events_v2' });
+    const plan = diffSchemaState(current, desired, {
+      renames: new Map([['public.events_v2', 'public.events_v1']]),
+    });
+    expect(ops(plan)).toEqual([
+      {
+        kind: 'createHypertable',
+        table: 'public.events_v2',
+        timeColumn: 'ts',
+        chunkInterval: '1 hour',
+      },
+    ]);
+  });
+
+  it('throws on an ambiguous rename (two desired hypertables claim the same old table)', () => {
+    const current = ir(events());
+    const desired = ir(
+      { ...events(), table: 'public.events_a' },
+      { ...events(), table: 'public.events_b' },
+    );
+    const plan = () =>
+      diffSchemaState(current, desired, {
+        renames: new Map([
+          ['public.events_a', 'public.events'],
+          ['public.events_b', 'public.events'],
+        ]),
+      });
+    expect(plan).toThrow(TimescaleError);
+    expect(plan).toThrow(/ambiguous rename/);
+  });
+
+  it('yields an empty plan for a rename resolved on BOTH sides (already-converged rename)', () => {
+    // Once the physical rename has been applied and re-introspected, current already carries the
+    // NEW name — the renames map becomes irrelevant (direct match wins) and the plan stays empty.
+    const state = { ...events(), table: 'public.events_v2' };
+    const plan = diffSchemaState(ir(state), ir(state), {
+      renames: new Map([['public.events_v2', 'public.events']]),
+    });
+    expect(isEmptyPlan(plan)).toBe(true);
+  });
+});

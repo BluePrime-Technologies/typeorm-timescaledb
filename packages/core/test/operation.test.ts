@@ -10,6 +10,7 @@ import {
   compileOperations,
   createContinuousAggregateSQL,
   createHypertableSQL,
+  renameHypertableSQL,
   TimescaleError,
   TimescaleErrorCode,
   type Operation,
@@ -138,6 +139,11 @@ const CASES: ReadonlyArray<{
     direct: () =>
       alterRetentionPolicySQL({ table: 'public.metric', from: '90 days', to: '365 days' }),
   },
+  {
+    kind: 'renameHypertable',
+    operation: { kind: 'renameHypertable', from: 'public.old_metric', to: 'public.metric' },
+    direct: () => renameHypertableSQL({ from: 'public.old_metric', to: 'public.metric' }),
+  },
 ];
 
 describe('compileOperation — delegates to the core builders (byte-identical)', () => {
@@ -157,6 +163,7 @@ describe('compileOperation — delegates to the core builders (byte-identical)',
       'addCompressionPolicy',
       'alterCompressionPolicy',
       'alterRetentionPolicy',
+      'renameHypertable',
     ];
     // The cases exercise each declared kind exactly once — a new union member without a test fails here.
     expect([...new Set(CASES.map((c) => c.kind))].sort()).toEqual([...KINDS].sort());
