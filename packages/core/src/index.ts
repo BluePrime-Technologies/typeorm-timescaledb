@@ -143,3 +143,5 @@ export type {
   CreateContinuousAggregateOperation,
   AddContinuousAggregatePolicyOperation,
 } from './operation.js';
+export { diffSchemaState, isEmptyPlan } from './diff.js';
+export type { Plan } from './diff.js';
