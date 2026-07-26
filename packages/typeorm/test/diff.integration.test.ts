@@ -354,6 +354,53 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     expect(rows[0]!.orderby).toEqual(['time']);
   });
 
+  it('removes a retention policy under allowDrops, and down() re-adds it (AS3c)', async () => {
+    // Build a desired state identical to Metric but WITHOUT retention (simulates deleting the decorator
+    // option), without a second DataSource.
+    const stripRetention = (h: (typeof desired.hypertables)[number]): typeof h => {
+      if (h.table !== 'public.metric') return h;
+      const copy = { ...h };
+      delete (copy as { retentionPolicy?: unknown }).retentionPolicy;
+      return copy;
+    };
+    const desired = compileDesiredState(ds);
+    const desiredNoRetention = { ...desired, hypertables: desired.hypertables.map(stripRetention) };
+
+    // Default (drops off): a policy present in current but not desired is NOT removed → empty plan.
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), desiredNoRetention))).toBe(true);
+
+    // allowDrops: emit the safe removal.
+    const plan = diffSchemaState(await introspect(ds), desiredNoRetention, { allowDrops: true });
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]!.operation.kind).toBe('removeRetentionPolicy');
+    expect(plan.steps[0]!.safety).toBe('online-safe');
+
+    const compiled = compileOperations(plan.steps.map((s) => s.operation));
+    await runAll(
+      ds,
+      compiled.flatMap((s) => [...s.up]),
+    ); // remove the policy
+    expect(
+      isEmptyPlan(diffSchemaState(await introspect(ds), desiredNoRetention, { allowDrops: true })),
+    ).toBe(true);
+    const gone: Array<{ proc_name: string }> = await ds.query(
+      `SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_schema = 'public' AND hypertable_name = 'metric'`,
+    );
+    expect(gone.map((j) => j.proc_name)).not.toContain('policy_retention');
+
+    // down() re-adds the policy → restores the declared retention (so the rename test below sees a
+    // fully-converged `metric`).
+    await runAll(
+      ds,
+      compiled.flatMap((s) => [...s.down]),
+    );
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
+    const back: Array<{ proc_name: string }> = await ds.query(
+      `SELECT proc_name FROM timescaledb_information.jobs WHERE hypertable_schema = 'public' AND hypertable_name = 'metric'`,
+    );
+    expect(back.map((j) => j.proc_name)).toContain('policy_retention');
+  });
+
   it('renames a hypertable via renamedFrom → a single renameHypertable op; converges after applying', async () => {
     // MUST BE LAST: renames the live `metric` hypertable to `metric_v2`, so any test operating on
     // `metric` after it would fail. A second entity/DataSource against the SAME container.

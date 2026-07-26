@@ -13,6 +13,8 @@ import {
   renameHypertableSQL,
   setChunkIntervalSQL,
   alterColumnstoreConfigSQL,
+  removeRetentionPolicySQL,
+  removeCompressionPolicySQL,
   TimescaleError,
   TimescaleErrorCode,
   type Operation,
@@ -166,6 +168,16 @@ const CASES: ReadonlyArray<{
         to: { segmentBy: ['device_id', 'region'], orderBy: [{ column: 'ts', direction: 'DESC' }] },
       }),
   },
+  {
+    kind: 'removeRetentionPolicy',
+    operation: { kind: 'removeRetentionPolicy', table: 'public.metric', restoreAfter: '90 days' },
+    direct: () => removeRetentionPolicySQL({ table: 'public.metric', restoreAfter: '90 days' }),
+  },
+  {
+    kind: 'removeCompressionPolicy',
+    operation: { kind: 'removeCompressionPolicy', table: 'public.metric', restoreAfter: '7 days' },
+    direct: () => removeCompressionPolicySQL({ table: 'public.metric', restoreAfter: '7 days' }),
+  },
 ];
 
 describe('compileOperation — delegates to the core builders (byte-identical)', () => {
@@ -188,6 +200,8 @@ describe('compileOperation — delegates to the core builders (byte-identical)',
       'renameHypertable',
       'setChunkInterval',
       'alterColumnstoreConfig',
+      'removeRetentionPolicy',
+      'removeCompressionPolicy',
     ];
     // The cases exercise each declared kind exactly once — a new union member without a test fails here.
     expect([...new Set(CASES.map((c) => c.kind))].sort()).toEqual([...KINDS].sort());

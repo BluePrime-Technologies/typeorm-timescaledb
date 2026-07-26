@@ -38,6 +38,10 @@ function describeOperation(operation: Operation): string {
       return `set chunk interval on ${operation.table}: ${operation.from} -> ${operation.to}`;
     case 'alterColumnstoreConfig':
       return `alter columnstore config on ${operation.table} (segmentby/orderby)`;
+    case 'removeRetentionPolicy':
+      return `remove retention policy on ${operation.table}`;
+    case 'removeCompressionPolicy':
+      return `remove compression policy on ${operation.table}`;
     default: {
       // Exhaustiveness: a new Operation variant without a case fails to compile here.
       const unhandled: never = operation;

@@ -69,6 +69,14 @@ const CASES: ReadonlyArray<{ operation: Operation; safety: SafetyClass }> = [
     },
     safety: 'needs-recompress',
   },
+  {
+    operation: { kind: 'removeRetentionPolicy', table: 'public.m', restoreAfter: '90 days' },
+    safety: 'online-safe', // removing a background job deletes no data; reversible via down re-add
+  },
+  {
+    operation: { kind: 'removeCompressionPolicy', table: 'public.m', restoreAfter: '7 days' },
+    safety: 'online-safe', // columnstore stays enabled; only future auto-compression stops; reversible
+  },
 ];
 
 describe('classifyOperation', () => {
@@ -93,6 +101,8 @@ describe('classifyOperation', () => {
       'renameHypertable',
       'setChunkInterval',
       'alterColumnstoreConfig',
+      'removeRetentionPolicy',
+      'removeCompressionPolicy',
     ];
     expect([...new Set(CASES.map((c) => c.operation.kind))].sort()).toEqual([...KINDS].sort());
   });

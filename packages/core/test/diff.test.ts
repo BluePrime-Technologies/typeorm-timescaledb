@@ -501,3 +501,89 @@ describe('diffSchemaState — columnstore config alters (AS3b, needs-recompress)
     expect(ops(diffSchemaState(ir(cs), ir(cs)))).toEqual([]);
   });
 });
+
+describe('diffSchemaState — guarded drops (AS3c, opt-in via allowDrops)', () => {
+  const noRetention = (): HypertableState => {
+    const h = { ...metric() };
+    delete (h as { retentionPolicy?: unknown }).retentionPolicy;
+    return h;
+  };
+
+  it('does NOT emit a policy removal by default (allowDrops off)', () => {
+    // current has retention, desired does not — with drops off, no removal is emitted.
+    const plan = diffSchemaState(ir(metric()), ir(noRetention()));
+    expect(ops(plan)).toEqual([]);
+  });
+
+  it('emits removeRetentionPolicy under allowDrops when desired dropped the retention', () => {
+    const plan = diffSchemaState(ir(metric()), ir(noRetention()), { allowDrops: true });
+    expect(ops(plan)).toEqual([
+      { kind: 'removeRetentionPolicy', table: 'public.metric', restoreAfter: '365 days' },
+    ]);
+    expect(plan.steps[0]!.safety).toBe('online-safe');
+  });
+
+  it('emits removeCompressionPolicy under allowDrops when desired dropped the compression policy (columnstore stays)', () => {
+    // desired keeps the columnstore but no compressionPolicy; current has one → remove it.
+    const desired: HypertableState = {
+      table: 'public.metric',
+      dimensions: metric().dimensions,
+      columnstore: {
+        segmentBy: ['device_id'],
+        orderBy: [{ column: 'ts', desc: true, nullsFirst: true }],
+      },
+      retentionPolicy: { kind: 'retention', after: '365 days' },
+    };
+    const plan = diffSchemaState(ir(metric()), ir(desired), { allowDrops: true });
+    expect(ops(plan)).toEqual([
+      { kind: 'removeCompressionPolicy', table: 'public.metric', restoreAfter: '30 days' },
+    ]);
+  });
+
+  it('does NOT drop a whole hypertable present in current but absent from desired (destructive, out of scope)', () => {
+    // events only in current; even with allowDrops, no hypertable drop is emitted.
+    const plan = diffSchemaState(ir(metric(), events()), ir(metric()), { allowDrops: true });
+    expect(ops(plan)).toEqual([]);
+  });
+
+  it('throws (fail-closed) when the current retention being removed is an integer-time threshold', () => {
+    // A removal must carry a string `restoreAfter` for its `down` re-add. An integer-time policy
+    // can't be expressed by the builder, so stringThreshold throws rather than emit a non-reversible
+    // removal — pins the fail-closed guarantee for the DROP branch (add/alter branches are covered above).
+    const intRetention: HypertableState = {
+      table: 'public.metric',
+      dimensions: metric().dimensions,
+      retentionPolicy: { kind: 'retention', after: 1_000_000 },
+    };
+    const noRet: HypertableState = {
+      table: 'public.metric',
+      dimensions: metric().dimensions,
+    };
+    expect(() => diffSchemaState(ir(intRetention), ir(noRet), { allowDrops: true })).toThrow(
+      TimescaleError,
+    );
+  });
+
+  it('throws (fail-closed) when the current compression being removed is an integer-time threshold', () => {
+    const intCompression: HypertableState = {
+      table: 'public.metric',
+      dimensions: metric().dimensions,
+      columnstore: {
+        segmentBy: ['device_id'],
+        orderBy: [{ column: 'ts', desc: true, nullsFirst: true }],
+      },
+      compressionPolicy: { kind: 'compression', after: 1_000_000 },
+    };
+    const columnstoreNoPolicy: HypertableState = {
+      table: 'public.metric',
+      dimensions: metric().dimensions,
+      columnstore: {
+        segmentBy: ['device_id'],
+        orderBy: [{ column: 'ts', desc: true, nullsFirst: true }],
+      },
+    };
+    expect(() =>
+      diffSchemaState(ir(intCompression), ir(columnstoreNoPolicy), { allowDrops: true }),
+    ).toThrow(TimescaleError);
+  });
+});

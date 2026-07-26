@@ -105,6 +105,18 @@ export function classifyOperation(operation: Operation): OperationSafety {
         reason:
           'the ALTER itself is online and applies to FUTURE chunks; EXISTING compressed chunks keep the old segmentby/orderby layout until manually decompressed + recompressed — no data loss; down() restores the prior config',
       };
+    case 'removeRetentionPolicy':
+      return {
+        safety: 'online-safe',
+        reason:
+          'removes a retention background job — deletes no data (it stops FUTURE chunk drops, keeping more data); down() re-adds the policy at its prior threshold',
+      };
+    case 'removeCompressionPolicy':
+      return {
+        safety: 'online-safe',
+        reason:
+          'removes a compression background job — the columnstore stays enabled and existing chunks are untouched (only future auto-compression stops); down() re-adds the policy at its prior threshold',
+      };
     default: {
       // Exhaustiveness: a new Operation variant without a case fails to compile here.
       const unhandled: never = operation;
