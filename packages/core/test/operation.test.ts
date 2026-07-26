@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   addColumnstorePolicySQL,
+  addCompressionPolicySQL,
   addContinuousAggregatePolicySQL,
   addRetentionPolicySQL,
+  alterCompressionPolicySQL,
+  alterRetentionPolicySQL,
   compileOperation,
   compileOperations,
   createContinuousAggregateSQL,
@@ -108,6 +111,33 @@ const CASES: ReadonlyArray<{
         scheduleInterval: '1 hour',
       }),
   },
+  {
+    kind: 'addCompressionPolicy',
+    operation: { kind: 'addCompressionPolicy', table: 'public.metric', after: '7 days' },
+    direct: () => addCompressionPolicySQL({ table: 'public.metric', after: '7 days' }),
+  },
+  {
+    kind: 'alterCompressionPolicy',
+    operation: {
+      kind: 'alterCompressionPolicy',
+      table: 'public.metric',
+      from: '7 days',
+      to: '30 days',
+    },
+    direct: () =>
+      alterCompressionPolicySQL({ table: 'public.metric', from: '7 days', to: '30 days' }),
+  },
+  {
+    kind: 'alterRetentionPolicy',
+    operation: {
+      kind: 'alterRetentionPolicy',
+      table: 'public.metric',
+      from: '90 days',
+      to: '365 days',
+    },
+    direct: () =>
+      alterRetentionPolicySQL({ table: 'public.metric', from: '90 days', to: '365 days' }),
+  },
 ];
 
 describe('compileOperation — delegates to the core builders (byte-identical)', () => {
@@ -124,6 +154,9 @@ describe('compileOperation — delegates to the core builders (byte-identical)',
       'addRetentionPolicy',
       'createContinuousAggregate',
       'addContinuousAggregatePolicy',
+      'addCompressionPolicy',
+      'alterCompressionPolicy',
+      'alterRetentionPolicy',
     ];
     // The cases exercise each declared kind exactly once — a new union member without a test fails here.
     expect([...new Set(CASES.map((c) => c.kind))].sort()).toEqual([...KINDS].sort());

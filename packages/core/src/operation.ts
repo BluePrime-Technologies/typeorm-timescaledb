@@ -1,9 +1,14 @@
 import {
   addColumnstorePolicySQL,
+  addCompressionPolicySQL,
   addContinuousAggregatePolicySQL,
   addRetentionPolicySQL,
+  alterCompressionPolicySQL,
+  alterRetentionPolicySQL,
   createContinuousAggregateSQL,
   createHypertableSQL,
+  type AddCompressionPolicyInput,
+  type AlterPolicyInput,
   type ColumnstorePolicyInput,
   type ContinuousAggregatePolicyInput,
   type CreateContinuousAggregateInput,
@@ -63,6 +68,22 @@ export interface AddContinuousAggregatePolicyOperation extends ContinuousAggrega
   readonly kind: 'addContinuousAggregatePolicy';
 }
 
+/** Add ONLY the compression policy job to a hypertable whose columnstore is already enabled
+ * (closes the "columnstore enabled but no compression policy" drift; no `ALTER TABLE SET` re-assert). */
+export interface AddCompressionPolicyOperation extends AddCompressionPolicyInput {
+  readonly kind: 'addCompressionPolicy';
+}
+
+/** Change a compression policy's `after` threshold (remove-then-add; `down` restores `from`). */
+export interface AlterCompressionPolicyOperation extends AlterPolicyInput {
+  readonly kind: 'alterCompressionPolicy';
+}
+
+/** Change a retention policy's `drop_after` threshold (remove-then-add; `down` restores `from`). */
+export interface AlterRetentionPolicyOperation extends AlterPolicyInput {
+  readonly kind: 'alterRetentionPolicy';
+}
+
 /**
  * The migration operation IR — a discriminated union over `kind`. Every variant that can be
  * emitted into a generated TimescaleDB migration today is represented; the union is the
@@ -73,7 +94,10 @@ export type Operation =
   | AddColumnstorePolicyOperation
   | AddRetentionPolicyOperation
   | CreateContinuousAggregateOperation
-  | AddContinuousAggregatePolicyOperation;
+  | AddContinuousAggregatePolicyOperation
+  | AddCompressionPolicyOperation
+  | AlterCompressionPolicyOperation
+  | AlterRetentionPolicyOperation;
 
 /** The set of {@link Operation} discriminants. */
 export type OperationKind = Operation['kind'];
@@ -97,6 +121,12 @@ export function compileOperation(operation: Operation): MigrationStatement {
       return createContinuousAggregateSQL(operation);
     case 'addContinuousAggregatePolicy':
       return addContinuousAggregatePolicySQL(operation);
+    case 'addCompressionPolicy':
+      return addCompressionPolicySQL(operation);
+    case 'alterCompressionPolicy':
+      return alterCompressionPolicySQL(operation);
+    case 'alterRetentionPolicy':
+      return alterRetentionPolicySQL(operation);
     default: {
       // Exhaustiveness: if a new Operation variant is added without a case, this fails to compile.
       // At runtime it guards a caller that (via `any`) passes an unknown discriminant.

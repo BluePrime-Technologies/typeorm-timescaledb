@@ -1,6 +1,13 @@
-import type { DimensionState, HypertableState, SchemaStateIR } from './schema-state.js';
+import type {
+  DimensionState,
+  HypertableState,
+  IntervalOrInt,
+  PolicyState,
+  SchemaStateIR,
+} from './schema-state.js';
 import type { AddColumnstorePolicyOperation, Operation } from './operation.js';
 import { classifyOperation, type OperationSafety } from './safety.js';
+import { intervalsEqual } from './normalize.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
 
 /**
@@ -9,41 +16,34 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * canonical {@link SchemaStateIR} — and returns an ordered {@link Plan}: the operations needed to
  * converge current → desired. An unchanged schema yields an **empty plan** (no drift).
  *
- * **Scope (this slice): ADDITIVE (create-only).** It emits an operation only for an object that is
- * present in `desired` but entirely ABSENT in `current`:
+ * **Scope: additive creates + POLICY alters.** It emits:
  *   - a hypertable in `desired` not in `current` → the full create sequence (create_hypertable +
  *     optional space dimension, columnstore enable + policy, retention policy);
- *   - on an EXISTING hypertable, a columnstore or a retention policy present in `desired` but not in
- *     `current` → just that add.
+ *   - on an EXISTING hypertable: a columnstore or a retention policy present in `desired` but absent in
+ *     `current` → that add; a compression policy present in `desired` but missing on an already-enabled
+ *     columnstore → an `addCompressionPolicy` (policy-only, closes the former gap); a compression or
+ *     retention **threshold that changed** → an `alter{Compression,Retention}Policy` (remove-then-add,
+ *     `down()` restores the prior threshold).
+ *
+ * Policy threshold comparison uses the M4.0 normalizers and IGNORES `scheduleInterval` — the desired
+ * side never sets it and the engine fills a default the introspected current always carries, so
+ * comparing it would be false drift (per the S1 characterization tests). So an unchanged schema still
+ * yields an **empty plan**.
  *
  * It deliberately does **NOT** yet emit:
- *   - **alters** — content changes to an object that exists on both sides (a different chunk interval,
- *     changed segmentby/orderby, a retention interval change). These need new (non-additive) operations
- *     and, critically, `TIMESCALE_DEFAULTS` reconciliation (the system fills defaults `introspect()`
- *     reads back but the decorator omits — see `desired-state.ts`), plus per-op safety classification.
- *   - **drops** — a hypertable/object in `current` but not `desired` (destructive; migration `down()`
- *     never destroys data). These need safety classification and an explicit opt-in.
+ *   - **columnstore-config alters** (changed segmentby/orderby → `needs-recompress`) and **chunk-interval
+ *     alters** — deferred to the next slice (AS3).
+ *   - **drops** — an object in `current` but not `desired` (destructive; migration `down()` never
+ *     destroys data). Deferred, will require safety classification + an explicit opt-in.
  *   - **continuous aggregates** — `compileDesiredState()` does not yet compile them, so acting on them
  *     would drop every live CAGG. The diff is hypertable-scoped and ignores `continuousAggregates`.
  *
- * Because it compares object PRESENCE (not content) on existing tables, it needs no default
- * reconciliation to be correct here: a round-tripped schema has every object present on both sides, so
- * the plan is empty. Alter-detection (the next slice) is where content comparison + `TIMESCALE_DEFAULTS`
- * reconciliation + safety classes come in.
+ * **Integer-time / `created_before` policy thresholds THROW** (never silent under-convergence): they
+ * can't be expressed by the string-only builders, so the diff raises `INVALID_ARGUMENT` rather than a
+ * wrong op or a false "converged". (The decorator path only produces string `after` thresholds.)
  *
- * Two known limitations of THIS additive slice (both closed by the alter slice):
- *   - **Compression policy on an already-columnstore table.** The compression-policy add is folded into
- *     the columnstore op, which only fires when the columnstore is entirely absent. A table whose
- *     columnstore is enabled but whose `policy_compression` job is missing will NOT get the policy
- *     re-added — the diff reports converged. (Adding it alone needs a compression-policy-only operation.)
- *   - **Integer-time thresholds are not silently skipped — they THROW.** A numeric chunk interval or a
- *     numeric compression/retention threshold cannot be expressed by the string-only SQL builders; the
- *     diff throws `INVALID_ARGUMENT` rather than emit a wrong op or report a false convergence. (The
- *     decorator path never produces these — `chunkInterval`/`compressAfter`/`dropAfter` are string
- *     intervals — so this only guards manually-constructed or future integer-time desired states.)
- *
- * So {@link isEmptyPlan} means "no ADDITIVE operation is needed", NOT a guarantee of full convergence:
- * alters, drops, CAGGs, and the compression-policy-on-existing-columnstore gap are out of this slice.
+ * {@link isEmptyPlan} means "no operation IN SCOPE is needed" — not a guarantee of full convergence
+ * (columnstore-config alters, chunk-interval alters, drops, and CAGGs are still out of scope).
  */
 
 /** One step of a {@link Plan}: an operation plus its {@link OperationSafety} classification. */
@@ -121,6 +121,46 @@ function retentionOperation(h: HypertableState): Operation {
   return { kind: 'addRetentionPolicy', table: h.table, dropAfter: r.after };
 }
 
+/** The compression policy's `after` threshold, if the policy is a compression kind. */
+function compressionAfter(h: HypertableState): IntervalOrInt | undefined {
+  return h.compressionPolicy?.kind === 'compression' ? h.compressionPolicy.after : undefined;
+}
+/** The retention policy's `after` (drop_after) threshold, if the policy is a retention kind. */
+function retentionAfter(h: HypertableState): IntervalOrInt | undefined {
+  return h.retentionPolicy?.kind === 'retention' ? h.retentionPolicy.after : undefined;
+}
+
+/** Assert a policy threshold is an emittable string interval. Integer-time thresholds and the
+ * `created_before` variant (which yields an undefined `after`) can't be expressed by the alter/add
+ * builders — throw rather than emit a wrong op or silently under-converge. */
+function stringThreshold(value: IntervalOrInt | undefined, table: string, what: string): string {
+  if (typeof value !== 'string') {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `hypertable ${table}: ${what} is not a string interval — integer-time and created_before policies are not expressible by the alter builders`,
+      { table },
+    );
+  }
+  return value;
+}
+
+/** Do two same-kind compression/retention policies have the same THRESHOLD? Compares `after` +
+ * `createdBefore` via the M4.0 normalizers; deliberately IGNORES `scheduleInterval` — the desired
+ * (decorator) side never sets it, and the engine fills a default the introspected current always
+ * carries, so comparing it would be false drift (see the S1 characterization tests).
+ * TODO: when the decorator surface exposes a custom policy schedule, compare scheduleInterval too
+ * (only when the desired side sets it) — otherwise a deliberately-changed schedule would be missed. */
+function policyThresholdEqual(a: PolicyState, b: PolicyState): boolean {
+  if (a.kind !== b.kind) return false;
+  if (
+    (a.kind === 'compression' || a.kind === 'retention') &&
+    (b.kind === 'compression' || b.kind === 'retention')
+  ) {
+    return intervalsEqual(a.after, b.after) && intervalsEqual(a.createdBefore, b.createdBefore);
+  }
+  return false;
+}
+
 /** The full create sequence for a hypertable absent from the current DB. */
 function createHypertableOperations(h: HypertableState): Operation[] {
   const time = findDimension(h, 'time');
@@ -181,19 +221,65 @@ export function diffSchemaState(current: SchemaStateIR, desired: SchemaStateIR):
   const operations: Operation[] = [];
 
   for (const d of desired.hypertables) {
+    // A compression policy requires the columnstore to be enabled. Reject the inconsistent desired
+    // shape loudly rather than silently drop the policy (it isn't reachable from compileDesiredState,
+    // which only sets compressionPolicy alongside a columnstore, but guard manually-built IR).
+    if (d.compressionPolicy !== undefined && d.columnstore === undefined) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `hypertable ${d.table}: a compression policy requires a columnstore, but none is declared`,
+        { table: d.table },
+      );
+    }
     const c = currentByTable.get(d.table);
     if (c === undefined) {
       // Whole hypertable missing → emit the full create sequence.
       operations.push(...createHypertableOperations(d));
       continue;
     }
-    // Existing table: additive-only. Emit an object present in desired but absent in current.
-    // Content changes to objects present on BOTH sides are alters — deferred (see module doc).
+    // Existing table. Additive: enable a wholly-missing columnstore. On an already-columnstore table,
+    // handle the compression POLICY (add the missing one — the S2 gap; or alter a changed threshold).
     if (d.columnstore !== undefined && c.columnstore === undefined) {
       operations.push(columnstoreOperation(d));
+    } else if (d.columnstore !== undefined && c.columnstore !== undefined) {
+      if (d.compressionPolicy !== undefined && c.compressionPolicy === undefined) {
+        // columnstore enabled but no compression policy → add the policy only (no ALTER SET re-assert).
+        operations.push({
+          kind: 'addCompressionPolicy',
+          table: d.table,
+          after: stringThreshold(compressionAfter(d), d.table, 'compression after'),
+        });
+      } else if (
+        d.compressionPolicy !== undefined &&
+        c.compressionPolicy !== undefined &&
+        !policyThresholdEqual(c.compressionPolicy, d.compressionPolicy)
+      ) {
+        // compression threshold changed → remove-then-add alter.
+        operations.push({
+          kind: 'alterCompressionPolicy',
+          table: d.table,
+          from: stringThreshold(compressionAfter(c), d.table, 'current compression after'),
+          to: stringThreshold(compressionAfter(d), d.table, 'desired compression after'),
+        });
+      }
+      // columnstore segmentby/orderby config changes (needs-recompress) and dropping a compression
+      // policy present in current but not desired are alters/drops — deferred (see module doc).
     }
+
+    // Retention: add a missing policy (additive), or alter a changed threshold.
     if (d.retentionPolicy !== undefined && c.retentionPolicy === undefined) {
       operations.push(retentionOperation(d));
+    } else if (
+      d.retentionPolicy !== undefined &&
+      c.retentionPolicy !== undefined &&
+      !policyThresholdEqual(c.retentionPolicy, d.retentionPolicy)
+    ) {
+      operations.push({
+        kind: 'alterRetentionPolicy',
+        table: d.table,
+        from: stringThreshold(retentionAfter(c), d.table, 'current retention after'),
+        to: stringThreshold(retentionAfter(d), d.table, 'desired retention after'),
+      });
     }
   }
 
