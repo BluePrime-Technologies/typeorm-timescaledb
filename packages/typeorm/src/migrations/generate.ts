@@ -2,11 +2,13 @@ import type { DataSource, MigrationInterface, QueryRunner } from 'typeorm';
 import {
   compileOperation,
   compileOperations,
+  compilePlan,
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
   type ContinuousAggregateFn,
   type Operation,
+  type Plan,
 } from '@blueprime/timescaledb-core';
 import {
   getContinuousAggregateMeta,
@@ -47,6 +49,38 @@ export interface GenerateMigrationOptions {
 const VALID_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
+ * Resolve and validate a migration class name + ordering timestamp, shared by every generator
+ * ({@link generateTimescaleMigration} desired-state, {@link planToMigration} diff-based). The prefix
+ * must be a valid identifier; the timestamp must be a 13-digit millisecond integer because TypeORM's
+ * executor derives ordering from `parseInt(className.slice(-13))` and rejects non-numeric tails.
+ */
+function resolveMigrationName(
+  base: string,
+  timestampOpt?: number,
+): { readonly name: string; readonly timestamp: number } {
+  if (!VALID_NAME.test(base)) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `migration name prefix must be a valid identifier, got: ${base}`,
+      { name: base },
+    );
+  }
+  const timestamp = timestampOpt ?? Date.now();
+  if (
+    !Number.isInteger(timestamp) ||
+    timestamp < 1_000_000_000_000 ||
+    timestamp > 9_999_999_999_999
+  ) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `timestamp must be a 13-digit millisecond integer (TypeORM parses the last 13 chars of the migration name as its ordering key), got: ${String(timestamp)}`,
+      { timestamp },
+    );
+  }
+  return { name: `${base}${timestamp}`, timestamp };
+}
+
+/**
  * Generate a TimescaleDB migration from the `@Hypertable` entities registered on a
  * DataSource. For each hypertable entity it emits, in order:
  *   1. `create_hypertable` (+ `add_dimension` for a space partition),
@@ -73,29 +107,7 @@ export function generateTimescaleMigration(
   dataSource: DataSource,
   options: GenerateMigrationOptions = {},
 ): GeneratedMigration {
-  const base = options.name ?? 'Timescale';
-  if (!VALID_NAME.test(base)) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      `migration name prefix must be a valid identifier, got: ${base}`,
-      { name: base },
-    );
-  }
-  const timestamp = options.timestamp ?? Date.now();
-  // TypeORM's migration executor derives ordering from `parseInt(className.slice(-13))`
-  // and rejects names whose last 13 chars aren't a number — so the timestamp must be a
-  // 13-digit (JS millisecond) integer, which `Date.now()` already is.
-  if (
-    !Number.isInteger(timestamp) ||
-    timestamp < 1_000_000_000_000 ||
-    timestamp > 9_999_999_999_999
-  ) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      `timestamp must be a 13-digit millisecond integer (TypeORM parses the last 13 chars of the migration name as its ordering key), got: ${String(timestamp)}`,
-      { timestamp },
-    );
-  }
+  const { name, timestamp } = resolveMigrationName(options.name ?? 'Timescale', options.timestamp);
 
   // entityMetadatas is empty until initialize() builds it; fail loudly rather than
   // silently emitting an empty migration when configured hypertables exist.
@@ -370,7 +382,34 @@ export function generateTimescaleMigration(
   up.push(...caggUp);
   down.unshift(...caggDown);
 
-  return { name: `${base}${timestamp}`, timestamp, up, down };
+  return { name, timestamp, up, down };
+}
+
+/** Options for {@link planToMigration} — just the name/timestamp knobs (no CAGG discovery: a diff
+ * {@link Plan} already carries every operation, including CAGGs, so nothing is discovered here). */
+export interface PlanMigrationOptions {
+  /** Class-name prefix (must be a valid identifier). Default `'Timescale'`. */
+  readonly name?: string;
+  /** Override the timestamp (for reproducible output / tests). Default `Date.now()`. */
+  readonly timestamp?: number;
+}
+
+/**
+ * Turn a diff {@link Plan} (from `diffSchemaState`) into a {@link GeneratedMigration} — the bridge
+ * that makes the M4.2 diff engine's output committable (today a `Plan` is only previewable via the
+ * `check` verb). Delegates the SQL to the core `compilePlan` choke point: `up` in step order, `down`
+ * each step's own reversible inverse with the step sequence reversed (never destructive).
+ *
+ * Unlike {@link generateTimescaleMigration} (which derives a desired-state migration from decorators),
+ * this consumes a ready plan verbatim and does not touch a DataSource — the caller owns diffing.
+ */
+export function planToMigration(
+  plan: Plan,
+  options: PlanMigrationOptions = {},
+): GeneratedMigration {
+  const { name, timestamp } = resolveMigrationName(options.name ?? 'Timescale', options.timestamp);
+  const { up, down } = compilePlan(plan);
+  return { name, timestamp, up, down };
 }
 
 /** Render a {@link GeneratedMigration} as TypeORM migration TypeScript source. */
@@ -396,6 +435,35 @@ ${body(migration.up)}
 ${body(migration.down)}
   }
 }
+`;
+}
+
+/**
+ * Render a {@link GeneratedMigration} as a raw `.sql` artifact — the `output: 'sql'` emit target. Two
+ * sections (`-- Up` / `-- Down`), one statement per line, so it's reviewable and runnable through psql
+ * or any plain-SQL migration runner. The core builders already emit each statement WITH its trailing
+ * `;`, so statements are written verbatim (appending another `;` would double-terminate). An empty
+ * section is a `-- no-op` comment. Same non-destructive-`down` contract as
+ * {@link renderTimescaleMigration}; the compiled SQL is identical (both go through the single core
+ * choke point) — only the wrapper differs.
+ */
+export function renderTimescaleMigrationSql(migration: GeneratedMigration): string {
+  // Builders already terminate each statement with `;`; guard defensively so a hypothetical
+  // unterminated statement is still terminated, without ever double-terminating (`;;`).
+  const terminate = (sql: string): string => (sql.endsWith(';') ? sql : `${sql};`);
+  const section = (statements: readonly string[]): string =>
+    statements.length === 0 ? '-- no-op' : statements.map(terminate).join('\n');
+
+  return `-- Generated by typeorm-timescaledb — regenerate rather than editing by hand.
+-- Migration: ${migration.name}
+-- down is intentionally non-destructive: hypertable and columnstore conversions
+-- are NOT reverted (that would drop/decompress data); only policies are removed.
+
+-- Up
+${section(migration.up)}
+
+-- Down
+${section(migration.down)}
 `;
 }
 

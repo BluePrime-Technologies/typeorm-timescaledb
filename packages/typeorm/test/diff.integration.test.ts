@@ -12,6 +12,8 @@ import {
   compileDesiredState,
   collectRenames,
   generateTimescaleMigration,
+  planToMigration,
+  createTimescaleMigration,
   introspect,
 } from '../src/index.js';
 import { checkCommand, type Logger } from '../src/cli/index.js';
@@ -132,6 +134,46 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     // schema, across the M4.0 normalizers — no false drift from system-filled defaults.
     const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
     expect(isEmptyPlan(plan)).toBe(true);
+  });
+
+  it('planToMigration bridges a diff Plan to a runnable migration: up converges, down reverses (M4.3a)', async () => {
+    // Self-restoring: starts from the converged state, drops retention out-of-band to create drift,
+    // then drives the whole M4.3a bridge (Plan → GeneratedMigration → runnable MigrationInterface)
+    // against the live DB, and finally restores the converged state for the tests that follow.
+    await runAll(ds, [`SELECT remove_retention_policy('public.metric', if_exists => TRUE);`]);
+
+    const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(plan.steps.map((s) => s.operation.kind)).toEqual(['addRetentionPolicy']);
+
+    // The bridge under test: a diff Plan becomes a committable, runnable migration.
+    const migration = createTimescaleMigration(
+      planToMigration(plan, { timestamp: 1_700_000_000_000 }),
+    );
+
+    const up = ds.createQueryRunner();
+    try {
+      await migration.up(up); // apply the plan's up → retention restored
+    } finally {
+      await up.release();
+    }
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
+
+    // down() is the plan's reversible inverse — removes the retention job again (non-destructive).
+    const down = ds.createQueryRunner();
+    try {
+      await migration.down(down);
+    } finally {
+      await down.release();
+    }
+    const afterDown = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+    expect(afterDown.steps.map((s) => s.operation.kind)).toEqual(['addRetentionPolicy']);
+
+    // Restore the converged state for subsequent (order-dependent) tests.
+    await runAll(
+      ds,
+      compileOperations(afterDown.steps.map((s) => s.operation)).flatMap((s) => [...s.up]),
+    );
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
   });
 
   it('detects a CHANGED retention threshold as an alter and converges after applying (AS2)', async () => {

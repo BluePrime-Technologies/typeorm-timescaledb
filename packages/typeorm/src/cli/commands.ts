@@ -2,7 +2,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DataSource } from 'typeorm';
 import { diffSchemaState, isEmptyPlan, type Plan } from '@blueprime/timescaledb-core';
-import { generateTimescaleMigration, renderTimescaleMigration } from '../migrations/index.js';
+import {
+  generateTimescaleMigration,
+  renderTimescaleMigration,
+  renderTimescaleMigrationSql,
+} from '../migrations/index.js';
+import type { OutputFormat } from './args.js';
 import { compileDesiredState } from '../runtime/desired-state.js';
 import { collectRenames } from '../runtime/renames.js';
 import { introspect } from '../runtime/introspect.js';
@@ -37,13 +42,16 @@ export interface GenerateFileOptions {
   readonly name?: string;
   /** Override the timestamp (for reproducible output / tests). Default `Date.now()`. */
   readonly timestamp?: number;
+  /** Emit format: `ts` (TypeORM class, default) or `sql` (raw `.sql`). */
+  readonly output?: OutputFormat;
 }
 
 /**
- * Generate a migration and write it to `{outDir}/{timestamp}-{name}.ts` (TypeORM's
- * file-naming convention). Returns the written path and class name, or `null` when
- * the DataSource has no `@Hypertable` entities (nothing to generate) — in which case
- * no file is written, so a typo'd/empty DataSource never produces a silent no-op file.
+ * Generate a migration and write it to `{outDir}/{timestamp}-{name}.{ts|sql}` (TypeORM's
+ * file-naming convention). The extension + emitter follow `options.output` (default `ts`).
+ * Returns the written path and class name, or `null` when the DataSource has no `@Hypertable`
+ * entities (nothing to generate) — in which case no file is written, so a typo'd/empty DataSource
+ * never produces a silent no-op file.
  */
 export function generateMigrationFile(
   dataSource: DataSource,
@@ -51,14 +59,17 @@ export function generateMigrationFile(
   writer: FileWriter = nodeFileWriter,
 ): { path: string; className: string } | null {
   const base = options.name ?? 'Timescale';
+  const output = options.output ?? 'ts';
   const migration = generateTimescaleMigration(dataSource, {
     name: base,
     ...(options.timestamp !== undefined && { timestamp: options.timestamp }),
   });
   if (migration.up.length === 0) return null;
-  const path = join(options.outDir, `${migration.timestamp}-${base}.ts`);
+  const content =
+    output === 'sql' ? renderTimescaleMigrationSql(migration) : renderTimescaleMigration(migration);
+  const path = join(options.outDir, `${migration.timestamp}-${base}.${output}`);
   writer.mkdirp(options.outDir);
-  writer.write(path, renderTimescaleMigration(migration));
+  writer.write(path, content);
   return { path, className: migration.name };
 }
 

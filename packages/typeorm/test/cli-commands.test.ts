@@ -84,6 +84,40 @@ describe('generateMigrationFile', () => {
     expect(result).toBeNull();
     expect(files.size).toBe(0);
   });
+
+  it('writes a .sql file with raw SQL sections when output=sql', () => {
+    const files = new Map<string, string>();
+    const writer: FileWriter = { mkdirp: () => {}, write: (p, c) => files.set(p, c) };
+    const result = generateMigrationFile(
+      initializedDataSource(),
+      { outDir: 'migrations', timestamp: TS, output: 'sql' },
+      writer,
+    );
+    if (result === null) throw new Error('expected a migration to be generated');
+
+    const expectedPath = join('migrations', `${TS}-Timescale.sql`);
+    expect(result.path).toBe(expectedPath);
+    expect(result.className).toBe(`Timescale${TS}`);
+
+    const content = files.get(expectedPath);
+    expect(content).toContain('-- Up');
+    expect(content).toContain('-- Down');
+    expect(content).toContain('create_hypertable');
+    // Not a TS class — no import / class declaration.
+    expect(content).not.toContain('implements MigrationInterface');
+  });
+
+  it('defaults to a .ts file when output is omitted', () => {
+    const files = new Map<string, string>();
+    const writer: FileWriter = { mkdirp: () => {}, write: (p, c) => files.set(p, c) };
+    const result = generateMigrationFile(
+      initializedDataSource(),
+      { outDir: 'migrations', timestamp: TS },
+      writer,
+    );
+    if (result === null) throw new Error('expected a migration to be generated');
+    expect(result.path).toBe(join('migrations', `${TS}-Timescale.ts`));
+  });
 });
 
 describe('runMigrationsCommand', () => {
