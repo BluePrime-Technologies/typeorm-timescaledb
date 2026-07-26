@@ -108,6 +108,9 @@ export { compileDesiredState } from './runtime/desired-state.js';
 // Rename resolution (M4.2 S4) — `@Hypertable({ renamedFrom })` → the map `diffSchemaState` consumes
 // so a renamed hypertable diffs to a single `renameHypertable` op, not drop-then-create.
 export { collectRenames } from './runtime/renames.js';
+// Direct-sync engine (M4.3c) — apply a typed Plan straight to a live DB, guarded + transactional.
+export { applyDirect } from './runtime/apply.js';
+export type { ApplyDirection, ApplyDirectOptions, ApplyDirectResult } from './runtime/apply.js';
 
 // Migration generation — Django/Prisma-style codegen from @Hypertable metadata.
 export {
