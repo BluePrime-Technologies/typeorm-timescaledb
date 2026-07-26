@@ -15,7 +15,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   That was classified as `unavailable` — transient — so the batch retried forever and every
   provably-valid sibling id failed with it. `22P02`/`22003` are now permanent, reported as
   `misconfigured` with a message naming the cause. (The classifier still refuses to read a SQLSTATE
-  out of an error *message* for these codes: `22P02` echoes the offending value, which would let
+  out of an error _message_ for these codes: `22P02` echoes the offending value, which would let
   hostile data forge a classification.)
 - **A row the database matched could be reported `not_found`.** Results were indexed by the driver's
   raw value, but PostgreSQL matches `char(n)`/`bpchar` ignoring trailing blanks (the driver returns
