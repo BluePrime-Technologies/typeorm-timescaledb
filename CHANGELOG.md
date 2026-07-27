@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [0.6.1] - 2026-07-27
+
+Documentation-only patch. **No source changes** — published solely so the npm package pages
+reflect what 0.6.0 actually ships (npm renders a README only at publish time).
+
+### Changed
+
+- README: documented the migration engine — `introspect` → `diffSchemaState` → `applyDirect`,
+  the `check` CI drift gate, `generate --output <ts|sql>`, `@Hypertable({ renamedFrom })`,
+  opt-in guarded drops, and `TimescaleSchemaBuilder` — with runnable examples.
+- README: corrected claims that were false as of 0.6.0, notably that a full diff engine was
+  "planned but not shipped" and that altering existing TimescaleDB configuration "still requires a
+  hand-written migration". Replaced with a precise statement of what the engine does and does not
+  reconcile, plus the real remaining limitations (continuous aggregates are not structurally
+  diffed; space dimensions are not reconciled in place; no `push`/`pull`/`sync` verbs yet).
+- README: added `@blueprime/cross-store` to the packages table — it was published but unlisted.
+- `@blueprime/timescaledb-core` README: expanded from a stub to describe the operation IR, the
+  single compile choke point, the diff/plan engine, and the normalization layer.
+
 ## [0.6.0] - 2026-07-27
 
 Minor release: **the unified migration engine**. The package can now read a live

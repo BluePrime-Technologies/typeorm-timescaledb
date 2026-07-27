@@ -2,13 +2,15 @@
 
 > A pre-1.0, multi-DataSource-safe [TimescaleDB](https://www.tigerdata.com/) integration for [TypeORM](https://typeorm.io/) — define hypertables, columnstore, and retention as typed entities, and generate/apply reviewable migrations for them.
 
-**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.2.x** introduced the query layer (time buckets, gap-filling, candlesticks); **0.3.0** expanded the stable `timescaledb_toolkit` aggregate coverage; **0.4.0** completes continuous aggregates (typed decorators, refresh policies, hierarchical, drift) and adds downsampling, informational views + jobs, and T-Digest percentiles; **0.5.0** adds async/deferred NestJS configuration (`forRootAsync`) and a fail-fast TimescaleDB-presence check, with a correctness/hardening pass across the core SQL builders and the TypeORM result/CLI layers. Cross-store references and a full safe diff engine come later.
+**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.2.x** introduced the query layer (time buckets, gap-filling, candlesticks); **0.3.0** expanded the stable `timescaledb_toolkit` aggregate coverage; **0.4.0** completes continuous aggregates (typed decorators, refresh policies, hierarchical, drift) and adds downsampling, informational views + jobs, and T-Digest percentiles; **0.5.0** adds async/deferred NestJS configuration (`forRootAsync`) and a fail-fast TimescaleDB-presence check; **0.6.0** ships the **migration engine** — it reads your live database, diffs it against your entities, and converges it, with every step safety-classified.
 
 ## Status and scope
 
 `typeorm-timescaledb` is an actively maintained **pre-1.0** package for TypeORM users who want typed TimescaleDB hypertables, columnstore, retention, reviewable migrations, DataSource-scoped repositories, drift detection, NestJS integration, a typed hyperfunction query layer, and stable toolkit aggregate helpers.
 
-It is **not** a complete TimescaleDB abstraction yet. Validated cross-store references, experimental (non-stable) toolkit aggregates, and a full entity-to-database diff engine are planned but not shipped. (Continuous aggregates and stable Toolkit aggregates including T-Digest shipped in 0.4.0 — see below.) Removing or altering existing TimescaleDB configuration still requires a hand-written migration. The base `CREATE TABLE` remains TypeORM's responsibility; this package adds the TimescaleDB layer on top.
+It is **not** a complete TimescaleDB abstraction yet. Experimental (non-stable) toolkit aggregates and structural diffing of continuous aggregates are planned but not shipped. (Continuous aggregates and stable Toolkit aggregates including T-Digest shipped in 0.4.0; the migration engine shipped in 0.6.0 — see below.)
+
+**What the engine does and does not change for you:** it auto-diffs compression/retention thresholds, the chunk interval, the columnstore segment-by/order-by configuration, and renames — and, only when you opt in, removes a retention or compression policy (reversibly). It never emits a destructive change: dropping a hypertable or disabling a columnstore is always yours to write by hand, and a space-dimension divergence is reported as an error rather than silently ignored. The base `CREATE TABLE` remains TypeORM's responsibility; this package adds the TimescaleDB layer on top.
 
 ## Why this exists
 
@@ -72,6 +74,12 @@ Generate and run a migration with the CLI (point `-d` at your DataSource module)
 npx typeorm-timescaledb generate -d src/data-source.ts -o src/migrations
 # 3. apply it (also: revert | status):
 npx typeorm-timescaledb run -d src/data-source.ts
+
+# emit raw SQL instead of a TypeORM migration class:
+npx typeorm-timescaledb generate -d src/data-source.ts -o src/migrations --output sql
+
+# CI drift gate: prints what would change and exits non-zero if the DB has drifted
+npx typeorm-timescaledb check -d src/data-source.ts
 ```
 
 > **TypeScript DataSource?** The CLI uses native `import()`, so a `.ts` `-d` file needs a TypeScript loader. Run it under [`tsx`](https://tsx.is) (`npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations`) or [`ts-node`](https://typestrong.org/ts-node/) (`node --import ts-node/esm`), or point `-d` at a compiled `.js` DataSource.
@@ -84,6 +92,43 @@ import { createTimescale } from 'typeorm-timescaledb';
 const ts = createTimescale(dataSource);
 const readings = ts.getRepository(Reading);
 await ts.assertSchema(); // fail fast if the live DB drifted from your entities
+```
+
+### Keeping the database in step with your entities
+
+`check` is the one-liner for CI. Programmatically, the same engine is three calls — read, diff,
+apply — and every step tells you how risky it is before you run it:
+
+```ts
+import { introspect, compileDesiredState, applyDirect } from 'typeorm-timescaledb';
+import { diffSchemaState, isEmptyPlan } from '@blueprime/timescaledb-core';
+
+const plan = diffSchemaState(await introspect(dataSource), compileDesiredState(dataSource));
+
+if (!isEmptyPlan(plan)) {
+  for (const step of plan.steps) {
+    console.log(`[${step.safety}] ${step.operation.kind} — ${step.reason}`);
+  }
+  // Refuses anything classified `refuse-by-default` unless you opt in; runs in one transaction.
+  await applyDirect(dataSource, plan);
+}
+```
+
+Prefer a reviewable artifact? Turn the same plan into a committable migration with
+`planToMigration(plan)`, or hand-author one with the fluent builder:
+
+```ts
+import { TimescaleSchemaBuilder } from 'typeorm-timescaledb';
+
+export class AddRetention1700000000000 implements MigrationInterface {
+  private readonly schema = new TimescaleSchemaBuilder().addRetentionPolicy({
+    table: 'reading',
+    dropAfter: '90 days',
+  });
+
+  up = (qr: QueryRunner) => this.schema.up(qr);
+  down = (qr: QueryRunner) => this.schema.down(qr); // reversible, never destructive
+}
 ```
 
 ### NestJS
@@ -119,9 +164,24 @@ Return `undefined` from `useFactory` to register a no-op context (no `DataSource
 boot-time drift check) for environments where TimescaleDB isn't configured — mark any
 `@InjectTimescaleContext()` / `@InjectTimescaleRepository()` consumer `@Optional()` in that case.
 
-## What's in 0.5.x
+## What's in 0.6.x
 
-**Works today (0.5.x):**
+**Works today (0.6.x):**
+
+- **Migration engine** — read the live database, diff it against your entities, converge it:
+  - `introspect(dataSource)` → a canonical `SchemaStateIR` of what the database actually has.
+  - `diffSchemaState(current, desired, opts?)` → an ordered `Plan`, each step carrying a **safety
+    class** (`online-safe` · `needs-recompress` · `refuse-by-default` · `one-way`) and a reason.
+  - **`check` CLI verb** → readable drift preview, non-zero exit on drift (a CI schema gate).
+  - `@Hypertable({ renamedFrom })` → a rename resolves to one `ALTER TABLE ... RENAME`, not a
+    drop-then-create.
+  - **Opt-in guarded drops** (`allowDrops`) → removes a retention/compression policy present in the
+    database but absent from your entities. Reversible; destructive drops are never emitted.
+  - **Emitters** → `generate --output <ts|sql>`, `planToMigration(plan)`, `compilePlan(plan)`.
+  - **`TimescaleSchemaBuilder`** → a fluent hand-authoring surface that runs inside an ordinary
+    TypeORM migration via `queryRunner`, producing SQL byte-identical to the generated path.
+  - **`applyDirect(dataSource, plan, opts?)`** → apply a plan straight to a live database in one
+    transaction, refusing `refuse-by-default` operations unless you explicitly opt in.
 
 - `@Hypertable` / `@TimeColumn` / `@HypertablePrimaryKey` — hypertables with chunk interval, **columnstore** (segmentby/orderby + policy), **retention** policy, and **space (hash) partitioning**.
 - **Migration generation + CLI** (`generate | run | revert | status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
@@ -134,6 +194,22 @@ boot-time drift check) for environments where TimescaleDB isn't configured — m
 - **T-Digest percentiles** — `repo.getTDigestPercentiles(...)` / `repo.getTDigestPercentileRanks(...)` (toolkit `tdigest`).
 - **NestJS module** with optional-peer wiring, named multi-DataSource contexts, and **async/deferred configuration** (`TimescaleModule.forRootAsync` — `useFactory` + `inject` + `imports`, with an optional no-op mode).
 - Unified import surface (one package, never raw `typeorm`); dual ESM + CJS.
+
+## 0.6.0 release scope
+
+The 0.6.0 release ships the **unified migration engine** (listed under **Works today** above):
+introspection, a safety-classified diff, the `check` drift gate, rename resolution, opt-in guarded
+drops, the SQL/TS emitters, the fluent schema builder, and guarded direct apply. It also lands a
+full-library correctness audit — 40 findings resolved, including an output-alias SQL-injection
+reachable on TypeORM 0.3.x, a cross-schema data leak in `listChunks`/`listJobs`, and a
+hierarchical-CAGG migration that failed outright when the source column was `@Column({ name })`-remapped.
+See the [CHANGELOG](./CHANGELOG.md) for the full list. No breaking API changes.
+
+**Known limitations in 0.6.0:** continuous aggregates are not structurally diffed (the diff is
+hypertable-scoped, so `check` does not cover CAGG drift); space (hash) dimensions cannot be
+reconciled in place — a divergence is reported as an error naming the required manual migration;
+and the one-command `push` / `pull` / `sync` verbs are not in this release (use `check` plus
+`generate`, or the programmatic API).
 
 ## 0.5.0 release scope
 
@@ -151,9 +227,9 @@ operational introspection, and T-Digest percentiles (all listed under **Works to
 above). It builds on the 0.3.0 toolkit-aggregate helpers (stats/regression, UddSketch
 percentiles, counters, time-weight, state tracking, MCV/top-N, heartbeat/liveness).
 
-**Migration model (important):** generated migrations are **additive / desired-state** — they emit the full hypertable setup idempotently (`if_not_exists`). Adding supported configuration (a new entity, a new policy) propagates on the next `generate` + `run`. **Removing or altering** existing config (e.g. dropping a retention policy, changing a chunk interval) is **not** auto-diffed yet — do those in a hand-written migration for now. A full entity↔DB diff engine is planned. (The base `CREATE TABLE` is TypeORM's job — via `synchronize` or its own migration; this package adds the TimescaleDB layer on top.)
+**Migration model (important):** `generate` emits an **additive / desired-state** migration — the full hypertable setup, idempotently (`if_not_exists`). Separately, the **migration engine** (`check`, `introspect` + `diffSchemaState`, `applyDirect`) reconciles a live database against your entities and _does_ auto-diff altered configuration: compression/retention thresholds, the chunk interval, the columnstore segment-by/order-by, and renames — plus, behind `allowDrops`, reversible policy removals. What still needs a hand-written migration: dropping a hypertable or disabling a columnstore (never auto-generated), adding/removing/re-partitioning a space dimension, and structural changes to continuous aggregates. (The base `CREATE TABLE` is TypeORM's job — via `synchronize` or its own migration; this package adds the TimescaleDB layer on top.)
 
-**Not yet (planned):** `@RollupColumn` sugar for hierarchical rollups (expressible today via `@AggregateColumn`), the still-`toolkit_experimental` aggregates (`gauge_agg`/`freq_agg`/`compact_state_agg`), stable Toolkit aggregates not listed above, the full diff engine, and validated cross-store references. **Unsupported by design:** automatic destructive/altering migrations.
+**Not yet (planned):** `@RollupColumn` sugar for hierarchical rollups (expressible today via `@AggregateColumn`), the still-`toolkit_experimental` aggregates (`gauge_agg`/`freq_agg`/`compact_state_agg`), stable Toolkit aggregates not listed above, structural diffing of continuous aggregates, in-place reconciliation of space dimensions, and the one-command `push`/`pull`/`sync` verbs. **Unsupported by design:** automatic destructive migrations — dropping a hypertable or disabling a columnstore is never generated for you.
 
 ## Design principles
 
@@ -163,10 +239,11 @@ percentiles, counters, time-weight, state tracking, MCV/top-N, heartbeat/livenes
 
 ## Packages
 
-| Package                       | Description                                                                      |
-| ----------------------------- | -------------------------------------------------------------------------------- |
-| `typeorm-timescaledb`         | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module. |
-| `@blueprime/timescaledb-core` | ORM-agnostic SQL/DDL generation, metadata model, identifier safety.              |
+| Package                       | Description                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `typeorm-timescaledb`         | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module.                       |
+| `@blueprime/timescaledb-core` | ORM-agnostic SQL/DDL generation, the operation IR, the diff/plan engine, identifier safety.            |
+| `@blueprime/cross-store`      | Validated cross-**database** `@Resolve` references (separate opt-in package, versioned independently). |
 
 ## License
 
