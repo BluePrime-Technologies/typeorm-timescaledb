@@ -6,6 +6,11 @@ All notable changes to `@blueprime/cross-store` are documented here. This packag
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-07-27
+
+Documentation-only patch. **No source changes** — published so the npm package page documents
+`requiredScopeColumns` (added in 0.2.1) and why it makes tenant isolation fail closed.
+
 ## [0.2.1] - 2026-07-27
 
 Patch release: correctness fixes from the full-library audit, no new capability.
