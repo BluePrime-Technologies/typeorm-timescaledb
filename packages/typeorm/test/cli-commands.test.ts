@@ -2,11 +2,13 @@ import 'reflect-metadata';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
+import type { Plan } from '@blueprime/timescaledb-core';
 import {
   generateMigrationFile,
   runMigrationsCommand,
   revertMigrationCommand,
   statusCommand,
+  reportPlan,
   type FileWriter,
   type Logger,
 } from '../src/cli/index.js';
@@ -82,6 +84,40 @@ describe('generateMigrationFile', () => {
     expect(result).toBeNull();
     expect(files.size).toBe(0);
   });
+
+  it('writes a .sql file with raw SQL sections when output=sql', () => {
+    const files = new Map<string, string>();
+    const writer: FileWriter = { mkdirp: () => {}, write: (p, c) => files.set(p, c) };
+    const result = generateMigrationFile(
+      initializedDataSource(),
+      { outDir: 'migrations', timestamp: TS, output: 'sql' },
+      writer,
+    );
+    if (result === null) throw new Error('expected a migration to be generated');
+
+    const expectedPath = join('migrations', `${TS}-Timescale.sql`);
+    expect(result.path).toBe(expectedPath);
+    expect(result.className).toBe(`Timescale${TS}`);
+
+    const content = files.get(expectedPath);
+    expect(content).toContain('-- Up');
+    expect(content).toContain('-- Down');
+    expect(content).toContain('create_hypertable');
+    // Not a TS class — no import / class declaration.
+    expect(content).not.toContain('implements MigrationInterface');
+  });
+
+  it('defaults to a .ts file when output is omitted', () => {
+    const files = new Map<string, string>();
+    const writer: FileWriter = { mkdirp: () => {}, write: (p, c) => files.set(p, c) };
+    const result = generateMigrationFile(
+      initializedDataSource(),
+      { outDir: 'migrations', timestamp: TS },
+      writer,
+    );
+    if (result === null) throw new Error('expected a migration to be generated');
+    expect(result.path).toBe(join('migrations', `${TS}-Timescale.ts`));
+  });
 });
 
 describe('runMigrationsCommand', () => {
@@ -129,5 +165,30 @@ describe('statusCommand', () => {
     const { logger: l2, lines: lines2 } = recordingLogger();
     expect(await statusCommand(cleanDs, l2)).toBe(false);
     expect(lines2[0]).toContain('applied');
+  });
+});
+
+describe('reportPlan', () => {
+  it('reports no drift and returns false for an empty plan', () => {
+    const { logger, lines } = recordingLogger();
+    const plan: Plan = { steps: [] };
+    expect(reportPlan(plan, logger)).toBe(false);
+    expect(lines[0]).toContain('No drift detected');
+  });
+
+  it('prints the drift preview and returns true for a non-empty plan (the CI-gate signal)', () => {
+    const { logger, lines } = recordingLogger();
+    const plan: Plan = {
+      steps: [
+        {
+          operation: { kind: 'renameHypertable', from: 'public.old_m', to: 'public.m' },
+          safety: 'online-safe',
+          reason: 'catalog-only, reversible',
+        },
+      ],
+    };
+    expect(reportPlan(plan, logger)).toBe(true);
+    expect(lines[0]).toContain('Drift detected');
+    expect(lines[0]).toContain('public.old_m');
   });
 });

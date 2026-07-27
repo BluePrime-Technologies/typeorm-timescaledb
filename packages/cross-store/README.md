@@ -39,6 +39,10 @@ column)` (+ optional scope columns). Every identifier is validated at registrati
       table: 'categories',
       column: 'name',
       scopeColumns: ['workspace_id'],
+      // `scopeColumns` is only an ALLOW-list, so a check that omits the scope entirely would
+      // resolve across every tenant. Listing it here makes tenant isolation fail CLOSED:
+      // an unscoped check raises SCOPE_VIOLATION instead of matching another tenant's row.
+      requiredScopeColumns: ['workspace_id'],
     });
   ```
 

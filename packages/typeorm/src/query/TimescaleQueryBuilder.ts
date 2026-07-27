@@ -1,5 +1,6 @@
 import type { ObjectLiteral, SelectQueryBuilder } from 'typeorm';
 import {
+  assertSafeIdentifier,
   firstExpr,
   histogramExpr,
   interpolateExpr,
@@ -63,7 +64,7 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
     options?: TimeBucketSelectOptions,
   ): this {
     const expr = timeBucketExpr(input);
-    this.qb.select(expr, alias);
+    this.qb.select(expr, assertSafeIdentifier(alias, 'alias'));
     if (options?.group !== false) {
       this.qb.addGroupBy(expr);
     }
@@ -75,19 +76,19 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
 
   /** Add `first(value, time) AS alias` (value-at-earliest-time, not `min`). */
   first(valueColumn: string, timeColumn: string, alias: string): this {
-    this.qb.addSelect(firstExpr(valueColumn, timeColumn), alias);
+    this.qb.addSelect(firstExpr(valueColumn, timeColumn), assertSafeIdentifier(alias, 'alias'));
     return this;
   }
 
   /** Add `last(value, time) AS alias` (value-at-latest-time, not `max`). */
   last(valueColumn: string, timeColumn: string, alias: string): this {
-    this.qb.addSelect(lastExpr(valueColumn, timeColumn), alias);
+    this.qb.addSelect(lastExpr(valueColumn, timeColumn), assertSafeIdentifier(alias, 'alias'));
     return this;
   }
 
   /** Add `histogram(value, min, max, nbuckets) AS alias` (returns `int[]`). */
   histogram(input: HistogramExprInput, alias: string): this {
-    this.qb.addSelect(histogramExpr(input), alias);
+    this.qb.addSelect(histogramExpr(input), assertSafeIdentifier(alias, 'alias'));
     return this;
   }
 
@@ -108,7 +109,7 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
     options?: TimeBucketSelectOptions,
   ): this {
     const expr = timeBucketGapfillExpr(input);
-    this.qb.select(expr, alias);
+    this.qb.select(expr, assertSafeIdentifier(alias, 'alias'));
     if (options?.group !== false) {
       this.qb.addGroupBy(expr);
     }
@@ -135,14 +136,20 @@ export class TimescaleQueryBuilder<T extends ObjectLiteral> {
   /** Add `locf(<agg>) AS alias` — carry the last value forward across gapfill gaps. */
   locf(metric: { fn: StandardAggregate; column?: string }, alias: string): this {
     this.assertAscendingForFill('locf');
-    this.qb.addSelect(locfExpr(standardAggregateExpr(metric.fn, metric.column)), alias);
+    this.qb.addSelect(
+      locfExpr(standardAggregateExpr(metric.fn, metric.column)),
+      assertSafeIdentifier(alias, 'alias'),
+    );
     return this;
   }
 
   /** Add `interpolate(<agg>) AS alias` — linearly interpolate across gapfill gaps. */
   interpolate(metric: { fn: StandardAggregate; column?: string }, alias: string): this {
     this.assertAscendingForFill('interpolate');
-    this.qb.addSelect(interpolateExpr(standardAggregateExpr(metric.fn, metric.column)), alias);
+    this.qb.addSelect(
+      interpolateExpr(standardAggregateExpr(metric.fn, metric.column)),
+      assertSafeIdentifier(alias, 'alias'),
+    );
     return this;
   }
 

@@ -222,3 +222,44 @@ describe('ReferenceRegistry', () => {
     }
   });
 });
+
+describe('requiredScopeColumns — tenant isolation fails closed (audit)', () => {
+  it('rejects a check that omits a required scope column', () => {
+    // `scopeColumns` is only an ALLOW-list, so an unscoped check was permitted and silently
+    // resolved across every tenant.
+    const reg = new ReferenceRegistry().register({
+      store: 'canonical',
+      table: 'accounts',
+      column: 'id',
+      scopeColumns: ['tenant_id'],
+      requiredScopeColumns: ['tenant_id'],
+    });
+    const ref = { store: 'canonical', table: 'accounts', column: 'id' };
+    expect(() => reg.assertScopeAllowed(ref, [])).toThrow(/requires scope column "tenant_id"/);
+    expect(() => reg.assertScopeAllowed(ref, ['tenant_id'])).not.toThrow();
+  });
+
+  it('rejects a registry entry whose required column is not allow-listed', () => {
+    expect(() =>
+      new ReferenceRegistry().register({
+        store: 'canonical',
+        table: 'accounts',
+        column: 'id',
+        scopeColumns: ['tenant_id'],
+        requiredScopeColumns: ['org_id'],
+      }),
+    ).toThrow(/not in scopeColumns/);
+  });
+
+  it('is unchanged when no required columns are declared', () => {
+    const reg = new ReferenceRegistry().register({
+      store: 'canonical',
+      table: 'accounts',
+      column: 'id',
+      scopeColumns: ['tenant_id'],
+    });
+    expect(() =>
+      reg.assertScopeAllowed({ store: 'canonical', table: 'accounts', column: 'id' }, []),
+    ).not.toThrow();
+  });
+});

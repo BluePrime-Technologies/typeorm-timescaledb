@@ -123,7 +123,9 @@ The following items are product direction, not shipped functionality:
   toolkit's `toolkit_experimental` schema, so they are not yet surfaced as stable
   constructs.
 - Other stable Toolkit aggregates not listed in the 0.3.0 / 0.4.0 release scope.
-- Full entity-to-database diff engine.
+- Destructive auto-migrations (dropping a hypertable, disabling a columnstore).
+- Structural diffing of continuous aggregates (the diff engine is hypertable-scoped).
+- Automatic reconciliation of space (hash) dimensions.
 - Validated cross-store references.
 - Complete coverage of every TimescaleDB feature.
 
@@ -133,10 +135,18 @@ launch copy as available functionality.
 
 ## Current limitations
 
-The migration model is additive and desired-state based for the TimescaleDB
-layer. It can add supported hypertable configuration, policies, and dimensions,
-but it does not automatically remove or alter existing TimescaleDB configuration
-when entity metadata is removed or changed.
+The migration engine introspects the live database, diffs it against the entity
+declarations, and produces an ordered, safety-classified plan. It can create
+hypertables, columnstores, and policies; alter compression/retention thresholds,
+the chunk interval, and the columnstore segment-by/order-by configuration;
+resolve renames; and — only when drops are explicitly enabled — remove retention
+and compression policies (both reversible).
+
+It deliberately does NOT perform destructive changes: dropping a hypertable or
+disabling a columnstore is never emitted. Continuous aggregates are not
+structurally diffed, and space (hash) dimensions cannot be reconciled in place —
+a divergence there is reported as an error naming the required manual migration,
+never silently ignored.
 
 For now, removals or altering operations should be handled through hand-written
 migrations. Public copy should keep this distinction clear.
@@ -151,9 +161,9 @@ Some behavior is intentionally not offered and is not on the roadmap:
   destructive change to existing objects is **Manual** and must be written and
   reviewed by hand.
 
-The planned diff/reconcile work (see "Full entity-to-database diff engine" above)
-covers only safe, reviewable changes. It must not be described as a future
-ability to generate destructive migrations automatically.
+The shipped diff/reconcile engine covers only safe, reviewable changes. It must
+not be described — now or as a future capability — as generating destructive
+migrations automatically.
 
 ## Copy guidance
 
@@ -162,7 +172,8 @@ Use wording like:
 - `0.2.x ships typed hypertables, columnstore, retention, hash partitioning, migration generation, CLI commands, repositories, drift checks, NestJS wiring, time bucketing, gap-filling, candlesticks, and approximate distinct count.`
 - `The 0.3.0 release scope adds typed helpers for the stable Toolkit aggregate families implemented in this package, including stats/regression, UddSketch percentiles, counters, time-weight, state tracking, MCV/top-N, and heartbeat/liveness.`
 - `0.4.0 adds continuous aggregates (including hierarchical CAGGs and refresh policies), downsampling (LTTB/ASAP), informational views and the jobs API, and T-Digest percentiles.`
-- `Experimental toolkit aggregates, stable Toolkit aggregates not listed in the docs, validated cross-store references, and a full safe diff engine are planned but not shipped yet.`
+- `0.6.0 adds the migration engine: live-database introspection, a safety-classified diff against your entities, a `check` CI drift gate, SQL/TypeScript migration emitters, a fluent schema builder, and guarded direct apply.`
+- `Experimental toolkit aggregates, stable Toolkit aggregates not listed in the docs, validated cross-store references, destructive auto-migrations, and CAGG structural diffing are planned but not shipped yet.`
 
 Avoid wording like:
 

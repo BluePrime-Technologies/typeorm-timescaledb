@@ -65,8 +65,21 @@ export interface ResolveVerdict {
  * collide via `"[object Object]"`; row-column values from an adapter are keyed leniently (a
  * non-scalar simply fails to match any real id — fail-closed).
  */
-function valueKey(value: unknown): string {
-  return String(value);
+function valueKey(value: unknown, columnType?: string): string {
+  const key = String(value);
+  // Postgres matches some column types by a rule the raw driver value does not preserve, so keying
+  // on the value verbatim makes a row the database DID match look missing:
+  //   • `char(n)`/`bpchar` — equality ignores trailing blanks, but the driver returns the value
+  //     space-padded ('AB' matches a char(8) row that comes back as 'AB      ').
+  //   • `citext` — equality is case-insensitive, but the driver returns the stored casing.
+  // Normalize the key the same way on BOTH the indexing and the lookup side.
+  const base = columnType
+    ?.toLowerCase()
+    .replace(/\s*\(.*$/, '')
+    .trim();
+  if (base === 'char' || base === 'bpchar') return key.replace(/ +$/, '');
+  if (base === 'citext') return key.toLowerCase();
+  return key;
 }
 
 /**
@@ -81,6 +94,19 @@ function assertScalarId(value: unknown, role: string): void {
       CrossStoreErrorCode.INVALID_ARGUMENT,
       `${role} must be a scalar id (string | number | bigint), got ${value === null ? 'null' : t}`,
       { role },
+    );
+  }
+  // A `number` beyond the safe-integer range has already lost precision before it reaches us: two
+  // distinct bigint ids can collapse onto the same double, so the lookup would silently resolve
+  // against the WRONG row. NaN/Infinity stringify to keys that can never match anything.
+  if (t === 'number' && !Number.isSafeInteger(value as number)) {
+    const n = value as number;
+    throw new CrossStoreError(
+      CrossStoreErrorCode.INVALID_ARGUMENT,
+      `${role} must be a safe-integer number (got ${String(n)}) — a value outside ` +
+        `Number.MIN_SAFE_INTEGER..MAX_SAFE_INTEGER has already lost precision and could resolve ` +
+        `against the wrong row; pass large ids as a string or bigint`,
+      { role, value: String(n) },
     );
   }
 }
@@ -248,6 +274,18 @@ export async function resolveReferences(
  * grant/role-rotation issue that can be operational/transient) and `42601` (syntax_error — our bug,
  * not the caller's registry), which must NOT be labelled "check the registry declaration".
  */
+/**
+ * Postgres SQLSTATEs that mean "one of the supplied VALUES is not representable in the target
+ * column's type" — e.g. a non-uuid string sent to a `uuid` column, or a number out of range. The
+ * batch resolves every id for a group in ONE `= ANY($1::uuid[])` statement, so a single bad id makes
+ * Postgres reject the WHOLE statement. That is a permanent, caller-side data error: classifying it
+ * as a transient outage made the batch retryable forever and poisoned provably-valid siblings.
+ */
+const INVALID_VALUE_SQLSTATES: ReadonlySet<string> = new Set([
+  '22P02', // invalid_text_representation (e.g. "not-a-uuid" for a uuid column)
+  '22003', // numeric_value_out_of_range
+]);
+
 const MISCONFIGURED_SQLSTATES: ReadonlySet<string> = new Set([
   '42P01', // undefined_table
   '42703', // undefined_column
@@ -282,9 +320,16 @@ function permanentSqlState(cause: unknown): string | undefined {
       isPrismaRaw && typeof err.message === 'string'
         ? /Code:\s*[`"']?(42[0-9A-Za-z]{3}|3F000)\b/i.exec(err.message)?.[1]?.toUpperCase()
         : undefined;
-    const match = [direct, prismaMeta, fromMessage].find(
-      (c): c is string => c !== undefined && MISCONFIGURED_SQLSTATES.has(c),
-    );
+    // A message-derived code may only ever mean "misconfigured": an INVALID_VALUE state echoes the
+    // offending value in its message, so honouring it here would let hostile data forge a code.
+    const match =
+      [direct, prismaMeta].find(
+        (c): c is string =>
+          c !== undefined && (MISCONFIGURED_SQLSTATES.has(c) || INVALID_VALUE_SQLSTATES.has(c)),
+      ) ??
+      (fromMessage !== undefined && MISCONFIGURED_SQLSTATES.has(fromMessage)
+        ? fromMessage
+        : undefined);
     if (match !== undefined) return match;
     const next =
       (err as { driverError?: unknown; cause?: unknown }).driverError ??
@@ -304,7 +349,8 @@ async function resolveGroup(
 ): Promise<void> {
   // Dedup the referenced values so one round-trip covers every member (issue #124 fix #3).
   const distinct = new Map<string, unknown>();
-  for (const i of group.members) distinct.set(valueKey(checks[i]!.value), checks[i]!.value);
+  for (const i of group.members)
+    distinct.set(valueKey(checks[i]!.value, group.columnType), checks[i]!.value);
 
   let rowByValue: Map<string, SnapshotRow>;
   try {
@@ -323,7 +369,7 @@ async function resolveGroup(
     for (const row of rows) {
       const keyValue = row[group.column];
       if (keyValue === null || keyValue === undefined) continue;
-      const k = valueKey(keyValue);
+      const k = valueKey(keyValue, group.columnType);
       if (!rowByValue.has(k)) rowByValue.set(k, Object.freeze(row));
     }
   } catch (cause) {
@@ -337,15 +383,24 @@ async function resolveGroup(
     // (retryable) so a sweep won't re-queue it forever.
     const sqlState = permanentSqlState(cause);
     const [code, status, reason] =
-      sqlState !== undefined
-        ? ([
+      sqlState !== undefined && INVALID_VALUE_SQLSTATES.has(sqlState)
+        ? // A value that the target column's type cannot represent. PERMANENT (never retryable):
+          // one malformed id rejects the whole batched statement, so report it as a wiring/data
+          // error rather than an outage that a retry could clear.
+          ([
             CrossStoreErrorCode.REFERENCE_MISCONFIGURED,
             'misconfigured',
-            `is misconfigured (SQL error ${sqlState}) — check the registry declaration matches the target schema`,
+            `received a value its column type cannot represent (SQL error ${sqlState}) — one malformed id rejects the whole batch; validate ids before resolving`,
           ] as const)
-        : // Otherwise a TRANSIENT failure: availability, not correctness — every member is
-          // UNAVAILABLE, NOT "not found" (a blip must never reject a valid reference; #124 fix #5).
-          ([CrossStoreErrorCode.ADAPTER_UNAVAILABLE, 'unavailable', `was unavailable`] as const);
+        : sqlState !== undefined
+          ? ([
+              CrossStoreErrorCode.REFERENCE_MISCONFIGURED,
+              'misconfigured',
+              `is misconfigured (SQL error ${sqlState}) — check the registry declaration matches the target schema`,
+            ] as const)
+          : // Otherwise a TRANSIENT failure: availability, not correctness — every member is
+            // UNAVAILABLE, NOT "not found" (a blip must never reject a valid reference; #124 fix #5).
+            ([CrossStoreErrorCode.ADAPTER_UNAVAILABLE, 'unavailable', `was unavailable`] as const);
     for (const i of group.members) {
       verdicts[i] = {
         check: checks[i]!,
@@ -369,7 +424,7 @@ async function resolveGroup(
 
   for (const i of group.members) {
     const check = checks[i]!;
-    const row = rowByValue.get(valueKey(check.value));
+    const row = rowByValue.get(valueKey(check.value, group.columnType));
     if (!row) {
       verdicts[i] = {
         check,

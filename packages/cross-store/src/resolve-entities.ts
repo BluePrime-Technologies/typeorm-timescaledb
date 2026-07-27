@@ -169,7 +169,26 @@ export async function resolveEntities(
   // returns, so the final result preserves input order regardless of which fields short-circuited.
   const slots: Array<EntityFieldVerdict | PendingSlot> = [];
   for (const entity of entities) {
-    const meta = getResolveMetadata(entityClassOf(entity));
+    // A non-object / plain-object row cannot carry @Resolve metadata. On the WRITE path that must
+    // fail closed (throw). In sweep mode it must NOT: `verifyReferences` documents that it never
+    // throws precisely so one bad row cannot wedge a paged reconciliation job — report the row as
+    // an `invalid` verdict and carry on with the rest of the batch.
+    let meta: ReturnType<typeof getResolveMetadata>;
+    try {
+      meta = getResolveMetadata(entityClassOf(entity));
+    } catch (e) {
+      if (!report || !(e instanceof CrossStoreError)) throw e;
+      slots.push(
+        invalidVerdict(
+          (entity ?? {}) as object,
+          '',
+          entity,
+          { store: '', table: '', column: '' },
+          e,
+        ),
+      );
+      continue;
+    }
     for (const field of meta) {
       const value = (entity as Record<string, unknown>)[field.property];
       if (value === null || value === undefined) {
@@ -395,7 +414,35 @@ export function lockValidatedFields(results: readonly EntityFieldVerdict[]): () 
     locked.add(property);
     const target = entity as Record<string, unknown>;
     const found = Object.getOwnPropertyDescriptor(target, property);
-    if (!found || !('value' in found) || found.configurable === false) {
+    // A property that is absent from the instance AND from its whole prototype chain is the normal
+    // shape of an optional reference that was simply never assigned (`parentId?: string` with no
+    // initializer) — a supported, `not_referenced` case. It is exactly as lockable as a present one:
+    // define it as a non-writable `undefined` and restore by deleting it. Refusing here would reject
+    // the whole write for a perfectly valid entity.
+    //
+    // `property in target` is what separates this from an INHERITED accessor (a prototype
+    // getter/setter also has no *own* descriptor): defining an own property there would silently
+    // shadow the accessor and change the entity's semantics, so that case must still fail closed.
+    if (found === undefined && !(property in target)) {
+      try {
+        Object.defineProperty(target, property, {
+          value: undefined,
+          writable: false,
+          enumerable: true,
+          configurable: true,
+        });
+      } catch (cause) {
+        failToLock(entity, property, cause);
+        return; // unreachable — failToLock always throws
+      }
+      restores.push(() => {
+        delete target[property];
+      });
+      return;
+    }
+    // Anything else unlockable — an inherited/own accessor, or a non-configurable field — still
+    // fails closed rather than letting an unguarded write through.
+    if (found === undefined || !('value' in found) || found.configurable === false) {
       failToLock(entity, property);
       return; // unreachable — failToLock always throws; satisfies the type checker below
     }

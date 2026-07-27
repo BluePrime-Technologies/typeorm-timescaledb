@@ -7,13 +7,17 @@ import {
   revertMigrationCommand,
   runMigrationsCommand,
   statusCommand,
+  checkCommand,
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
 import { initializeForCli, loadDataSource } from './load.js';
 
 async function main(argv: readonly string[]): Promise<void> {
-  if (argv.includes('-h') || argv.includes('--help')) {
+  // Only treat help as help when it LEADS the command line. Matching it anywhere let a value
+  // position (`-n --help`) or a trailing flag swallow a real command — `check ... --help` printed
+  // usage and exited 0, turning a CI drift gate into a silent pass.
+  if (argv.length === 0 || argv[0] === '-h' || argv[0] === '--help') {
     console.log(USAGE);
     return;
   }
@@ -29,6 +33,7 @@ async function main(argv: readonly string[]): Promise<void> {
         const result = generateMigrationFile(dataSource, {
           outDir: args.outDir,
           ...(args.name !== undefined && { name: args.name }),
+          output: args.output,
         });
         logger.log(
           result === null
@@ -46,6 +51,11 @@ async function main(argv: readonly string[]): Promise<void> {
       case 'status':
         await statusCommand(dataSource, logger);
         break;
+      case 'check': {
+        const drift = await checkCommand(dataSource, logger);
+        if (drift) process.exitCode = 1;
+        break;
+      }
     }
   } finally {
     if (dataSource.isInitialized) await dataSource.destroy();

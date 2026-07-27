@@ -47,6 +47,22 @@ export function classifyLoadError(error: unknown, modulePath: string): CliError 
   // specifiers back to their sibling ".ts" files, so a project written for
   // tsx-style ".js" specifiers fails here with ERR_MODULE_NOT_FOUND instead of
   // ERR_UNKNOWN_FILE_EXTENSION.
+  // A missing -d file is the same user error whatever its extension, so check it BEFORE the
+  // TypeScript-specific branch below (nesting it there made the friendly message unreachable for
+  // .js/.mjs/.cjs paths, which fell through to Node's raw ERR_MODULE_NOT_FOUND).
+  //
+  // The error must NAME the -d path: Node throws the same code when the DataSource file exists but
+  // imports a missing npm package, and that message ("Cannot find package 'x'") does not reference
+  // the -d path — reporting it as "DataSource file not found" would send the user to the wrong place.
+  const namesModulePath =
+    typeof (error as Error).message === 'string' &&
+    ((error as Error).message.includes(modulePath) ||
+      (error as Error).message.includes(resolve(modulePath)));
+  if (code === 'ERR_MODULE_NOT_FOUND' && namesModulePath && !existsSync(resolve(modulePath))) {
+    return new CliError(
+      `DataSource file not found: "${modulePath}" — check the path passed to -d/--dataSource.`,
+    );
+  }
   if (code === 'ERR_MODULE_NOT_FOUND' && /\.[mc]?ts$/.test(modulePath)) {
     // ERR_MODULE_NOT_FOUND is also what Node throws when the -d path itself is
     // wrong (typo'd/missing file) or when the DataSource imports a genuinely

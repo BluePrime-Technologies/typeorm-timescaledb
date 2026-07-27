@@ -20,7 +20,8 @@ The following features are planned or future scope, not shipped functionality:
   surfaced as stable constructs.
 - Stable Toolkit aggregates not yet covered by the typed query layer. (T-Digest
   percentiles shipped in 0.4.0.)
-- Safer entity-to-database diff improvements.
+- Structural diffing of continuous aggregates.
+- In-place reconciliation of space (hash) dimensions.
 - Validated cross-store references.
 - Complete TimescaleDB feature coverage.
 
@@ -30,16 +31,25 @@ alterations require explicit hand-written migrations controlled by the user.
 
 ## Migration limitations
 
-Generated migrations are additive and desired-state oriented. They apply
-supported TimescaleDB configuration idempotently.
+`generate` emits a desired-state migration from your entities and applies
+supported TimescaleDB configuration idempotently. Separately, the migration
+engine (`check`, `introspect` + `diffSchemaState`, `applyDirect`) reconciles a
+live database against your entities and DOES auto-diff:
 
-Removing or altering existing TimescaleDB configuration is not fully auto-diffed
-yet. Use a hand-written migration for changes such as:
+- Compression and retention thresholds.
+- The time-dimension chunk interval.
+- The columnstore segment-by / order-by configuration.
+- Renames declared via `@Hypertable({ renamedFrom })`.
+- Removing a retention or compression policy — only when drops are explicitly
+  enabled (`allowDrops`), and always reversibly.
 
-- Removing a retention policy.
-- Changing an existing chunk interval.
-- Reworking dimensions.
-- Reversing TimescaleDB configuration that could affect live data.
+A hand-written migration is still required for:
+
+- Dropping a hypertable or disabling a columnstore (never auto-generated).
+- Adding, removing, or re-partitioning a space (hash) dimension — a divergence
+  here is reported as an error naming the remedy, not silently ignored.
+- Structural changes to continuous aggregates (they are not diffed).
+- Any reversal of TimescaleDB configuration that could affect live data.
 
 ## Existing data limitation
 

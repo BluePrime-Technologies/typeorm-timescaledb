@@ -1,6 +1,6 @@
 {
   "name": "@blueprime/timescaledb-core",
-  "version": "0.5.0",
+  "version": "0.6.1",
   "description": "Pre-1.0 ORM-agnostic core for TimescaleDB SQL/DDL generation, metadata modeling, and identifier safety.",
   "license": "Apache-2.0",
   "type": "module",

@@ -49,6 +49,15 @@ export const HypertableOptionsSchema = z.strictObject({
   columnstore: ColumnstoreOptionsSchema.optional(),
   retention: RetentionOptionsSchema.optional(),
   spacePartition: SpacePartitionOptionsSchema.optional(),
+  /**
+   * The hypertable's PREVIOUS physical table name (bare, e.g. `'old_trades'`, or schema-qualified,
+   * e.g. `'analytics.old_trades'` — an unqualified value is resolved against the entity's own
+   * schema). Declare this the migration after renaming the entity's table so the M4.2 diff engine
+   * matches the hypertable by its old identity instead of emitting a drop-then-create (the
+   * Prisma/EF anti-pattern) — see `diffSchemaState`'s `renames` option. Remove it once the rename
+   * has been applied everywhere the migration will run.
+   */
+  renamedFrom: z.string().optional(),
 });
 
 export type HypertableOptions = z.infer<typeof HypertableOptionsSchema>;

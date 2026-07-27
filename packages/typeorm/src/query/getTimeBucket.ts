@@ -5,6 +5,7 @@ import {
   lastExpr,
   locfExpr,
   safeIdent,
+  assertSafeIdentifier,
   timeBucketExpr,
   timeBucketGapfillExpr,
   TimescaleError,
@@ -111,6 +112,32 @@ export function getTimeBucket<T extends ObjectLiteral>(
     repo.metadata.findColumnWithPropertyName(property)?.databaseName ?? property;
 
   const timeColumn = options.timeColumn ? resolve(options.timeColumn) : defaultTimeColumn;
+
+  // `origin` and the gapfill bounds are emitted as `TIMESTAMPTZ` literals. On a `timestamp without
+  // time zone` partition column PostgreSQL then coerces the COLUMN to timestamptz to match, silently
+  // reinterpreting every naive value in the session's TimeZone — bucket boundaries shift by the UTC
+  // offset and the result type changes. Refuse rather than return quietly-wrong buckets. Only a
+  // POSITIVELY naive type is rejected; an unknown/inferred type is left alone.
+  if (options.origin !== undefined || options.gapfill !== undefined) {
+    const prop = options.timeColumn;
+    const declared =
+      prop !== undefined ? repo.metadata.findColumnWithPropertyName(prop)?.type : undefined;
+    const typeName = typeof declared === 'string' ? declared.toLowerCase() : undefined;
+    if (
+      typeName === 'timestamp' ||
+      typeName === 'timestamp without time zone' ||
+      typeName === 'date'
+    ) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `origin/gapfill bounds are emitted as TIMESTAMPTZ, but time column "${timeColumn}" is ` +
+          `"${typeName}" — PostgreSQL would coerce the column and reinterpret every value in the ` +
+          `session time zone, shifting bucket boundaries. Use a timestamptz time column, or omit ` +
+          `origin/gapfill.`,
+        { timeColumn, columnType: typeName },
+      );
+    }
+  }
   if (!options.metrics.length) {
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,
@@ -208,7 +235,28 @@ export function getTimeBucket<T extends ObjectLiteral>(
       ...(options.offset !== undefined ? { offset: options.offset } : {}),
     });
   }
-  const bucketAlias = options.bucketAlias ?? 'bucket';
+  // Output aliases are caller-supplied and land in the SELECT list. TypeORM 0.3.x's Postgres driver
+  // quotes an alias WITHOUT escaping embedded double quotes, so an unvalidated alias containing `"`
+  // breaks out of the quoting and injects arbitrary select-list SQL. Validate through the same
+  // allow-list every other identifier in this layer already uses.
+  const bucketAlias = assertSafeIdentifier(options.bucketAlias ?? 'bucket', 'bucketAlias');
+
+  // Postgres allows duplicate output column names, but a row object can only keep ONE — the last
+  // wins, silently discarding the other column (a metric aliased `bucket` erases the time axis; two
+  // metrics sharing an alias plot the wrong series). Reject it instead of returning wrong data.
+  const seenAliases = new Set<string>([bucketAlias]);
+  for (const metric of options.metrics) {
+    const alias = assertSafeIdentifier(metric.alias, 'metric alias');
+    if (seenAliases.has(alias)) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `duplicate output alias "${alias}" — the bucket alias and every metric alias must be distinct, ` +
+          `otherwise one column silently overwrites the other in the result rows`,
+        { alias },
+      );
+    }
+    seenAliases.add(alias);
+  }
 
   const qb = repo.createQueryBuilder('e').select(bucketExpr, bucketAlias).groupBy(bucketExpr);
   for (const metric of options.metrics) {

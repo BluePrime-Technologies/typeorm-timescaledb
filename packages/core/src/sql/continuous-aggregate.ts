@@ -159,14 +159,15 @@ export interface ContinuousAggregatePolicyInput {
    */
   readonly endOffset: string | null;
   /**
-   * How often the policy runs, as an INTERVAL literal. Emitted only when provided.
+   * How often the policy runs, as an INTERVAL literal.
    *
-   * NOTE: TimescaleDB **2.18** (this package's supported floor) has no overload that
-   * omits `schedule_interval`, so the migration generator always supplies one
-   * (defaulting to the bucket width). Direct core callers targeting newer servers may
-   * omit it to accept the server default.
+   * **Required.** TimescaleDB **2.18** — this package's supported floor — has no
+   * `add_continuous_aggregate_policy` overload that omits `schedule_interval`, so leaving it out
+   * produced SQL that failed at migration time with `function add_continuous_aggregate_policy(...)
+   * does not exist`. The migration generator already always supplies one (defaulting to the bucket
+   * width); making it required moves the remaining direct-caller mistake to compile time.
    */
-  readonly scheduleInterval?: string;
+  readonly scheduleInterval: string;
 }
 
 /**
@@ -188,7 +189,7 @@ export function addContinuousAggregatePolicySQL(
     `start_offset => ${offset(input.startOffset, 'startOffset')}`,
     `end_offset => ${offset(input.endOffset, 'endOffset')}`,
   ];
-  if (input.scheduleInterval !== undefined) {
+  {
     args.push(
       `schedule_interval => INTERVAL ${quoteLiteral(assertPositiveInterval(input.scheduleInterval, 'scheduleInterval'))}`,
     );

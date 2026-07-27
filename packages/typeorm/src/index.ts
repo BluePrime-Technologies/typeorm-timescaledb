@@ -99,13 +99,33 @@ export {
 export { assertSchema } from './runtime/assertSchema.js';
 export type { AssertSchemaOptions } from './runtime/assertSchema.js';
 
+// Live-DB introspection (M4.0) — reduce a running TimescaleDB to the canonical SchemaStateIR.
+export { introspect } from './runtime/introspect.js';
+export type { IntrospectOptions } from './runtime/introspect.js';
+// Desired-state compiler (M4.2) — reduce the `@Hypertable` decorators to the same SchemaStateIR,
+// so the diff engine can compare desired (this) vs current (introspect()).
+export { compileDesiredState } from './runtime/desired-state.js';
+// Rename resolution (M4.2 S4) — `@Hypertable({ renamedFrom })` → the map `diffSchemaState` consumes
+// so a renamed hypertable diffs to a single `renameHypertable` op, not drop-then-create.
+export { collectRenames } from './runtime/renames.js';
+// Direct-sync engine (M4.3c) — apply a typed Plan straight to a live DB, guarded + transactional.
+export { applyDirect } from './runtime/apply.js';
+export type { ApplyDirection, ApplyDirectOptions, ApplyDirectResult } from './runtime/apply.js';
+
 // Migration generation — Django/Prisma-style codegen from @Hypertable metadata.
 export {
   generateTimescaleMigration,
+  planToMigration,
   renderTimescaleMigration,
+  renderTimescaleMigrationSql,
   createTimescaleMigration,
 } from './migrations/index.js';
-export type { GeneratedMigration, GenerateMigrationOptions } from './migrations/index.js';
+export type {
+  GeneratedMigration,
+  GenerateMigrationOptions,
+  PlanMigrationOptions,
+} from './migrations/index.js';
+export { TimescaleSchemaBuilder } from './migrations/index.js';
 
 // NOTE: `./cli/*` is intentionally NOT re-exported here — it is the `typeorm-timescaledb`
 // bin entrypoint, not part of the importable library surface (keeps the executable out

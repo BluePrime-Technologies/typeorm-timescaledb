@@ -135,10 +135,10 @@ describe('resolveReferences', () => {
   });
 
   it('does NOT let a data-influenced message forge a misconfigured code (regex gated to Prisma-shaped errors)', async () => {
-    // a non-Prisma error (22P02 invalid_text_representation) whose message echoes a hostile value
-    // containing "Code: `42P01`" must stay unavailable — never flip to misconfigured.
+    // A transient, non-Prisma error whose message echoes a hostile value containing "Code: `42P01`"
+    // must stay unavailable — the message must never be able to forge a misconfigured classification.
     const adapter = new FakeAdapter('canonical', [], {
-      rejectWith: { code: '22P02', message: 'invalid input syntax for type uuid: "Code: `42P01`"' },
+      rejectWith: { code: 'ECONNREFUSED', message: 'connect failed: "Code: `42P01`"' },
     });
     const [verdict] = await resolveReferences([check('a')], {
       registry: registry(),
@@ -146,6 +146,36 @@ describe('resolveReferences', () => {
     });
     expect(verdict?.status).toBe('unavailable');
     expect(verdict?.error?.code).toBe(CrossStoreErrorCode.ADAPTER_UNAVAILABLE);
+  });
+
+  it('classifies an invalid-VALUE SQLSTATE as permanent, not a retryable outage', async () => {
+    // The group resolves in ONE `= ANY($1::uuid[])`, so a single malformed id rejects the whole
+    // statement. Treating 22P02 as transient made the batch retry forever and poisoned every
+    // provably-valid sibling id in it.
+    const adapter = new FakeAdapter('canonical', [], {
+      rejectWith: { code: '22P02', message: 'invalid input syntax for type uuid: "not-a-uuid"' },
+    });
+    const [verdict] = await resolveReferences([check('a')], {
+      registry: registry(),
+      adapters: [adapter],
+    });
+    expect(verdict?.status).toBe('misconfigured');
+    expect(verdict?.error?.code).toBe(CrossStoreErrorCode.REFERENCE_MISCONFIGURED);
+    expect(verdict?.error?.message).toMatch(/column type cannot represent/);
+  });
+
+  it('still does not let a 22P02 MESSAGE forge a misconfigured code for a different state', async () => {
+    // 22P02's message echoes the offending value; only the structured code may classify it, and it
+    // must be reported as 22P02 — never as the 42P01 the hostile value names.
+    const adapter = new FakeAdapter('canonical', [], {
+      rejectWith: { code: '22P02', message: 'invalid input syntax for type uuid: "Code: `42P01`"' },
+    });
+    const [verdict] = await resolveReferences([check('a')], {
+      registry: registry(),
+      adapters: [adapter],
+    });
+    expect(verdict?.error?.message).toContain('22P02');
+    expect(verdict?.error?.message).not.toContain('42P01');
   });
 
   it.each([
@@ -494,5 +524,71 @@ describe('assertAllResolved', () => {
       expect((e as CrossStoreError).code).toBe(CrossStoreErrorCode.INVALID_ARGUMENT);
       expect((e as CrossStoreError).code).not.toBe(CrossStoreErrorCode.REFERENCE_NOT_FOUND);
     }
+  });
+});
+
+describe('id validity + key normalization (audit)', () => {
+  it('rejects a number id beyond the safe-integer range (silently resolves the WRONG row)', async () => {
+    // Two distinct bigint ids collapse onto the same double, so the lookup could match a different
+    // row entirely. Large ids must be passed as string | bigint.
+    await expect(
+      resolveReferences([{ ...check('a'), value: 9007199254740993 }], {
+        registry: registry(),
+        adapters: [new FakeAdapter('canonical', [])],
+      }),
+    ).rejects.toThrow(/safe-integer/);
+  });
+
+  it('accepts a safe-integer number id', async () => {
+    await expect(
+      resolveReferences([{ ...check('a'), value: 42 }], {
+        registry: registry(),
+        adapters: [new FakeAdapter('canonical', [])],
+      }),
+    ).resolves.toBeDefined();
+  });
+});
+
+describe('key normalization for bpchar/citext (audit)', () => {
+  /**
+   * Postgres matches these types by a rule the driver's returned value does not preserve. Verified
+   * against a live database with node-pg: a `char(8)` column storing 'AB' matches the probe 'AB'
+   * but comes back as "AB      "; a `citext` column storing 'AbC' matches the probe 'abc' but comes
+   * back as "AbC". Indexing on the raw value therefore reported a row the DB DID match as not_found.
+   */
+  function adapterReturning(row: Record<string, unknown>): CrossStoreAdapter {
+    return {
+      store: 'canonical',
+      findMany: () => Promise.resolve([row as SnapshotRow]),
+    };
+  }
+
+  it('matches a char(n) row the driver padded with trailing blanks', async () => {
+    // the registry allow-lists BASE scalar types, so a char(n) column registers as 'char'
+    const reg = new ReferenceRegistry().register({ ...REF, columnType: 'char' });
+    const [v] = await resolveReferences([check('AB')], {
+      registry: reg,
+      adapters: [adapterReturning({ id: 'AB      ' })],
+    });
+    expect(v?.status).toBe('resolved');
+  });
+
+  it('matches a citext row whose stored casing differs from the probe', async () => {
+    const reg = new ReferenceRegistry().register({ ...REF, columnType: 'citext' });
+    const [v] = await resolveReferences([check('abc')], {
+      registry: reg,
+      adapters: [adapterReturning({ id: 'AbC' })],
+    });
+    expect(v?.status).toBe('resolved');
+  });
+
+  it('does NOT loosen matching for an ordinary text column', async () => {
+    // trailing-space / case normalization must be scoped to the types whose equality warrants it.
+    const reg = new ReferenceRegistry().register({ ...REF, columnType: 'text' });
+    const [v] = await resolveReferences([check('AB')], {
+      registry: reg,
+      adapters: [adapterReturning({ id: 'AB      ' })],
+    });
+    expect(v?.status).toBe('not_found');
   });
 });

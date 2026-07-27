@@ -16,6 +16,14 @@ export interface ReferenceRegistryEntry {
    */
   readonly scopeColumns?: readonly string[];
   /**
+   * Scope columns that every check against this target MUST supply. `scopeColumns` is only an
+   * ALLOW-list — omitting a scope entirely was therefore permitted, silently resolving the
+   * reference across all tenants. Listing a column here makes tenant isolation fail CLOSED: a check
+   * that does not scope by it raises `SCOPE_VIOLATION` instead of matching another tenant's row.
+   * Every entry here must also appear in {@link scopeColumns}.
+   */
+  readonly requiredScopeColumns?: readonly string[];
+  /**
    * The target is append-only / soft-delete (a validated row can never be hard-deleted).
    * Required for the TOCTOU mitigation to hold (issue #124 fix #1); a registered target
    * without this flag is surfaced by {@link ReferenceRegistry.nonAppendOnlyTargets} so the
@@ -65,11 +73,30 @@ function refLabel(ref: { store: string; table: string; column: string }): string
 function freezeEntry(entry: ReferenceRegistryEntry): ReferenceRegistryEntry {
   const scopeColumns =
     entry.scopeColumns !== undefined ? Object.freeze([...new Set(entry.scopeColumns)]) : undefined;
+  const requiredScopeColumns =
+    entry.requiredScopeColumns !== undefined
+      ? Object.freeze([...new Set(entry.requiredScopeColumns)])
+      : undefined;
+  // A required column that is not allow-listed could never be supplied — reject the contradiction
+  // at registration rather than making every check fail at resolve time.
+  if (requiredScopeColumns !== undefined) {
+    const allowed = new Set(scopeColumns ?? []);
+    for (const col of requiredScopeColumns) {
+      if (!allowed.has(col)) {
+        throw new CrossStoreError(
+          CrossStoreErrorCode.INVALID_ARGUMENT,
+          `requiredScopeColumns includes "${col}", which is not in scopeColumns for ${entry.store}.${entry.table}.${entry.column}`,
+          { store: entry.store, table: entry.table, column: entry.column, scopeColumn: col },
+        );
+      }
+    }
+  }
   return Object.freeze({
     store: entry.store,
     table: entry.table,
     column: entry.column,
     ...(scopeColumns !== undefined && { scopeColumns }),
+    ...(requiredScopeColumns !== undefined && { requiredScopeColumns }),
     ...(entry.targetIsAppendOnly !== undefined && { targetIsAppendOnly: entry.targetIsAppendOnly }),
     ...(entry.targetIsUnique !== undefined && { targetIsUnique: entry.targetIsUnique }),
     // store the canonical (validated, lower-cased) type — the exact token later interpolated into SQL
@@ -209,6 +236,19 @@ export class ReferenceRegistry {
           CrossStoreErrorCode.SCOPE_VIOLATION,
           `scope column "${scopeCol}" is not allowed for reference ${refLabel(ref)}`,
           { ref, scopeColumn: scopeCol },
+        );
+      }
+    }
+    // Fail CLOSED on a missing REQUIRED scope: an unscoped check would otherwise match any tenant's
+    // row. (`scopeColumns` alone is an allow-list and cannot express this.)
+    const supplied = new Set(scopeColumns);
+    for (const required of entry.requiredScopeColumns ?? []) {
+      if (!supplied.has(required)) {
+        throw new CrossStoreError(
+          CrossStoreErrorCode.SCOPE_VIOLATION,
+          `reference ${refLabel(ref)} requires scope column "${required}" — resolving without it ` +
+            `would match rows outside the intended scope`,
+          { ref, scopeColumn: required },
         );
       }
     }

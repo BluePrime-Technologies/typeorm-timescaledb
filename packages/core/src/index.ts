@@ -7,6 +7,14 @@ export {
   createHypertableSQL,
   addColumnstorePolicySQL,
   addRetentionPolicySQL,
+  addCompressionPolicySQL,
+  alterCompressionPolicySQL,
+  alterRetentionPolicySQL,
+  renameHypertableSQL,
+  setChunkIntervalSQL,
+  alterColumnstoreConfigSQL,
+  removeRetentionPolicySQL,
+  removeCompressionPolicySQL,
   createContinuousAggregateSQL,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
@@ -16,6 +24,13 @@ export type {
   CreateHypertableInput,
   ColumnstorePolicyInput,
   RetentionPolicyInput,
+  AddCompressionPolicyInput,
+  AlterPolicyInput,
+  RenameTableInput,
+  SetChunkIntervalInput,
+  AlterColumnstoreConfigInput,
+  RemovePolicyInput,
+  ColumnstoreConfig,
   CreateContinuousAggregateInput,
   ContinuousAggregateColumn,
   ContinuousAggregateFn,
@@ -110,3 +125,49 @@ export type {
   SpacePartitionOptions,
   TimescaleEntityMetadata,
 } from './metadata.js';
+export type {
+  SchemaStateIR,
+  HypertableState,
+  DimensionState,
+  ColumnstoreState,
+  OrderByElement,
+  PolicyState,
+  CompressionOrRetentionPolicy,
+  RefreshPolicy,
+  UnmanagedPolicy,
+  ContinuousAggregateState,
+  IntervalOrInt,
+} from './schema-state.js';
+export {
+  canonicalizeInterval,
+  intervalsEqual,
+  assertParsableInterval,
+  parsePolicyConfig,
+  policiesEqual,
+  normalizeCaggDefinition,
+  caggDefinitionsEqual,
+  caggComparable,
+  TIMESCALE_DEFAULTS,
+} from './normalize.js';
+export { compileOperation, compileOperations } from './operation.js';
+export type {
+  Operation,
+  OperationKind,
+  CreateHypertableOperation,
+  AddColumnstorePolicyOperation,
+  AddRetentionPolicyOperation,
+  CreateContinuousAggregateOperation,
+  AddContinuousAggregatePolicyOperation,
+  AddCompressionPolicyOperation,
+  AlterCompressionPolicyOperation,
+  AlterRetentionPolicyOperation,
+  RenameHypertableOperation,
+  SetChunkIntervalOperation,
+  AlterColumnstoreConfigOperation,
+  RemoveRetentionPolicyOperation,
+  RemoveCompressionPolicyOperation,
+} from './operation.js';
+export { diffSchemaState, isEmptyPlan, compilePlan } from './diff.js';
+export type { Plan, PlanStep, DiffOptions, CompiledPlan } from './diff.js';
+export { classifyOperation } from './safety.js';
+export type { SafetyClass, OperationSafety } from './safety.js';
