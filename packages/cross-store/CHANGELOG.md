@@ -6,7 +6,11 @@ All notable changes to `@blueprime/cross-store` are documented here. This packag
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] - 2026-07-27
+
+Patch release: correctness fixes from the full-library audit, no new capability.
+One **critical** fix — writes were refused outright for an unassigned optional
+reference — plus tenant-isolation and key-matching fixes.
 
 ### Fixed
 
@@ -28,8 +32,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a paged reconciliation sweep instead of being reported. In sweep mode it is now an `invalid`
   verdict; the write path still fails closed.
 - **Tenant isolation could not be made mandatory.** `scopeColumns` is only an allow-list, so a check
-  that omitted the scope entirely resolved across every tenant. Registry entries accept
-  `requiredScopeColumns`, and a check missing one now raises `SCOPE_VIOLATION`.
+  that omitted the scope entirely resolved across every tenant. Registry entries now accept an
+  optional `requiredScopeColumns`, and a check missing one raises `SCOPE_VIOLATION` — additive and
+  backward-compatible (entries that do not set it behave exactly as before); it exists purely as the
+  mechanism of this fix.
 
 - **Writes were refused for an optional `@Resolve` field that was never assigned.** A nullable
   cross-store reference declared the idiomatic way (`parentId?: string`, left unset) has no own

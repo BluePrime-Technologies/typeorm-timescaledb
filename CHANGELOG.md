@@ -7,7 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
-## [Unreleased]
+## [0.6.0] - 2026-07-27
+
+Minor release: **the unified migration engine**. The package can now read a live
+TimescaleDB, diff it against your entity declarations, and converge it — where
+previously it could only emit desired-state DDL in one direction. Also lands a
+full-library correctness audit (see **Fixed**). No breaking API changes to the
+existing query/decorator surface.
+
+### Added
+
+- **Live-database introspection** — `introspect(dataSource)` reduces a running
+  TimescaleDB to a canonical `SchemaStateIR` (dimensions, columnstore config,
+  compression/retention/refresh policies, continuous aggregates), normalized so
+  Postgres's interval reformatting and engine-filled defaults never read as drift.
+- **A typed diff engine** — `diffSchemaState(current, desired, options?)` returns an
+  ordered `Plan` whose every step carries a **safety class** (`online-safe`,
+  `needs-recompress`, `refuse-by-default`, `one-way`) and a human-readable reason.
+  It detects a missing hypertable/columnstore/policy, a changed compression or
+  retention threshold, a changed chunk interval, and a changed columnstore
+  segment-by/order-by configuration.
+- **`check` CLI verb** — diff the live database against your entities, print a
+  readable drift preview, and exit non-zero on drift (a CI schema gate).
+- **Rename support** — `@Hypertable({ renamedFrom })` resolves a renamed hypertable
+  to a single `ALTER TABLE ... RENAME` instead of a drop-then-create.
+- **Guarded drops** (opt-in, `allowDrops`) — removes a retention or compression
+  policy that is present in the database but absent from your entities. Reversible;
+  destructive drops (dropping a hypertable, disabling a columnstore) are never emitted.
+- **Emitters** — `generate --output <ts|sql>` writes either a TypeORM migration class
+  or a reviewable raw `.sql` artifact; `planToMigration(plan)` turns a diff `Plan`
+  into a committable migration; `compilePlan(plan)` exposes its `up`/`down` SQL.
+- **`TimescaleSchemaBuilder`** — a fluent, hand-authoring surface for Timescale DDL
+  that runs inside an ordinary TypeORM migration via `queryRunner`, producing SQL
+  byte-identical to the generated path.
+- **`applyDirect(dataSource, plan, options?)`** — apply a plan straight to a live
+  database, in one transaction, refusing `refuse-by-default` operations unless
+  explicitly opted in. Classification is derived from the operation itself, so a
+  hand-built plan cannot mislabel a dangerous change past the gate.
+
+### Known limitations
+
+- Continuous aggregates are **not** structurally diffed (the diff is
+  hypertable-scoped), so `check` does not cover CAGG drift.
+- Space (hash) dimensions cannot be reconciled in place; a divergence is reported as
+  an error naming the required manual migration rather than silently ignored.
+- The one-command `push`/`pull`/`sync` verbs are not in this release — use `check`
+  plus `generate`, or the programmatic API.
 
 ### Fixed
 
