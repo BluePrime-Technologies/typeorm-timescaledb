@@ -80,7 +80,18 @@ npx typeorm-timescaledb generate -d src/data-source.ts -o src/migrations --outpu
 
 # CI drift gate: prints what would change and exits non-zero if the DB has drifted
 npx typeorm-timescaledb check -d src/data-source.ts
+
+# converge the database to your entities — PREVIEWS by default, applies nothing:
+npx typeorm-timescaledb push -d src/data-source.ts
+# ...and actually run it:
+npx typeorm-timescaledb push -d src/data-source.ts --apply
 ```
+
+`push` exits **0** when the database already matches (or after converging it) and **2** when it
+found drift and deliberately did not touch anything — so a script can tell "there is drift" apart
+from "the command failed" (**1**). Two further opt-ins, kept separate on purpose because they are
+different risks: `--allow-drops` also applies the reversible policy _removals_ the diff can emit,
+and `--allow-refused` also applies steps classified `refuse-by-default`.
 
 > **TypeScript DataSource?** The CLI uses native `import()`, so a `.ts` `-d` file needs a TypeScript loader. Run it under [`tsx`](https://tsx.is) (`npx tsx node_modules/typeorm-timescaledb/dist/cli/main.js generate -d src/data-source.ts -o src/migrations`) or [`ts-node`](https://typestrong.org/ts-node/) (`node --import ts-node/esm`), or point `-d` at a compiled `.js` DataSource.
 
@@ -98,6 +109,18 @@ await ts.assertSchema(); // fail fast if the live DB drifted from your entities
 
 `check` is the one-liner for CI. Programmatically, the same engine is three calls — read, diff,
 apply — and every step tells you how risky it is before you run it:
+
+`pushSchema()` is the one-call form of the three-call example below — same preview-by-default
+semantics, same gates:
+
+```ts
+import { pushSchema } from 'typeorm-timescaledb';
+
+const { plan, applied } = await pushSchema(dataSource); // preview: writes nothing
+await pushSchema(dataSource, { apply: true }); // converge
+```
+
+Or drive the steps yourself when you want to inspect or filter the plan first:
 
 ```ts
 import { introspect, compileDesiredState, applyDirect } from 'typeorm-timescaledb';

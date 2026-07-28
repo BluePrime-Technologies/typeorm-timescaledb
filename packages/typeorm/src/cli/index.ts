@@ -4,6 +4,7 @@ export {
   revertMigrationCommand,
   statusCommand,
   checkCommand,
+  pushCommand,
   reportPlan,
   nodeFileWriter,
 } from './commands.js';
