@@ -588,7 +588,7 @@ npx typeorm-timescaledb check -d src/data-source.ts
 
 Introspects the live database, diffs it against your `@Hypertable`
 declarations, prints a readable drift preview, and exits non-zero if drift is
-found — distinct from the `status` verb, which reports pending *TypeORM*
+found — distinct from the `status` verb, which reports pending _TypeORM_
 migrations rather than live-schema drift. See [CLI commands](#cli-commands)
 below.
 
@@ -646,7 +646,7 @@ The CLI is exposed through the package binary. It supports:
 - `run` — apply pending migrations through TypeORM's
   `DataSource.runMigrations()`.
 - `revert` — revert the most recently applied migration.
-- `status` — report whether any *TypeORM* migrations are pending (a tracking
+- `status` — report whether any _TypeORM_ migrations are pending (a tracking
   question, not a live-schema comparison).
 - `check` — the migration-engine drift gate: introspect the live database,
   diff it against your `@Hypertable` declarations, print the drift, and exit

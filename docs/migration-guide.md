@@ -172,7 +172,7 @@ export class AddRetention1700000000000 implements MigrationInterface {
 - A changed **chunk interval**.
 - A changed columnstore **segment-by / order-by** configuration.
 - A renamed hypertable (`@Hypertable({ renamedFrom })`) — one `ALTER TABLE ...
-  RENAME` instead of a drop-then-create.
+RENAME` instead of a drop-then-create.
 
 Removing a retention or compression policy that's present in the database but
 absent from your entities is a **guarded drop**: pass `{ allowDrops: true }` to
@@ -185,7 +185,7 @@ The engine deliberately never touches two areas, regardless of `allowDrops`:
 
 - **Continuous aggregates** — the diff is hypertable-scoped; CAGG structural
   changes are not detected or converged. Use `generateTimescaleMigration(...,
-  { continuousAggregates: [...] })` or a hand-written migration.
+{ continuousAggregates: [...] })` or a hand-written migration.
 - **Space (hash) dimensions** — adding, removing, or re-partitioning an
   existing space dimension is not reconcilable in place; a divergence is
   reported as an error naming the required manual migration.
