@@ -93,8 +93,60 @@ safe path.
 For existing data, write a hand-authored migration and data-migration plan that
 explicitly handles TimescaleDB conversion and data movement for your table.
 
+## The migration engine (0.6.0)
+
+`generate` emits a **desired-state** migration from your entities. Separately, the
+migration engine reconciles a **live database** against those entities: it reads what the
+database actually has, diffs it, and converges it — with every step classified by how
+risky it is to apply.
+
+```ts
+import { introspect, compileDesiredState, applyDirect } from 'typeorm-timescaledb';
+import { diffSchemaState, isEmptyPlan } from '@blueprime/timescaledb-core';
+
+const plan = diffSchemaState(await introspect(dataSource), compileDesiredState(dataSource));
+
+if (!isEmptyPlan(plan)) {
+  for (const step of plan.steps) {
+    console.log(`[${step.safety}] ${step.operation.kind} — ${step.reason}`);
+  }
+  await applyDirect(dataSource, plan); // one transaction; refuses dangerous ops by default
+}
+```
+
+Each step carries a `SafetyClass`: `online-safe`, `needs-recompress`, `refuse-by-default`,
+or `one-way`. `applyDirect` refuses anything classified `refuse-by-default` unless you pass
+`{ allowRefuseByDefault: true }`, and it derives that classification from the operation
+itself — a hand-built plan cannot mislabel a dangerous change past the gate.
+
+For CI, the `check` verb is the same diff with a non-zero exit on drift:
+
+```sh
+npx typeorm-timescaledb check -d src/data-source.ts
+```
+
+Prefer a reviewable artifact over a direct apply? `planToMigration(plan)` turns the same
+plan into a committable migration, and `TimescaleSchemaBuilder` lets you hand-author one
+that runs inside an ordinary TypeORM migration via `queryRunner`.
+
+### What the engine reconciles
+
+Auto-diffed today:
+
+- compression and retention thresholds;
+- the time-dimension chunk interval;
+- the columnstore segment-by / order-by configuration;
+- renames declared with `@Hypertable({ renamedFrom })`;
+- removing a retention or compression policy — **only** with `allowDrops` enabled, and
+  always reversibly.
+
 ## Manual migrations
 
-Removing or altering existing TimescaleDB configuration is not fully auto-diffed
-yet. Use hand-written migrations for changes such as removing a policy, changing
-an existing chunk interval, or reworking dimensions.
+The engine never performs a destructive change. Write a hand-authored migration for:
+
+- **dropping a hypertable or disabling a columnstore** — never auto-generated;
+- **adding, removing, or re-partitioning a space (hash) dimension** — `add_dimension` is
+  one-way and re-partitioning is not expressible, so a divergence is reported as an error
+  naming the required migration rather than silently ignored;
+- **structural changes to continuous aggregates** — the diff is hypertable-scoped and does
+  not compile CAGGs, so `check` does not cover CAGG drift.

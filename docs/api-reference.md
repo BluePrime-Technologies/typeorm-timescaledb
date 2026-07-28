@@ -435,12 +435,77 @@ interface GenerateMigrationOptions {
 }
 ```
 
+## Migration engine (0.6.0)
+
+Reads a live database, diffs it against your entities, and converges it. Every plan step
+carries a safety classification, and the direct-apply path refuses dangerous operations
+unless explicitly opted in.
+
+**Reading and diffing**
+
+- `introspect(dataSource, options?)` — reduces a running TimescaleDB to the canonical
+  `SchemaStateIR` (dimensions, columnstore config, compression/retention/refresh policies,
+  continuous aggregates). Normalized, so Postgres's interval reformatting and engine-filled
+  defaults do not read as drift. `options.schemas` restricts the scan.
+- `compileDesiredState(dataSource)` — compiles the `@Hypertable` entities registered on a
+  DataSource into the same `SchemaStateIR`, for comparison against `introspect`.
+- `collectRenames(dataSource)` — collects the `@Hypertable({ renamedFrom })` declarations
+  into the rename map `diffSchemaState` accepts.
+- `diffSchemaState(current, desired, options?)` _(core)_ — returns an ordered `Plan`.
+  `options.renames` resolves renames; `options.allowDrops` (default `false`) opts in to
+  reversible policy removals.
+- `isEmptyPlan(plan)` _(core)_ — `true` when no in-scope operation is needed.
+- `classifyOperation(operation)` _(core)_ — the `SafetyClass` of a single operation.
+
+**Safety classes.** Each `Plan` step is one of `online-safe` (no data rewrite, reversible),
+`needs-recompress` (expensive but not data-losing), `one-way` (e.g. hypertable conversion —
+`down()` is a non-destructive notice), or `refuse-by-default` (dangerous; never applied
+without an explicit opt-in).
+
+**Emitting**
+
+- `compilePlan(plan)` _(core)_ — the plan's reversible `{ up, down }` SQL: `up` in step
+  order, `down` each step's own inverse with the step sequence reversed.
+- `planToMigration(plan, options?)` — turns a `Plan` into a committable
+  `GeneratedMigration` (`{ name, timestamp, up, down }`).
+- `renderTimescaleMigrationSql(migration)` — renders a migration as a raw `.sql` artifact
+  (`-- Up` / `-- Down` sections), complementing `renderTimescaleMigration` (TypeScript class).
+
+**Hand-authoring**
+
+- `TimescaleSchemaBuilder` — a fluent surface with one chainable method per operation kind
+  (plus `add(op)`), `toPlan()`, `build()`, and `up(queryRunner)` / `down(queryRunner)` so it
+  drops into an ordinary TypeORM migration. Produces SQL byte-identical to the generated path.
+
+**Applying**
+
+- `applyDirect(dataSource, plan, options?)` — applies a plan to a live database in one
+  transaction. `direction` (`'up'` | `'down'`, default `'up'`), `allowRefuseByDefault`
+  (default `false`), `transaction` (default `true`). Returns
+  `{ direction, statements, stepCount }`. A failure rolls the batch back and rethrows; the
+  connection is always released.
+
+```ts
+import { introspect, compileDesiredState, applyDirect } from 'typeorm-timescaledb';
+import { diffSchemaState, isEmptyPlan } from '@blueprime/timescaledb-core';
+
+const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));
+if (!isEmptyPlan(plan)) await applyDirect(ds, plan);
+```
+
+**Not covered by the diff:** continuous aggregates are not structurally diffed, and space
+(hash) dimensions cannot be reconciled in place — a divergence there raises an error naming
+the required manual migration. See the [migration guide](./migration-guide.md).
+
 ## CLI commands
 
 The CLI is exposed through the package binary. It supports generating TimescaleDB
-migration files, running pending migrations through TypeORM's
-`DataSource.runMigrations()`, reverting the latest migration, and checking
-migration status.
+migration files (`generate`, with `--output <ts|sql>` selecting a TypeORM migration class
+or a raw `.sql` artifact), running pending migrations through TypeORM's
+`DataSource.runMigrations()` (`run`), reverting the latest migration (`revert`), checking
+migration status (`status`), and **`check`** — which diffs the live database against your
+`@Hypertable` declarations, prints a readable drift preview, and **exits non-zero on
+drift**, so it works as a CI schema gate.
 
 For TypeScript DataSource files, run the CLI through a TypeScript loader. For
 compiled JavaScript DataSources, call the package binary directly.
@@ -504,7 +569,8 @@ The current public API does not include automatic destructive migrations,
 automatic live configuration rewrites, `@RollupColumn` ergonomic sugar for
 hierarchical continuous-aggregate rollups (expressible today via
 `@AggregateColumn`, see [Continuous aggregates](#continuous-aggregates-040)
-above), validated cross-store references, experimental toolkit aggregates
+above), structural diffing of continuous aggregates, in-place reconciliation of space
+(hash) dimensions, experimental toolkit aggregates
 (`gauge_agg`, `freq_agg`, `compact_state_agg`), stable Toolkit aggregates not
 listed above, or complete TimescaleDB feature coverage.
 
