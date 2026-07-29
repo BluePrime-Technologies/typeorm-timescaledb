@@ -8,6 +8,7 @@ import {
   runMigrationsCommand,
   statusCommand,
   checkCommand,
+  pushCommand,
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
@@ -54,6 +55,17 @@ async function main(argv: readonly string[]): Promise<void> {
       case 'check': {
         const drift = await checkCommand(dataSource, logger);
         if (drift) process.exitCode = 1;
+        break;
+      }
+      case 'push': {
+        const outcome = await pushCommand(dataSource, logger, {
+          apply: args.apply,
+          allowDrops: args.allowDrops,
+          allowRefused: args.allowRefused,
+        });
+        // 0 = converged (or nothing to do); 2 = drift found but NOT applied. 2 rather than 1 so a
+        // script can tell "there is drift" apart from "the command failed" (which exits 1).
+        if (outcome === 'previewed') process.exitCode = 2;
         break;
       }
     }
