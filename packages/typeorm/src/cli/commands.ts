@@ -11,6 +11,7 @@ import type { OutputFormat } from './args.js';
 import { compileDesiredState } from '../runtime/desired-state.js';
 import { collectRenames } from '../runtime/renames.js';
 import { introspect } from '../runtime/introspect.js';
+import { pushSchema, type PushOptions } from '../runtime/push.js';
 import { formatPlanPreview } from './format-plan.js';
 
 /** Minimal output sink — injectable so commands are testable without touching the console. */
@@ -125,4 +126,52 @@ export async function checkCommand(dataSource: DataSource, logger: Logger): Prom
   const renames = collectRenames(dataSource);
   const plan = diffSchemaState(current, desired, { renames });
   return reportPlan(plan, logger);
+}
+
+/** The disposition of a {@link pushCommand} run, so `main.ts` can pick an exit code without
+ * reaching into `process` itself. */
+export type PushOutcome = 'no-drift' | 'previewed' | 'applied';
+
+/**
+ * CLI half of the `push` verb: report the plan, apply it when asked, and say which happened.
+ * Returns the outcome so the caller maps it to an exit code (`previewed` is the script-detectable
+ * "there is drift and I did not touch it" signal).
+ */
+export async function pushCommand(
+  dataSource: DataSource,
+  logger: Logger,
+  options: PushOptions = {},
+): Promise<PushOutcome> {
+  // Print the plan even when the apply is REFUSED: `applyDirect` throws on a refuse-by-default
+  // step, and the computed plan is the most useful thing the user can see at that moment.
+  let result;
+  try {
+    result = await pushSchema(dataSource, options);
+  } catch (err) {
+    const { plan } = await pushSchema(dataSource, { ...options, apply: false });
+    if (!isEmptyPlan(plan)) logger.log(formatPlanPreview(plan));
+    throw err;
+  }
+  const { plan, applied, statements } = result;
+
+  if (isEmptyPlan(plan)) {
+    logger.log('No drift detected — the database already matches your @Hypertable declarations.');
+    return 'no-drift';
+  }
+
+  logger.log(formatPlanPreview(plan));
+
+  if (!applied) {
+    logger.log(
+      '\nPreview only — nothing was applied. Re-run with --apply to converge the database.' +
+        '\nIf the plan is missing a change you expected, see --allow-drops (reversible policy ' +
+        'removals) and --allow-refused (operations classified refuse-by-default).',
+    );
+    return 'previewed';
+  }
+
+  logger.log(
+    `\nApplied ${statements.length} statement(s) — the database now matches your entities.`,
+  );
+  return 'applied';
 }

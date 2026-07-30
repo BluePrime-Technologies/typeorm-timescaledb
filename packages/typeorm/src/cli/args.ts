@@ -1,5 +1,5 @@
 /** The CLI subcommands. */
-export const COMMANDS = ['generate', 'run', 'revert', 'status', 'check'] as const;
+export const COMMANDS = ['generate', 'run', 'revert', 'status', 'check', 'push'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 /** Thrown on malformed CLI input; carries a user-facing message (with usage). */
@@ -22,6 +22,20 @@ export interface ParsedArgs {
   readonly outDir: string;
   /** Migration name prefix for `generate`. */
   readonly name?: string;
+  /**
+   * `push` only: actually converge the database. Default `false` — `push` PREVIEWS the plan and
+   * mutates nothing unless this is passed, so running it by accident can never change a schema.
+   */
+  readonly apply: boolean;
+  /**
+   * `push` only: opt in to the reversible policy REMOVALS the diff can emit (`DiffOptions.allowDrops`).
+   * Kept separate from {@link allowRefused} on purpose — removing a background job is a different
+   * risk from an operation classified `refuse-by-default`, and collapsing them into one flag would
+   * let a user accept the second while only meaning to accept the first.
+   */
+  readonly allowDrops: boolean;
+  /** `push` only: opt in to applying steps classified `refuse-by-default`. */
+  readonly allowRefused: boolean;
   /** Emit format for `generate`: `ts` (TypeORM class, default) or `sql` (raw `.sql`). */
   readonly output: OutputFormat;
 }
@@ -34,12 +48,17 @@ Commands:
   revert     Revert the last applied migration
   status     Show whether migrations are pending
   check      Diff the live DB against @Hypertable declarations; exit non-zero on drift (CI gate)
+  push       Converge the live DB to your entities — PREVIEWS by default, --apply to run it
 
 Options:
   -d, --dataSource <path>   Module exporting a DataSource, default or named (required)
   -o, --outDir <dir>        Output dir for 'generate' (default: migrations)
   -n, --name <name>         Migration class-name prefix for 'generate'
       --output <ts|sql>     Emit format for 'generate' (default: ts)
+      --apply               'push': actually converge the database (default: preview only)
+      --allow-drops         'push': also apply reversible policy removals
+      --allow-refused       'push': also apply steps classified refuse-by-default
+                            (--allowDrops / --allowRefused are accepted too)
   -h, --help                Show this help`;
 
 const FLAG_ALIASES: Record<string, 'dataSource' | 'outDir' | 'name' | 'output'> = {
@@ -50,6 +69,16 @@ const FLAG_ALIASES: Record<string, 'dataSource' | 'outDir' | 'name' | 'output'> 
   '-n': 'name',
   '--name': 'name',
   '--output': 'output',
+};
+
+/** Flags that take NO value. Listing them explicitly stops the value-flag loop from consuming the
+ * following token (`--apply -d ds.ts` must not read `-d` as the value of `--apply`). */
+const BOOLEAN_FLAGS: Record<string, 'apply' | 'allowDrops' | 'allowRefused'> = {
+  '--apply': 'apply',
+  '--allow-drops': 'allowDrops',
+  '--allowDrops': 'allowDrops',
+  '--allow-refused': 'allowRefused',
+  '--allowRefused': 'allowRefused',
 };
 
 function isOutputFormat(value: string): value is OutputFormat {
@@ -75,6 +104,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   }
 
   const values: { dataSource?: string; outDir?: string; name?: string; output?: string } = {};
+  const flags = { apply: false, allowDrops: false, allowRefused: false };
 
   for (let i = 0; i < rest.length; i++) {
     const token = rest[i];
@@ -83,6 +113,16 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     // support --flag=value
     const eq = token.indexOf('=');
     const flag = eq === -1 ? token : token.slice(0, eq);
+
+    const boolKey = BOOLEAN_FLAGS[flag];
+    if (boolKey !== undefined) {
+      if (eq !== -1) {
+        throw new CliError(`Option ${flag} does not take a value.\n\n${USAGE}`);
+      }
+      flags[boolKey] = true;
+      continue;
+    }
+
     const key = FLAG_ALIASES[flag];
     if (!key) {
       throw new CliError(`Unknown option: ${token}\n\n${USAGE}`);
@@ -110,10 +150,25 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     );
   }
 
+  // Guard the footgun: these only mean anything for `push`, and silently ignoring them on another
+  // verb would let someone believe they had authorized (or restricted) something they had not.
+  for (const [flag, on] of [
+    ['--apply', flags.apply],
+    ['--allow-drops', flags.allowDrops],
+    ['--allow-refused', flags.allowRefused],
+  ] as const) {
+    if (on && command !== 'push') {
+      throw new CliError(`Option ${flag} is only valid for 'push'.\n\n${USAGE}`);
+    }
+  }
+
   return {
     command,
     dataSource: values.dataSource,
     outDir: values.outDir ?? 'migrations',
+    apply: flags.apply,
+    allowDrops: flags.allowDrops,
+    allowRefused: flags.allowRefused,
     ...(values.name !== undefined && { name: values.name }),
     output: values.output !== undefined && isOutputFormat(values.output) ? values.output : 'ts',
   };

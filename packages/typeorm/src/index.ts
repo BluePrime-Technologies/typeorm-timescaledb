@@ -110,6 +110,9 @@ export { compileDesiredState } from './runtime/desired-state.js';
 export { collectRenames } from './runtime/renames.js';
 // Direct-sync engine (M4.3c) — apply a typed Plan straight to a live DB, guarded + transactional.
 export { applyDirect } from './runtime/apply.js';
+// The `push` verb's programmatic form: introspect -> diff -> (optionally) apply, preview by default.
+export { pushSchema } from './runtime/push.js';
+export type { PushOptions, PushResult } from './runtime/push.js';
 export type { ApplyDirection, ApplyDirectOptions, ApplyDirectResult } from './runtime/apply.js';
 
 // Migration generation — Django/Prisma-style codegen from @Hypertable metadata.
