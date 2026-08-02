@@ -248,3 +248,84 @@ export function refreshContinuousAggregateSQL(
   };
   return `CALL refresh_continuous_aggregate(${v.regclass}, ${bound(startToken, 'start')}, ${bound(endToken, 'end')});`;
 }
+
+/**
+ * Input for {@link createContinuousAggregateRawSQL} — reproduce an EXISTING continuous
+ * aggregate from the definition the database itself reports, rather than from a structured
+ * spec.
+ */
+export interface CreateContinuousAggregateRawInput {
+  /** CAGG view name, optionally `schema.view` (defaults to the `public` schema). */
+  readonly view: string;
+  /**
+   * The CAGG's `SELECT` body, verbatim from
+   * `timescaledb_information.continuous_aggregates.view_definition`.
+   *
+   * **This is passed through to the emitted SQL unparsed** — see the trust note on
+   * {@link createContinuousAggregateRawSQL}.
+   */
+  readonly definition: string;
+  /** `timescaledb.materialized_only`. Default `false` (real-time aggregation on). */
+  readonly materializedOnly?: boolean;
+}
+
+/**
+ * `CREATE MATERIALIZED VIEW … WITH (timescaledb.continuous) AS <definition> WITH NO DATA` —
+ * the **reproduce** counterpart to {@link createContinuousAggregateSQL}.
+ *
+ * Why this exists: {@link createContinuousAggregateSQL} builds a CAGG from a structured spec
+ * (time column + bucket interval + an allow-listed aggregate set), which is right for
+ * hand-authored/decorator-declared CAGGs. It cannot express a CAGG that already exists in a
+ * database, because introspection only recovers the view's SQL text — and real CAGGs routinely
+ * use toolkit aggregates (`candlestick_agg`, `stats_agg`), `first`/`last`, filters, and
+ * expressions that the five-function allow-list rejects. Round-tripping that text back into the
+ * structured form would be wrong more often than right, so `pull` emits the database's own
+ * definition instead.
+ *
+ * **TRUST BOUNDARY — read before reusing.** Unlike every other builder here, `definition` is
+ * NOT identifier-validated: it is opaque SQL. That is sound for its one intended caller
+ * (`stateToOperations`, fed by `introspect()`, i.e. the server's own catalog) and NOT sound for
+ * user- or config-supplied text. The one structural guard applied is single-statement-ness: a
+ * definition that still contains a `;` after its trailing terminator is stripped is rejected, so
+ * a catalog value can never smuggle extra statements into the migration. The view NAME is
+ * validated normally.
+ */
+export function createContinuousAggregateRawSQL(
+  input: CreateContinuousAggregateRawInput,
+): MigrationStatement {
+  const view = parseTable(input.view);
+  const materializedOnly = input.materializedOnly ?? false;
+
+  // Normalize: the catalog renders the definition with a trailing `;` and surrounding
+  // whitespace, and we re-terminate ourselves after appending WITH NO DATA.
+  const body = input.definition.trim().replace(/;\s*$/, '').trim();
+  if (body.length === 0) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `continuous aggregate ${input.view}: empty definition — nothing to reproduce`,
+      { view: input.view },
+    );
+  }
+  // Each `up` entry must be exactly ONE statement (pg rejects multi-command prepared queries,
+  // and a smuggled second statement would execute unreviewed). A `;` surviving the strip above
+  // means the text is not a single SELECT.
+  if (body.includes(';')) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `continuous aggregate ${input.view}: definition contains multiple statements`,
+      { view: input.view },
+    );
+  }
+
+  const up = [
+    `CREATE MATERIALIZED VIEW ${view.ident} ` +
+      `WITH (timescaledb.continuous, timescaledb.materialized_only = ${materializedOnly ? 'TRUE' : 'FALSE'}) AS ` +
+      `${body} WITH NO DATA;`,
+  ];
+  const down = [`DROP MATERIALIZED VIEW IF EXISTS ${view.ident};`];
+  const inspect =
+    `SELECT view_schema, view_name, materialized_only FROM timescaledb_information.continuous_aggregates ` +
+    `WHERE view_schema = ${quoteLiteral(view.schema)} AND view_name = ${quoteLiteral(view.name)};`;
+
+  return { up, down, inspect };
+}

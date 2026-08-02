@@ -14,11 +14,13 @@ export {
 } from './hypertable.js';
 export {
   createContinuousAggregateSQL,
+  createContinuousAggregateRawSQL,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
 } from './continuous-aggregate.js';
 export type {
   CreateContinuousAggregateInput,
+  CreateContinuousAggregateRawInput,
   ContinuousAggregateColumn,
   ContinuousAggregateFn,
   ContinuousAggregatePolicyInput,

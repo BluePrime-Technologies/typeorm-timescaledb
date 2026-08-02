@@ -83,6 +83,12 @@ export function classifyOperation(operation: Operation): OperationSafety {
         reason:
           'a continuous aggregate is created WITH NO DATA — dropping it on down() discards only materialized (recomputable) rows, not source data',
       };
+    case 'createContinuousAggregateRaw':
+      return {
+        safety: 'one-way',
+        reason:
+          'a reproduced continuous aggregate is created WITH NO DATA — dropping it on down() discards only materialized (recomputable) rows, not source data',
+      };
     case 'addContinuousAggregatePolicy':
       return {
         safety: 'online-safe',

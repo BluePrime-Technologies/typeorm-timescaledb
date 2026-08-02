@@ -10,6 +10,7 @@ import {
   removeRetentionPolicySQL,
   removeCompressionPolicySQL,
   createContinuousAggregateSQL,
+  createContinuousAggregateRawSQL,
   createHypertableSQL,
   renameHypertableSQL,
   type AddCompressionPolicyInput,
@@ -20,6 +21,7 @@ import {
   type ColumnstorePolicyInput,
   type ContinuousAggregatePolicyInput,
   type CreateContinuousAggregateInput,
+  type CreateContinuousAggregateRawInput,
   type CreateHypertableInput,
   type MigrationStatement,
   type RenameTableInput,
@@ -77,6 +79,16 @@ export interface AddContinuousAggregatePolicyOperation extends ContinuousAggrega
   readonly kind: 'addContinuousAggregatePolicy';
 }
 
+/**
+ * Recreate an EXISTING continuous aggregate from the definition the database reports, for the
+ * `pull`/reproduce path. Distinct from {@link CreateContinuousAggregateOperation} because a live
+ * CAGG's SELECT cannot be round-tripped into the structured spec that variant needs — see the
+ * trust note on `createContinuousAggregateRawSQL`.
+ */
+export interface CreateContinuousAggregateRawOperation extends CreateContinuousAggregateRawInput {
+  readonly kind: 'createContinuousAggregateRaw';
+}
+
 /** Add ONLY the compression policy job to a hypertable whose columnstore is already enabled
  * (closes the "columnstore enabled but no compression policy" drift; no `ALTER TABLE SET` re-assert). */
 export interface AddCompressionPolicyOperation extends AddCompressionPolicyInput {
@@ -129,6 +141,7 @@ export type Operation =
   | AddColumnstorePolicyOperation
   | AddRetentionPolicyOperation
   | CreateContinuousAggregateOperation
+  | CreateContinuousAggregateRawOperation
   | AddContinuousAggregatePolicyOperation
   | AddCompressionPolicyOperation
   | AlterCompressionPolicyOperation
@@ -159,6 +172,8 @@ export function compileOperation(operation: Operation): MigrationStatement {
       return addRetentionPolicySQL(operation);
     case 'createContinuousAggregate':
       return createContinuousAggregateSQL(operation);
+    case 'createContinuousAggregateRaw':
+      return createContinuousAggregateRawSQL(operation);
     case 'addContinuousAggregatePolicy':
       return addContinuousAggregatePolicySQL(operation);
     case 'addCompressionPolicy':
