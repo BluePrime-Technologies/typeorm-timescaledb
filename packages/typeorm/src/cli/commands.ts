@@ -12,6 +12,7 @@ import { compileDesiredState } from '../runtime/desired-state.js';
 import { collectRenames } from '../runtime/renames.js';
 import { introspect } from '../runtime/introspect.js';
 import { pushSchema, type PushOptions } from '../runtime/push.js';
+import { pullSchema, formatPullCoverage } from '../runtime/pull.js';
 import { formatPlanPreview } from './format-plan.js';
 
 /** Minimal output sink — injectable so commands are testable without touching the console. */
@@ -174,4 +175,71 @@ export async function pushCommand(
     `\nApplied ${statements.length} statement(s) — the database now matches your entities.`,
   );
   return 'applied';
+}
+
+/** The disposition of a {@link pullCommand} run, so `main.ts` can pick an exit code. */
+export type PullOutcome = 'nothing-to-pull' | 'complete' | 'partial';
+
+export interface PullFileOptions {
+  /** Directory to write the reproduced migration into. */
+  readonly outDir: string;
+  /** Migration class-name prefix. Default `'Timescale'`. */
+  readonly name?: string;
+  /** Emit format: `ts` (TypeORM class, default) or `sql` (raw `.sql`). */
+  readonly output?: OutputFormat;
+  /** Override the timestamp (for reproducible output / tests). */
+  readonly timestamp?: number;
+}
+
+/**
+ * CLI half of the `pull` verb: reproduce the live database's TimescaleDB layer as a migration file
+ * and report coverage.
+ *
+ * The coverage report is printed on EVERY path, including the fully-successful one — a report that
+ * appeared only on failure would let a silent partial read as a complete copy. The outcome is
+ * returned so `main.ts` maps `partial` to a non-zero exit without this function touching `process`.
+ */
+export async function pullCommand(
+  dataSource: DataSource,
+  logger: Logger,
+  options: PullFileOptions,
+  writer: FileWriter = nodeFileWriter,
+): Promise<PullOutcome> {
+  const base = options.name ?? 'Timescale';
+  const output = options.output ?? 'ts';
+  const { migration, coverage } = await pullSchema(dataSource, {
+    name: base,
+    ...(options.timestamp !== undefined && { timestamp: options.timestamp }),
+  });
+
+  if (migration.up.length === 0) {
+    // Nothing reproducible. Write no file (same "no silent empty migration" rule as `generate`),
+    // but still say WHY — an empty pull with skips is a very different situation from an empty
+    // pull of a database that genuinely has no Timescale objects.
+    logger.log(
+      coverage.skipped.length > 0
+        ? 'Nothing could be reproduced from this database — see the coverage report below.'
+        : 'No TimescaleDB objects found on this database — nothing to pull.',
+    );
+    logger.log(formatPullCoverage(coverage));
+    return coverage.skipped.length > 0 ? 'partial' : 'nothing-to-pull';
+  }
+
+  const content =
+    output === 'sql' ? renderTimescaleMigrationSql(migration) : renderTimescaleMigration(migration);
+  const path = join(options.outDir, `${migration.timestamp}-${base}.${output}`);
+  writer.mkdirp(options.outDir);
+  writer.write(path, content);
+
+  logger.log(`Reproduced migration: ${path}`);
+  logger.log(formatPullCoverage(coverage));
+
+  if (!coverage.complete) {
+    logger.log(
+      '\nThis is a PARTIAL reproduction — the objects listed above are not in the generated ' +
+        'migration. Applying it to an empty database will NOT yield an identical schema.',
+    );
+    return 'partial';
+  }
+  return 'complete';
 }
