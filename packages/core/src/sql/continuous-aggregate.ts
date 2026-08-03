@@ -1,6 +1,7 @@
 import { assertSafeIdentifier, quoteIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
 import { assertPositiveInterval } from '../interval.js';
+import { assertParsableInterval } from '../normalize.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 import { timeBucketExpr } from './hyperfunctions.js';
 import { parseTable, nonDestructiveNotice, type MigrationStatement } from './hypertable.js';
@@ -182,7 +183,9 @@ export function addContinuousAggregatePolicySQL(
 ): MigrationStatement {
   const v = parseTable(input.view);
   const offset = (val: string | null, role: string): string =>
-    val === null ? 'NULL' : `INTERVAL ${quoteLiteral(assertPositiveInterval(val, role))}`;
+    val === null
+      ? 'NULL'
+      : `INTERVAL ${quoteLiteral(assertParsableInterval(val, role, { positive: true }))}`;
 
   const args = [
     v.regclass,
@@ -191,7 +194,7 @@ export function addContinuousAggregatePolicySQL(
   ];
   {
     args.push(
-      `schedule_interval => INTERVAL ${quoteLiteral(assertPositiveInterval(input.scheduleInterval, 'scheduleInterval'))}`,
+      `schedule_interval => INTERVAL ${quoteLiteral(assertParsableInterval(input.scheduleInterval, 'scheduleInterval', { positive: true }))}`,
     );
   }
   args.push('if_not_exists => TRUE');

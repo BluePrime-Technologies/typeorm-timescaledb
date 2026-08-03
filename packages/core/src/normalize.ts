@@ -137,12 +137,23 @@ export function intervalsEqual(
  * `from` of an alter), where the strict `<n> <unit>` `INTERVAL_PATTERN` (`interval.ts`) is too narrow and
  * would reject a legitimate sub-day/compound interval — while `quoteLiteral` still makes the emitted
  * literal injection-safe. Validates via {@link canonicalizeInterval} (ReDoS-safe): an unrecognized value
- * canonicalizes to `raw:` and is rejected. With `positive`, also rejects a zero/negative interval.
+ * canonicalizes to `raw:` and is rejected.
+ *
+ * Sign options — pick the one that PRESERVES the guarantee of whatever check you are replacing:
+ *   - `positive`    rejects zero and negatives (equivalent to `assertPositiveInterval`).
+ *   - `nonNegative` rejects negatives but ALLOWS zero (equivalent to the strict `INTERVAL_PATTERN`,
+ *     whose leading `\d+` cannot match a sign yet happily matches `0 days`). Needed because a zero
+ *     threshold is meaningful — `add_columnstore_policy(after => INTERVAL '0 days')` means "compress
+ *     immediately" — while a NEGATIVE one is catastrophic: `add_retention_policy(drop_after =>
+ *     INTERVAL '-30 days')` drops every chunk in the hypertable.
+ *
+ * Passing neither permits both signs, which is correct only for the current-state (`from`) value of
+ * an alter, where the interval is reported by the catalog and never re-executed as a threshold.
  */
 export function assertParsableInterval(
   value: string,
   role = 'interval',
-  options?: { readonly positive?: boolean },
+  options?: { readonly positive?: boolean; readonly nonNegative?: boolean },
 ): string {
   if (typeof value !== 'string') {
     throw new TimescaleError(TimescaleErrorCode.INVALID_ARGUMENT, `${role} must be a string`, {
@@ -157,13 +168,16 @@ export function assertParsableInterval(
       { role, value },
     );
   }
-  if (options?.positive) {
+  if (options?.positive === true || options?.nonNegative === true) {
     // key is `us:<micros>` or `int:<n>`; both carry the magnitude after the colon.
     const magnitude = BigInt(key.slice(key.indexOf(':') + 1));
-    if (magnitude <= 0n) {
+    const bad = options.positive === true ? magnitude <= 0n : magnitude < 0n;
+    if (bad) {
       throw new TimescaleError(
         TimescaleErrorCode.INVALID_ARGUMENT,
-        `${role} must be a positive interval, got: ${value}`,
+        options.positive === true
+          ? `${role} must be a positive interval, got: ${value}`
+          : `${role} must not be a negative interval, got: ${value}`,
         { role, value },
       );
     }

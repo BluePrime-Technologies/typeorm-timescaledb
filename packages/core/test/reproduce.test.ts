@@ -564,3 +564,104 @@ describe('createContinuousAggregateRawSQL — review-panel regressions', () => {
     expect(up[0]).toContain("';'::text");
   });
 });
+
+/**
+ * Catalog-form intervals — the class of bug the mocked unit suite structurally could not see.
+ *
+ * Postgres does not echo an interval back the way you wrote it: `INTERVAL '1 month'` is stored and
+ * rendered as `1 mon`, and `chunk_time_interval => INTERVAL '1 hour'` comes back as `01:00:00`.
+ * Every fixture above happens to use a string that round-trips unchanged (`7 days`, `90 days`), so
+ * the whole suite passed while `pullSchema` threw on the most ordinary real schemas. These
+ * fixtures use the forms an actual catalog produces, verified against TimescaleDB 2.18.
+ */
+describe('catalog-rendered interval forms compile', () => {
+  const compileAll = (result: { operations: readonly Parameters<typeof compileOperation>[0][] }) =>
+    result.operations.map((o) => compileOperation(o).up.join('\n')).join('\n');
+
+  it('accepts a sub-day chunk interval rendered as HH:MM:SS', () => {
+    const result = stateToOperations(
+      ir({
+        hypertables: [
+          hypertable({ dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '01:00:00' }] }),
+        ],
+      }),
+    );
+    expect(result.skipped).toEqual([]);
+    expect(compileAll(result)).toContain("INTERVAL '01:00:00'");
+  });
+
+  it('accepts month thresholds rendered as "1 mon"', () => {
+    const result = stateToOperations(
+      ir({
+        hypertables: [
+          hypertable({
+            columnstore: { segmentBy: ['device'], orderBy: [] },
+            compressionPolicy: { kind: 'compression', after: '1 mon' },
+            retentionPolicy: { kind: 'retention', after: '6 mons' },
+          }),
+        ],
+      }),
+    );
+    expect(result.skipped).toEqual([]);
+    const sql = compileAll(result);
+    expect(sql).toContain("INTERVAL '1 mon'");
+    expect(sql).toContain("INTERVAL '6 mons'");
+  });
+
+  it('accepts a compound interval on a refresh policy', () => {
+    const result = stateToOperations(
+      ir({
+        continuousAggregates: [
+          cagg({
+            refresh: {
+              kind: 'refresh',
+              startOffset: '1 mon',
+              endOffset: '01:00:00',
+              scheduleInterval: '1 day 02:00:00',
+            },
+          }),
+        ],
+      }),
+    );
+    expect(result.skipped).toEqual([]);
+    const sql = compileAll(result);
+    expect(sql).toContain("INTERVAL '1 mon'");
+    expect(sql).toContain("INTERVAL '1 day 02:00:00'");
+  });
+
+  it('STILL refuses a negative retention threshold (would drop every chunk)', () => {
+    // Widening the grammar must not widen the sign. `INTERVAL_PATTERN`'s leading \d+ made this
+    // impossible before; `nonNegative` is what preserves it.
+    const result = stateToOperations(
+      ir({
+        hypertables: [hypertable({ retentionPolicy: { kind: 'retention', after: '-30 days' } })],
+      }),
+    );
+    expect(() => compileAll(result)).toThrow(TimescaleError);
+  });
+
+  it('still allows a zero compression threshold (compress immediately)', () => {
+    const result = stateToOperations(
+      ir({
+        hypertables: [
+          hypertable({
+            columnstore: { segmentBy: [], orderBy: [] },
+            compressionPolicy: { kind: 'compression', after: '0 days' },
+          }),
+        ],
+      }),
+    );
+    expect(() => compileAll(result)).not.toThrow();
+  });
+
+  it('still refuses a zero chunk interval (positive, not merely non-negative)', () => {
+    const result = stateToOperations(
+      ir({
+        hypertables: [
+          hypertable({ dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '0 days' }] }),
+        ],
+      }),
+    );
+    expect(() => compileAll(result)).toThrow(TimescaleError);
+  });
+});
