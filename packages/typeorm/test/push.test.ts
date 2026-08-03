@@ -1,13 +1,23 @@
 import 'reflect-metadata';
 import { describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
-import { parseArgs, CliError, pushCommand, type Logger } from '../src/cli/index.js';
+import {
+  parseArgs,
+  CliError,
+  pushCommand,
+  checkCommand,
+  reportPlan,
+  type Logger,
+} from '../src/cli/index.js';
 import {
   pushSchema,
   applyDirect,
   Hypertable,
   TimeColumn,
   HypertablePrimaryKey,
+  ContinuousAggregate,
+  BucketColumn,
+  AggregateColumn,
 } from '../src/index.js';
 import { classifyOperation } from '@blueprime/timescaledb-core';
 
@@ -396,5 +406,126 @@ describe('pushCommand — the exit-code contract', () => {
   it("never reports 'applied' for a preview", async () => {
     const { logger } = fakeLogger();
     expect(await pushCommand(ds(false), logger)).not.toBe('applied');
+  });
+});
+
+// ── The absent-list advisory (the honesty gate for option B) ─────────────────────────────────
+// CAGGs cannot be discovered from a DataSource, so `check`/`push` only see them when the list is
+// passed. If forgetting to pass it produced a silent clean run, the explicit-list design would just
+// relocate the false-green it was chosen to close. So an OMITTED list must say so.
+describe('pushSchema / checkCommand — continuous-aggregate advisory', () => {
+  class Conv2 {}
+  Hypertable({ chunkInterval: '1 day' })(Conv2);
+  TimeColumn()(Conv2.prototype, 'ts');
+  HypertablePrimaryKey()(Conv2.prototype, 'ts');
+
+  /** A converged database with no CAGGs. */
+  function convergedDs(): DataSource {
+    const runner = {
+      connect: async () => {},
+      startTransaction: async () => {},
+      commitTransaction: async () => {},
+      rollbackTransaction: async () => {},
+      release: async () => {},
+      get isTransactionActive() {
+        return false;
+      },
+      query: async (sql: string) => {
+        if (sql.includes('pg_extension')) return [{ extversion: '2.18.0' }];
+        if (sql.includes('timescaledb_information.hypertables'))
+          return [{ hypertable_schema: 'public', hypertable_name: 'conv2' }];
+        if (sql.includes('timescaledb_information.dimensions'))
+          return [
+            {
+              hypertable_schema: 'public',
+              hypertable_name: 'conv2',
+              dimension_number: 1,
+              column_name: 'ts',
+              dimension_type: 'Time',
+              time_interval: '1 day',
+              integer_interval: null,
+              num_partitions: null,
+            },
+          ];
+        return [];
+      },
+    };
+    return {
+      isInitialized: true,
+      options: {},
+      entityMetadatas: [{ target: Conv2, tableName: 'conv2', columns: [] }],
+      createQueryRunner: () => runner,
+    } as unknown as DataSource;
+  }
+
+  const advisoryObjects = (plan: { advisories?: readonly { object: string }[] }): string[] =>
+    (plan.advisories ?? []).map((a) => a.object);
+
+  const fakeLogger = (): { logger: Logger; lines: string[] } => {
+    const lines: string[] = [];
+    return { logger: { log: (m: string) => lines.push(m) }, lines };
+  };
+
+  it('warns that NOTHING was compared when the list is omitted', async () => {
+    const { plan } = await pushSchema(convergedDs());
+    expect(advisoryObjects(plan)).toContain('(all continuous aggregates)');
+    expect(plan.advisories?.[0]?.detail).toMatch(/NONE were compared/);
+  });
+
+  it('does NOT warn when an empty list is passed — that is an affirmative "there are none"', async () => {
+    const { plan } = await pushSchema(convergedDs(), { continuousAggregates: [] });
+    expect(plan.advisories).toBeUndefined();
+  });
+
+  it('does NOT warn when a list is passed', async () => {
+    class Reading2 {}
+    Hypertable({ chunkInterval: '1 day' })(Reading2);
+    TimeColumn()(Reading2.prototype, 'ts');
+    HypertablePrimaryKey()(Reading2.prototype, 'ts');
+
+    const ds = convergedDs() as unknown as { entityMetadatas: unknown[] };
+    ds.entityMetadatas = [
+      ...ds.entityMetadatas,
+      { target: Reading2, tableName: 'reading2', columns: [] },
+    ];
+    class Hourly {}
+    ContinuousAggregate({ name: 'hourly2', source: Reading2, bucket: '1 hour' })(Hourly);
+    BucketColumn()(Hourly.prototype, 'bucket');
+    AggregateColumn({ fn: 'count' })(Hourly.prototype, 'n');
+
+    const { plan } = await pushSchema(ds as unknown as DataSource, {
+      continuousAggregates: [Hourly],
+    });
+    expect(advisoryObjects(plan)).not.toContain('(all continuous aggregates)');
+  });
+
+  it('surfaces the advisory through `check`, which still exits clean (it is not drift)', async () => {
+    const { logger, lines } = fakeLogger();
+    const drift = await checkCommand(convergedDs(), logger);
+    expect(drift).toBe(false); // informational only — a missing list is not itself drift
+    const out = lines.join('\n');
+    expect(out).toMatch(/No drift detected/);
+    expect(out).toMatch(/Not compared:/);
+    expect(out).toMatch(/NONE were compared/);
+  });
+
+  it('reports drift for a not-expressible advisory even with zero steps', () => {
+    // The distinction that keeps `check` honest: "I chose not to compare this" exits 0,
+    // "this HAS diverged and I cannot fix it" must not.
+    const { logger, lines } = fakeLogger();
+    const drift = reportPlan(
+      {
+        steps: [],
+        advisories: [
+          { kind: 'not-expressible', object: 'public.h', detail: 'refresh policy differs' },
+        ],
+      },
+      logger,
+    );
+    expect(drift).toBe(true);
+    const out = lines.join('\n');
+    expect(out).not.toMatch(/No drift detected/);
+    expect(out).toMatch(/Not auto-converged:/);
+    expect(out).toMatch(/cannot converge automatically/);
   });
 });

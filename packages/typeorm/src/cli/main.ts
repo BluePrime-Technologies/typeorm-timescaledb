@@ -15,7 +15,7 @@ import {
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
-import { initializeForCli, loadDataSource } from './load.js';
+import { initializeForCli, loadDataSourceModule } from './load.js';
 
 async function main(argv: readonly string[]): Promise<void> {
   // Only treat help as help when it LEADS the command line. Matching it anywhere let a value
@@ -28,7 +28,11 @@ async function main(argv: readonly string[]): Promise<void> {
 
   const logger: Logger = console;
   const args = parseArgs(argv);
-  const dataSource = await loadDataSource(args.dataSource);
+  // The module may also export `continuousAggregates` — the only way `check`/`push` can see CAGGs,
+  // which are not discoverable from a DataSource. Kept as `undefined` when absent (as opposed to
+  // `[]`) so those verbs can tell "none declared" from "never looked".
+  const { dataSource, continuousAggregates } = await loadDataSourceModule(args.dataSource);
+  const caggs = continuousAggregates !== undefined ? { continuousAggregates } : {};
   await initializeForCli(dataSource);
 
   try {
@@ -56,7 +60,7 @@ async function main(argv: readonly string[]): Promise<void> {
         await statusCommand(dataSource, logger);
         break;
       case 'check': {
-        const drift = await checkCommand(dataSource, logger);
+        const drift = await checkCommand(dataSource, logger, caggs);
         if (drift) process.exitCode = 1;
         break;
       }
@@ -65,6 +69,7 @@ async function main(argv: readonly string[]): Promise<void> {
           apply: args.apply,
           allowDrops: args.allowDrops,
           allowRefused: args.allowRefused,
+          ...caggs,
         });
         process.exitCode = exitCodeForPush(outcome);
         break;

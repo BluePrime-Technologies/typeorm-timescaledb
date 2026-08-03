@@ -1,16 +1,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DataSource } from 'typeorm';
-import { diffSchemaState, isEmptyPlan, type Plan } from '@blueprime/timescaledb-core';
+import { isEmptyPlan, type Plan, type PlanAdvisory } from '@blueprime/timescaledb-core';
 import {
   generateTimescaleMigration,
   renderTimescaleMigration,
   renderTimescaleMigrationSql,
 } from '../migrations/index.js';
 import type { OutputFormat } from './args.js';
-import { compileDesiredState } from '../runtime/desired-state.js';
-import { collectRenames } from '../runtime/renames.js';
-import { introspect } from '../runtime/introspect.js';
 import { pushSchema, type PushOptions } from '../runtime/push.js';
 import { pullSchema, formatPullCoverage } from '../runtime/pull.js';
 import { formatPlanPreview } from './format-plan.js';
@@ -107,12 +104,43 @@ export async function statusCommand(dataSource: DataSource, logger: Logger): Pro
  * DataSource (a canned `Plan` is enough; no DB round-trip needed).
  */
 export function reportPlan(plan: Plan, logger: Logger): boolean {
-  if (isEmptyPlan(plan)) {
+  const advisories = plan.advisories ?? [];
+  // `not-expressible` advisories are REAL divergence the engine declined to guess at. Reporting them
+  // and still exiting clean would be a false green — the failure mode this whole slice exists to
+  // close — so they count as drift for the gate even though they produce no step.
+  const blocking = advisories.filter((a) => a.kind === 'not-expressible');
+  const hasSteps = !isEmptyPlan(plan);
+
+  if (hasSteps) {
+    logger.log(formatPlanPreview(plan));
+  } else if (blocking.length === 0) {
     logger.log('No drift detected — schema matches the @Hypertable declarations.');
-    return false;
   }
-  logger.log(formatPlanPreview(plan));
-  return true;
+
+  if (advisories.length > 0) logger.log(formatAdvisories(advisories));
+
+  if (!hasSteps && blocking.length > 0) {
+    logger.log(
+      '\nDrift was found that this engine cannot converge automatically (see above). Resolve it by ' +
+        'hand, or align the declarations with the database.',
+    );
+  }
+  return hasSteps || blocking.length > 0;
+}
+
+/** Render advisories, loudest first, so a clean-looking run still shows what was NOT verified. */
+function formatAdvisories(advisories: readonly PlanAdvisory[]): string {
+  const render = (a: PlanAdvisory): string => `  - ${a.object}: ${a.detail}`;
+  const notExpressible = advisories.filter((a) => a.kind === 'not-expressible');
+  const notCompared = advisories.filter((a) => a.kind === 'not-compared');
+  const sections: string[] = [];
+  if (notExpressible.length > 0) {
+    sections.push(`\nNot auto-converged:\n${notExpressible.map(render).join('\n')}`);
+  }
+  if (notCompared.length > 0) {
+    sections.push(`\nNot compared:\n${notCompared.map(render).join('\n')}`);
+  }
+  return sections.join('\n');
 }
 
 /**
@@ -121,11 +149,16 @@ export function reportPlan(plan: Plan, logger: Logger): boolean {
  * drift gate). Returns `true` when drift was found, so the caller (`main.ts`) can set a non-zero
  * exit code without this function reaching into `process` itself.
  */
-export async function checkCommand(dataSource: DataSource, logger: Logger): Promise<boolean> {
-  const current = await introspect(dataSource);
-  const desired = compileDesiredState(dataSource);
-  const renames = collectRenames(dataSource);
-  const plan = diffSchemaState(current, desired, { renames });
+export async function checkCommand(
+  dataSource: DataSource,
+  logger: Logger,
+  options: Pick<PushOptions, 'continuousAggregates'> = {},
+): Promise<boolean> {
+  // Delegate to `pushSchema` in preview mode rather than re-composing introspect → compile → diff
+  // here. The two used to be parallel implementations, which is how `check` and `push` could drift
+  // apart; sharing one path also means the "no aggregates were compared" advisory is raised
+  // identically for both.
+  const { plan } = await pushSchema(dataSource, { ...options, apply: false });
   return reportPlan(plan, logger);
 }
 
