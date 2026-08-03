@@ -941,7 +941,14 @@ describe('diffSchemaState — continuous aggregates (additive only)', () => {
   it('NEVER drops a CAGG absent from desired, even with allowDrops', () => {
     const plan = diffSchemaState(withCaggs(cagg()), withCaggs(), { allowDrops: true });
     expect(ops(plan)).toEqual([]);
-    expect(JSON.stringify(plan)).not.toMatch(/drop/i);
+    // Assert on the OPERATIONS, not on the serialized plan: the advisory text now legitimately
+    // contains the word "dropped" ("It will never be dropped"), which a naive /drop/i over the
+    // whole JSON matches. What must never appear is a drop OPERATION.
+    expect(ops(plan).map((o) => o.kind)).toEqual([]);
+    // ...and the undeclared live aggregate is still reported rather than passed over in silence.
+    expect(plan.advisories).toEqual([
+      expect.objectContaining({ kind: 'not-compared', object: 'public.metric_hourly' }),
+    ]);
   });
 
   it('orders CAGG creates AFTER hypertable operations (a CAGG reads from one)', () => {
@@ -968,8 +975,34 @@ describe('diffSchemaState — continuous aggregates (additive only)', () => {
     const parent = cagg({ viewName: 'public.hourly' });
     const child = cagg({ viewName: 'public.daily', source: 'public.hourly', hierarchical: true });
     expect(() => diffSchemaState(withCaggs(), withCaggs(child, parent))).toThrow(
-      /not in dependency order/,
+      /neither in the database nor created earlier in this plan/,
     );
+  });
+
+  it('refuses a hierarchical CAGG whose parent is declared NOWHERE — not in desired, not in the DB', () => {
+    // The commonest form of this mistake by far, and the one the first version of the guard missed:
+    // it only fired when the parent WAS in the desired list. Export just the child
+    // (`continuousAggregates: [DailyRollup]`), forget the parent, and the create was emitted for a
+    // view whose source does not exist — apply dies on "relation ... does not exist" with the
+    // schema half-migrated.
+    const child = cagg({ viewName: 'public.daily', source: 'public.hourly', hierarchical: true });
+    expect(() => diffSchemaState(withCaggs(), withCaggs(child))).toThrow(
+      /reads from public\.hourly, which is neither in the database nor created earlier/,
+    );
+  });
+
+  it('reports undeclared live CAGGs when nothing is desired, instead of staying silent', () => {
+    // Covers the caller who composes introspect -> compileDesiredState -> diffSchemaState by hand
+    // and so never reaches pushSchema's absent-list check.
+    const plan = diffSchemaState(withCaggs(cagg()), withCaggs());
+    expect(ops(plan)).toEqual([]);
+    expect(plan.advisories).toEqual([
+      expect.objectContaining({ kind: 'not-compared', object: 'public.metric_hourly' }),
+    ]);
+  });
+
+  it('says nothing when neither side has any CAGGs', () => {
+    expect(diffSchemaState(withCaggs(), withCaggs()).advisories).toBeUndefined();
   });
 
   it('allows a hierarchical CAGG whose parent already exists in the database', () => {

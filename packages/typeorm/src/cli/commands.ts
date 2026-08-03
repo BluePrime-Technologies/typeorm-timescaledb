@@ -187,13 +187,31 @@ export async function pushCommand(
     throw err;
   }
   const { plan, applied, statements } = result;
+  const advisories = plan.advisories ?? [];
+  // `push` had its OWN empty-plan branch, so the advisory handling added to `reportPlan` for
+  // `check` did not cover it: a database whose only divergence is unconvergeable (a changed refresh
+  // threshold, say) produced zero steps, printed "No drift detected", and exited 0 — the same false
+  // green, on the other verb. Blocking advisories are drift here too.
+  const blocking = advisories.filter((a) => a.kind === 'not-expressible');
 
-  if (isEmptyPlan(plan)) {
+  if (isEmptyPlan(plan) && blocking.length === 0) {
     logger.log('No drift detected — the database already matches your @Hypertable declarations.');
+    if (advisories.length > 0) logger.log(formatAdvisories(advisories));
     return 'no-drift';
   }
 
+  if (isEmptyPlan(plan)) {
+    // Blocking advisories only: there is nothing to apply, but this is NOT a clean run.
+    logger.log(formatAdvisories(advisories));
+    logger.log(
+      '\nDrift was found that this engine cannot converge automatically (see above). Resolve it by ' +
+        'hand, or align the declarations with the database.',
+    );
+    return 'previewed';
+  }
+
   logger.log(formatPlanPreview(plan));
+  if (advisories.length > 0) logger.log(formatAdvisories(advisories));
 
   if (!applied) {
     logger.log(

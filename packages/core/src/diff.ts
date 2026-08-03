@@ -677,10 +677,28 @@ function diffContinuousAggregates(
   operations: Operation[],
 ): PlanAdvisory[] {
   const advisories: PlanAdvisory[] = [];
-  if (desired.continuousAggregates.length === 0) return advisories;
+
+  if (desired.continuousAggregates.length === 0) {
+    // Nothing desired. If the DATABASE has aggregates, say so: either the caller genuinely declares
+    // none (in which case naming the undeclared live ones is useful — they will never be managed),
+    // or the caller forgot to pass the list, which is the false-green this whole pass exists to
+    // close. The diff cannot tell those apart, but it does not need to: the advisory is correct and
+    // worth printing either way, and it covers callers who compose introspect -> compileDesiredState
+    // -> diffSchemaState by hand and so never reach `pushSchema`'s absent-list check.
+    for (const c of current.continuousAggregates) {
+      advisories.push({
+        kind: 'not-compared',
+        object: c.viewName,
+        detail:
+          'exists in the database but is not declared, so it is NOT managed or compared. If you ' +
+          'do declare it, pass it via `continuousAggregates` — aggregates cannot be discovered ' +
+          'from a DataSource. It will never be dropped.',
+      });
+    }
+    return advisories;
+  }
 
   const currentByView = new Map(current.continuousAggregates.map((c) => [c.viewName, c]));
-  const desiredViews = new Set(desired.continuousAggregates.map((d) => d.viewName));
   // Views that will EXIST once this plan has run: already in the database, plus the ones created
   // earlier in this same pass.
   const availableViews = new Set(currentByView.keys());
@@ -698,12 +716,18 @@ function diffContinuousAggregates(
       // topologically ordered (the compiler's own pass), so this only fires on a hand-built IR — but
       // emitting the create anyway would produce a plan whose SQL fails halfway through, leaving the
       // schema partly converged. Refuse to build such a plan.
-      if (d.hierarchical && desiredViews.has(d.source) && !availableViews.has(d.source)) {
+      if (d.hierarchical && !availableViews.has(d.source)) {
+        // NOT gated on the parent being in the desired list. Gating on that missed the commoner
+        // mistake by far: declaring only the child (`continuousAggregates: [DailyRollup]`) and
+        // forgetting its parent. The parent then appears in NEITHER the database nor the plan, the
+        // create is emitted anyway, and apply dies on "relation hourly_rollup does not exist" with
+        // the schema half-migrated. Refuse whenever the source will not exist by this point,
+        // whatever the reason.
         throw new TimescaleError(
           TimescaleErrorCode.INVALID_ARGUMENT,
           `continuous aggregate ${d.viewName} reads from ${d.source}, which is neither in the ` +
-            `database nor created earlier in this plan — the desired continuous aggregates are not ` +
-            `in dependency order`,
+            `database nor created earlier in this plan — declare ${d.source} too, or order the ` +
+            `desired continuous aggregates so it comes first`,
           { view: d.viewName, source: d.source },
         );
       }
@@ -764,7 +788,10 @@ function diffContinuousAggregates(
  * builder cannot emit, so it throws rather than converge wrongly. */
 function refreshPolicyOperation(view: string, refresh: RefreshPolicy): Operation {
   const offset = (value: IntervalOrInt | undefined, what: string): string | null => {
-    if (value === undefined) return null;
+    // `== null` on purpose: catches both `undefined` and an explicit `null`. The IR type forbids
+    // null, but null is the OPEN-bound sentinel everywhere else in this codebase (the builder's own
+    // `startOffset: string | null`), so a hand-built IR using it must mean "open", not "throw".
+    if (value == null) return null;
     if (typeof value !== 'string') {
       throw new TimescaleError(
         TimescaleErrorCode.INVALID_ARGUMENT,

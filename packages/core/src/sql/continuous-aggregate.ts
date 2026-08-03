@@ -159,9 +159,22 @@ export function renderContinuousAggregateSelect(input: CreateContinuousAggregate
 
 /** Pull the `SELECT … ` body back out of a rendered CREATE MATERIALIZED VIEW statement. */
 function extractSelectBody(statement: string): string {
-  const start = statement.indexOf(') AS ');
-  const end = statement.lastIndexOf(' WITH NO DATA;');
-  return start === -1 || end === -1 ? statement : statement.slice(start + 5, end);
+  // Whitespace-tolerant: the builder emits `) AS <body> WITH NO DATA;` on one line today, but a
+  // reformat that broke the line would silently stop matching.
+  const open = /\)\s+AS\s+/.exec(statement);
+  const close = /\s+WITH\s+NO\s+DATA;?\s*$/.exec(statement);
+  if (open === null || close === null) {
+    // Deliberately THROW rather than fall back to the whole statement. The previous fallback
+    // returned the entire `CREATE MATERIALIZED VIEW ... AS SELECT ...` text as if it were the
+    // SELECT body — which a raw-create then embeds inside another CREATE, producing nonsense SQL
+    // from a silent mismatch. A loud failure here is the only safe behaviour for a function whose
+    // output goes on to be emitted as DDL.
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'could not locate the SELECT body in the generated continuous-aggregate statement — the builder output shape changed',
+    );
+  }
+  return statement.slice(open.index + open[0].length, close.index);
 }
 
 /**

@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { Column, DataSource, Entity, PrimaryColumn } from 'typeorm';
+import { pushCommand } from '../src/cli/index.js';
 import {
   AggregateColumn,
   BucketColumn,
@@ -183,9 +184,44 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
     ).toBe('refresh');
   }, 300_000);
 
+  it('does NOT let `push` report "no drift" when the only divergence is unconvergeable', async () => {
+    // Found by review: `push` had its own empty-plan branch, so the advisory handling added to
+    // reportPlan for `check` did not cover it — a changed refresh threshold produced zero steps,
+    // printed "No drift detected", and exited 0. Provoked here against a real database by moving
+    // the policy out-of-band rather than by stubbing the catalog.
+    await ds.query(
+      "SELECT remove_continuous_aggregate_policy('reading_hourly', if_exists => TRUE)",
+    );
+    await ds.query(
+      "SELECT add_continuous_aggregate_policy('reading_hourly', start_offset => INTERVAL '3 months', end_offset => INTERVAL '1 hour', schedule_interval => INTERVAL '30 minutes')",
+    );
+
+    const lines: string[] = [];
+    const logger = { log: (m: string) => lines.push(m), error: (m: string) => lines.push(m) };
+    const outcome = await pushCommand(ds, logger, { continuousAggregates: [ReadingHourly] });
+
+    expect(outcome).not.toBe('no-drift'); // 'no-drift' maps to exit 0
+    const out = lines.join('\n');
+    expect(out).not.toMatch(/No drift detected/);
+    expect(out).toMatch(/Not auto-converged:/);
+    expect(out).toMatch(/refresh policy differs/);
+
+    // Restore the declared policy so the following test sees a converged starting point.
+    await ds.query(
+      "SELECT remove_continuous_aggregate_policy('reading_hourly', if_exists => TRUE)",
+    );
+    await pushSchema(ds, { continuousAggregates: [ReadingHourly], apply: true });
+  }, 300_000);
+
   it('never drops a CAGG the entities no longer declare, even with allowDrops', async () => {
     const { plan } = await pushSchema(ds, { continuousAggregates: [], allowDrops: true });
-    expect(JSON.stringify(plan)).not.toMatch(/DROP|drop_chunks/i);
+    // Assert on the OPERATIONS, not the serialized plan: the advisory legitimately says the
+    // aggregate "will never be dropped", which a naive /drop/i over the whole JSON matches.
+    expect(plan.steps.map((s) => s.operation.kind)).toEqual([]);
+    // The undeclared live aggregate is named rather than silently ignored.
+    expect(plan.advisories).toContainEqual(
+      expect.objectContaining({ kind: 'not-compared', object: 'public.reading_hourly' }),
+    );
 
     await pushSchema(ds, { continuousAggregates: [], allowDrops: true, apply: true });
     const live = await introspect(ds);

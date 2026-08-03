@@ -187,6 +187,12 @@ function readContinuousAggregates(
       `The \`continuousAggregates\` export in ${modulePath} must contain only @ContinuousAggregate classes — entry ${String(bad)} is ${typeof exported[bad]}`,
     );
   }
+  // Deliberately NOT checked here: whether each entry actually carries @ContinuousAggregate
+  // metadata. `resolveContinuousAggregates` already rejects an undecorated class by name
+  // ("X was passed as a continuous aggregate but is not decorated with @ContinuousAggregate"),
+  // which is a clear, typed error at the point the metadata is genuinely needed. Duplicating it
+  // here would only add the module path, at the cost of this loader depending on the decorator
+  // store — so the shape check above is where this function's responsibility ends.
   return exported as readonly (abstract new (...args: never[]) => unknown)[];
 }
 
