@@ -7,6 +7,7 @@ import {
   pushCommand,
   checkCommand,
   reportPlan,
+  exitCodeForPush,
   type Logger,
 } from '../src/cli/index.js';
 import {
@@ -507,6 +508,17 @@ describe('pushSchema / checkCommand — continuous-aggregate advisory', () => {
     expect(out).toMatch(/No drift detected/);
     expect(out).toMatch(/Not compared:/);
     expect(out).toMatch(/NONE were compared/);
+  });
+
+  it('exitCodeForPush: applied-with-drift is NOT 0', () => {
+    // Found by BOTH external reviewers, independently. Blocking advisories were only treated as
+    // drift when the plan was EMPTY; with executable steps present, push applied them, returned
+    // 'applied', printed "the database now matches your entities", and exited 0 — while a
+    // not-expressible divergence was still there. An affirmative false claim is worse than silence.
+    expect(exitCodeForPush('applied-with-drift')).not.toBe(0);
+    expect(exitCodeForPush('previewed')).not.toBe(0);
+    expect(exitCodeForPush('applied')).toBe(0);
+    expect(exitCodeForPush('no-drift')).toBe(0);
   });
 
   it('reports drift for a not-expressible advisory even with zero steps', () => {

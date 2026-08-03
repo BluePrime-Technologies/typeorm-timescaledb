@@ -177,7 +177,7 @@ export async function checkCommand(
 
 /** The disposition of a {@link pushCommand} run, so `main.ts` can pick an exit code without
  * reaching into `process` itself. */
-export type PushOutcome = 'no-drift' | 'previewed' | 'applied';
+export type PushOutcome = 'no-drift' | 'previewed' | 'applied' | 'applied-with-drift';
 
 /**
  * CLI half of the `push` verb: report the plan, apply it when asked, and say which happened.
@@ -233,6 +233,18 @@ export async function pushCommand(
         'removals) and --allow-refused (operations classified refuse-by-default).',
     );
     return 'previewed';
+  }
+
+  if (blocking.length > 0) {
+    // Applied what could be applied, but divergence REMAINS. Returning 'applied' here (exit 0) with
+    // "the database now matches your entities" would be an affirmative false claim — worse than the
+    // silence this slice set out to fix, because the user is told convergence happened. Blocking
+    // advisories are drift whether or not the plan also had executable steps.
+    logger.log(
+      `\nApplied ${statements.length} statement(s), but drift REMAINS that this engine cannot ` +
+        `converge automatically (see above). The database does NOT yet match your declarations.`,
+    );
+    return 'applied-with-drift';
   }
 
   logger.log(
@@ -319,7 +331,9 @@ export async function pullCommand(
  * apart from "the command itself failed" (which exits 1).
  */
 export function exitCodeForPush(outcome: PushOutcome): number {
-  return outcome === 'previewed' ? 2 : 0;
+  // 'applied-with-drift' must NOT be 0: statements ran, but divergence the engine cannot express
+  // is still there. Exiting 0 would tell CI the schema converged when it did not.
+  return outcome === 'previewed' || outcome === 'applied-with-drift' ? 2 : 0;
 }
 
 /**

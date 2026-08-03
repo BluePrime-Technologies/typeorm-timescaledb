@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { Column, DataSource, Entity, PrimaryColumn } from 'typeorm';
-import { generateMigrationFile, pushCommand } from '../src/cli/index.js';
+import { exitCodeForPush, generateMigrationFile, pushCommand } from '../src/cli/index.js';
 import {
   AggregateColumn,
   BucketColumn,
@@ -207,6 +207,41 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
     expect(out).toMatch(/refresh policy differs/);
 
     // Restore the declared policy so the following test sees a converged starting point.
+    await ds.query(
+      "SELECT remove_continuous_aggregate_policy('reading_hourly', if_exists => TRUE)",
+    );
+    await pushSchema(ds, { continuousAggregates: [ReadingHourly], apply: true });
+  }, 300_000);
+
+  it('does not claim convergence when steps applied but unconvergeable drift REMAINS', async () => {
+    // Both external reviewers found this independently. Blocking advisories only counted as drift
+    // when the plan was EMPTY. With a real step alongside one, push applied the step, returned
+    // 'applied', printed "the database now matches your entities", and exited 0 — while the
+    // divergence was still there. Provoked here with BOTH at once, against a live database.
+    await ds.query(
+      "SELECT remove_continuous_aggregate_policy('reading_hourly', if_exists => TRUE)",
+    );
+    await ds.query(
+      "SELECT add_continuous_aggregate_policy('reading_hourly', start_offset => INTERVAL '5 months', end_offset => INTERVAL '1 hour', schedule_interval => INTERVAL '30 minutes')",
+    );
+    // ...and a genuinely applicable step: a retention policy the entity does not yet have.
+    await ds.query("SELECT add_retention_policy('readings', INTERVAL '400 days')");
+
+    const lines: string[] = [];
+    const logger = { log: (m: string) => lines.push(m), error: (m: string) => lines.push(m) };
+    const outcome = await pushCommand(ds, logger, {
+      continuousAggregates: [ReadingHourly],
+      allowDrops: true,
+      apply: true,
+    });
+
+    expect(outcome).toBe('applied-with-drift');
+    expect(exitCodeForPush(outcome)).not.toBe(0);
+    const out = lines.join('\n');
+    expect(out).not.toMatch(/now matches your entities/);
+    expect(out).toMatch(/drift REMAINS/);
+
+    // Clean up for any later test.
     await ds.query(
       "SELECT remove_continuous_aggregate_policy('reading_hourly', if_exists => TRUE)",
     );

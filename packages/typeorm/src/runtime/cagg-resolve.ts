@@ -106,9 +106,13 @@ export function resolveContinuousAggregates(
   // state, both would take the create branch, and `push --apply` would execute the first CREATE and
   // die on the second with `relation already exists`, mid-transaction. Refuse up front, naming both
   // classes — the same treatment `compileDesiredState` gives conflicting hypertable declarations.
+  // Pair each resolved entry with its class up front rather than relying on `ordered[i]` lining up
+  // with `resolved[i]`. The map is 1:1 today, but the moment resolveOne can skip an entry the
+  // indices diverge silently and the error names the WRONG class.
+  const withClass = ordered.map((ctor, i) => ({ ctor, r: resolved[i]! }));
   const byView = new Map<string, string>();
-  for (const [i, r] of resolved.entries()) {
-    const className = (ordered[i] as { name?: string }).name ?? 'class';
+  for (const { ctor, r } of withClass) {
+    const className = (ctor as { name?: string }).name ?? 'class';
     const previous = byView.get(r.qualifiedView);
     if (previous !== undefined) {
       throw new TimescaleError(
