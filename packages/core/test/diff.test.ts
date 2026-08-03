@@ -9,6 +9,7 @@ import {
   type Plan,
   type SchemaStateIR,
   type HypertableState,
+  type ContinuousAggregateState,
 } from '../src/index.js';
 
 // Build a SchemaStateIR from hypertable states (CAGGs are out of scope for the diff slice).
@@ -837,5 +838,220 @@ describe('diffSchemaState — policy schedule + stranded policy (audit)', () => 
     };
     const plan = diffSchemaState(ir(current), ir(desired), { allowDrops: true });
     expect(ops(plan).map((o) => o.kind)).toContain('removeCompressionPolicy');
+  });
+});
+
+// ── Continuous aggregates: additive-only ─────────────────────────────────────────────────────
+// The pass exists to close a false-green: before it, a @ContinuousAggregate declared in code but
+// absent from the database produced "No drift detected". It must close that WITHOUT acquiring the
+// power to drop or recreate an aggregate — a CAGG's materialized rows may be the only surviving copy
+// of data whose source chunks retention has already dropped.
+describe('diffSchemaState — continuous aggregates (additive only)', () => {
+  const cagg = (over: Partial<ContinuousAggregateState> = {}): ContinuousAggregateState => ({
+    viewName: 'public.metric_hourly',
+    source: 'public.metric',
+    hierarchical: false,
+    materializedOnly: false,
+    definition:
+      'SELECT time_bucket(INTERVAL \'1 hour\', "ts") AS "bucket" FROM "public"."metric" GROUP BY 1',
+    ...over,
+  });
+
+  const withCaggs = (...caggs: ContinuousAggregateState[]): SchemaStateIR => ({
+    hypertables: [],
+    continuousAggregates: caggs,
+  });
+
+  const refresh = {
+    kind: 'refresh' as const,
+    startOffset: '1 month',
+    endOffset: '1 hour',
+    scheduleInterval: '30 minutes',
+  };
+
+  it('creates a desired CAGG the database lacks', () => {
+    const plan = diffSchemaState(withCaggs(), withCaggs(cagg()));
+    expect(ops(plan)).toEqual([
+      {
+        kind: 'createContinuousAggregateRaw',
+        view: 'public.metric_hourly',
+        definition: cagg().definition,
+        materializedOnly: false,
+      },
+    ]);
+  });
+
+  it('creates the CAGG and attaches its declared refresh policy, in that order', () => {
+    const plan = diffSchemaState(withCaggs(), withCaggs(cagg({ refresh })));
+    expect(ops(plan).map((o) => o.kind)).toEqual([
+      'createContinuousAggregateRaw',
+      'addContinuousAggregatePolicy',
+    ]);
+    expect(ops(plan)[1]).toEqual({
+      kind: 'addContinuousAggregatePolicy',
+      view: 'public.metric_hourly',
+      startOffset: '1 month',
+      endOffset: '1 hour',
+      scheduleInterval: '30 minutes',
+    });
+  });
+
+  it('treats an omitted offset as OPEN (null), not as a missing argument', () => {
+    const plan = diffSchemaState(
+      withCaggs(),
+      withCaggs(cagg({ refresh: { kind: 'refresh', scheduleInterval: '1 hour' } })),
+    );
+    expect(ops(plan)[1]).toMatchObject({ startOffset: null, endOffset: null });
+  });
+
+  it('emits NO create for a CAGG that already exists — never recreate', () => {
+    const plan = diffSchemaState(withCaggs(cagg()), withCaggs(cagg()));
+    expect(ops(plan)).toEqual([]);
+  });
+
+  it('attaches a declared refresh policy to an EXISTING CAGG that has none', () => {
+    const plan = diffSchemaState(withCaggs(cagg()), withCaggs(cagg({ refresh })));
+    expect(ops(plan).map((o) => o.kind)).toEqual(['addContinuousAggregatePolicy']);
+  });
+
+  it('emits nothing when an existing CAGG already has the declared refresh policy', () => {
+    const plan = diffSchemaState(withCaggs(cagg({ refresh })), withCaggs(cagg({ refresh })));
+    expect(ops(plan)).toEqual([]);
+  });
+
+  it('does not false-drift on the catalog\'s interval rendering ("1 mon" vs "1 month")', () => {
+    // The live catalog reports INTERVAL '1 month' as '1 mon' — the exact rendering that broke `pull`.
+    // Comparing raw strings here would propose a policy change on an unchanged schema forever.
+    const live = { ...refresh, startOffset: '1 mon' };
+    const plan = diffSchemaState(withCaggs(cagg({ refresh: live })), withCaggs(cagg({ refresh })));
+    expect(ops(plan)).toEqual([]);
+    expect(plan.advisories?.filter((a) => a.kind === 'not-expressible')).toEqual([]);
+  });
+
+  it('ignores a scheduleInterval the desired side does not declare (engine fills a default)', () => {
+    const desired = { kind: 'refresh' as const, startOffset: '1 month', endOffset: '1 hour' };
+    const live = { ...desired, scheduleInterval: '17 minutes' };
+    const plan = diffSchemaState(
+      withCaggs(cagg({ refresh: live })),
+      withCaggs(cagg({ refresh: desired })),
+    );
+    expect(ops(plan)).toEqual([]);
+  });
+
+  it('NEVER drops a CAGG absent from desired, even with allowDrops', () => {
+    const plan = diffSchemaState(withCaggs(cagg()), withCaggs(), { allowDrops: true });
+    expect(ops(plan)).toEqual([]);
+    expect(JSON.stringify(plan)).not.toMatch(/drop/i);
+  });
+
+  it('orders CAGG creates AFTER hypertable operations (a CAGG reads from one)', () => {
+    const desired: SchemaStateIR = { hypertables: [events()], continuousAggregates: [cagg()] };
+    const plan = diffSchemaState(ir(), desired);
+    const kinds = ops(plan).map((o) => o.kind);
+    expect(kinds[0]).toBe('createHypertable');
+    expect(kinds.at(-1)).toBe('createContinuousAggregateRaw');
+  });
+
+  it('creates a hierarchical CAGG after its parent', () => {
+    const parent = cagg({ viewName: 'public.hourly' });
+    const child = cagg({ viewName: 'public.daily', source: 'public.hourly', hierarchical: true });
+    const plan = diffSchemaState(withCaggs(), withCaggs(parent, child));
+    expect(ops(plan).map((o) => (o as { view: string }).view)).toEqual([
+      'public.hourly',
+      'public.daily',
+    ]);
+  });
+
+  it('refuses to build a plan whose hierarchical CAGG precedes the parent it reads from', () => {
+    // Only reachable from a hand-built IR (the compiler sorts topologically) — but emitting anyway
+    // would produce SQL that fails halfway, leaving the schema partly converged.
+    const parent = cagg({ viewName: 'public.hourly' });
+    const child = cagg({ viewName: 'public.daily', source: 'public.hourly', hierarchical: true });
+    expect(() => diffSchemaState(withCaggs(), withCaggs(child, parent))).toThrow(
+      /not in dependency order/,
+    );
+  });
+
+  it('allows a hierarchical CAGG whose parent already exists in the database', () => {
+    const parent = cagg({ viewName: 'public.hourly' });
+    const child = cagg({ viewName: 'public.daily', source: 'public.hourly', hierarchical: true });
+    const plan = diffSchemaState(withCaggs(parent), withCaggs(child));
+    expect(ops(plan).map((o) => o.kind)).toEqual(['createContinuousAggregateRaw']);
+  });
+});
+
+// The honesty half. A clean `check` must never imply more than the engine actually verified.
+describe('diffSchemaState — CAGG advisories', () => {
+  const cagg = (over: Partial<ContinuousAggregateState> = {}): ContinuousAggregateState => ({
+    viewName: 'public.metric_hourly',
+    source: 'public.metric',
+    hierarchical: false,
+    materializedOnly: false,
+    definition: 'SELECT 1',
+    ...over,
+  });
+  const withCaggs = (...caggs: ContinuousAggregateState[]): SchemaStateIR => ({
+    hypertables: [],
+    continuousAggregates: caggs,
+  });
+  const refresh = {
+    kind: 'refresh' as const,
+    startOffset: '1 month',
+    endOffset: '1 hour',
+    scheduleInterval: '30 minutes',
+  };
+
+  it('raises not-compared for an existing CAGG, since its definition is never compared', () => {
+    const plan = diffSchemaState(withCaggs(cagg()), withCaggs(cagg()));
+    expect(isEmptyPlan(plan)).toBe(true); // no steps...
+    expect(plan.advisories).toEqual([
+      {
+        kind: 'not-compared',
+        object: 'public.metric_hourly',
+        detail: expect.stringContaining('is NOT compared'),
+      },
+    ]);
+  });
+
+  it('raises no advisory for a CAGG it CREATES (it matches by construction)', () => {
+    const plan = diffSchemaState(withCaggs(), withCaggs(cagg()));
+    expect(plan.advisories).toBeUndefined();
+  });
+
+  it('omits advisories entirely when no CAGGs are desired', () => {
+    expect(diffSchemaState(ir(metric()), ir()).advisories).toBeUndefined();
+  });
+
+  it('raises not-expressible for a CHANGED refresh threshold rather than silently converging', () => {
+    const live = { ...refresh, startOffset: '2 months' };
+    const plan = diffSchemaState(withCaggs(cagg({ refresh: live })), withCaggs(cagg({ refresh })));
+    // Altering a refresh policy has no operation yet, so nothing is emitted...
+    expect(ops(plan)).toEqual([]);
+    // ...but the divergence MUST be reported. Emitting nothing and saying nothing would report a
+    // diverged schema as converged — the exact false-green this slice exists to close.
+    const notExpressible = plan.advisories?.filter((a) => a.kind === 'not-expressible') ?? [];
+    expect(notExpressible).toHaveLength(1);
+    expect(notExpressible[0]?.detail).toMatch(/refresh policy differs/);
+  });
+
+  it('raises not-expressible when a non-refresh job occupies the aggregate', () => {
+    const live = { kind: 'unmanaged' as const, procName: 'my_custom_job' };
+    const plan = diffSchemaState(withCaggs(cagg({ refresh: live })), withCaggs(cagg({ refresh })));
+    expect(ops(plan)).toEqual([]);
+    expect(plan.advisories?.some((a) => a.kind === 'not-expressible')).toBe(true);
+  });
+
+  it('throws on an integer-time refresh offset instead of emitting a wrong policy', () => {
+    const desired = { kind: 'refresh' as const, startOffset: 1000, scheduleInterval: '1 hour' };
+    expect(() => diffSchemaState(withCaggs(), withCaggs(cagg({ refresh: desired })))).toThrow(
+      /integer-time refresh start offset/,
+    );
+  });
+
+  it('throws when a declared refresh policy has no schedule interval (2.18 has no such overload)', () => {
+    const desired = { kind: 'refresh' as const, startOffset: '1 month' };
+    expect(() => diffSchemaState(withCaggs(), withCaggs(cagg({ refresh: desired })))).toThrow(
+      /needs a schedule interval/,
+    );
   });
 });
