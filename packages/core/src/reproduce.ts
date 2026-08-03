@@ -337,8 +337,13 @@ function reproduceCagg(c: ContinuousAggregateState, skipped: SkippedObject[]): O
   // floor) and takes interval strings or NULL for the window bounds. An integer offset is an
   // integer-time CAGG, which the builder cannot express.
   const scheduleInterval = asIntervalString(refresh.scheduleInterval);
-  const startBad = refresh.startOffset !== undefined && typeof refresh.startOffset !== 'string';
-  const endBad = refresh.endOffset !== undefined && typeof refresh.endOffset !== 'string';
+  // `null` is a legitimate OPEN bound (`start_offset => NULL` = refresh from the beginning of
+  // time), which the builder already emits as NULL — so it must not be judged inexpressible.
+  // `introspect` cannot currently produce it (normalize's `iv()` maps a non-string/number to
+  // undefined), but `stateToOperations` is public and a hand-built IR can, so fail open, not shut.
+  const isOpenBound = (v: unknown): boolean => v === null || v === undefined;
+  const startBad = !isOpenBound(refresh.startOffset) && typeof refresh.startOffset !== 'string';
+  const endBad = !isOpenBound(refresh.endOffset) && typeof refresh.endOffset !== 'string';
   if (scheduleInterval === undefined || startBad || endBad) {
     skipped.push({
       object: c.viewName,

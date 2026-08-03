@@ -7,6 +7,8 @@ export {
   pushCommand,
   pullCommand,
   reportPlan,
+  exitCodeForPush,
+  exitCodeForPull,
   nodeFileWriter,
 } from './commands.js';
 export type {

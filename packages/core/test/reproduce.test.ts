@@ -36,6 +36,16 @@ function cagg(overrides: Partial<ContinuousAggregateState> = {}): ContinuousAggr
   };
 }
 
+/** The safety class each reproduce-emitted operation MUST carry. Pinned by name so a change to a
+ * classification is a deliberate edit here, not a silently-passing truthy check. */
+const EXPECTED_SAFETY: Record<string, string> = {
+  createHypertable: 'one-way',
+  addColumnstorePolicy: 'one-way',
+  addRetentionPolicy: 'online-safe',
+  createContinuousAggregateRaw: 'one-way',
+  addContinuousAggregatePolicy: 'online-safe',
+};
+
 const kinds = (result: { operations: readonly { kind: string }[] }): string[] =>
   result.operations.map((o) => o.kind);
 
@@ -73,8 +83,11 @@ describe('stateToOperations', () => {
   it('emits SQL that round-trips through the compile choke point', () => {
     const result = stateToOperations(ir({ hypertables: [hypertable()] }));
     const sql = compileOperation(result.operations[0]!).up.join('\n');
-    expect(sql).toContain('create_hypertable');
-    expect(sql).toContain("INTERVAL '7 days'");
+    // Exact SQL, not substrings: the previous version asserted only that 'create_hypertable' and
+    // the interval appeared, so flipping if_not_exists to FALSE or dropping migrate_data passed.
+    expect(sql).toBe(
+      `SELECT create_hypertable('"public"."metrics"', by_range('ts', INTERVAL '7 days'), if_not_exists => TRUE, migrate_data => FALSE);`,
+    );
     expect(sql).not.toContain(';;');
   });
 
@@ -355,7 +368,11 @@ describe('stateToOperations', () => {
       }),
     );
     for (const op of result.operations) {
-      expect(classifyOperation(op).safety).toBeTruthy();
+      // NOT `toBeTruthy()`: `classifyOperation` has a fail-closed default returning
+      // 'refuse-by-default', which is truthy — so a truthy assertion passed for ANY kind,
+      // including an unhandled one, and proved nothing it claimed to.
+      expect(EXPECTED_SAFETY[op.kind]).toBeDefined();
+      expect(classifyOperation(op).safety).toBe(EXPECTED_SAFETY[op.kind]);
     }
   });
 });
@@ -663,5 +680,30 @@ describe('catalog-rendered interval forms compile', () => {
       }),
     );
     expect(() => compileAll(result)).toThrow(TimescaleError);
+  });
+});
+
+describe('open (null) refresh bounds', () => {
+  it('treats a null start/end offset as an OPEN bound, not as inexpressible', () => {
+    // o3 raised this as a HIGH claiming introspect emits null; that premise is false (normalize's
+    // iv() maps a non-string/number to undefined). But `stateToOperations` is public, a hand-built
+    // IR can pass null, and the builder already emits NULL for it — so fail open, not shut.
+    const result = stateToOperations(
+      ir({
+        continuousAggregates: [
+          cagg({
+            refresh: {
+              kind: 'refresh',
+              startOffset: null as unknown as string,
+              endOffset: null as unknown as string,
+              scheduleInterval: '1 hour',
+            },
+          }),
+        ],
+      }),
+    );
+    expect(kinds(result)).toEqual(['createContinuousAggregateRaw', 'addContinuousAggregatePolicy']);
+    expect(result.skipped).toEqual([]);
+    expect(result.operations[1]).toMatchObject({ startOffset: null, endOffset: null });
   });
 });

@@ -33,7 +33,10 @@ export const PULL_BASE_DDL_CAVEAT =
   "continuous aggregate (rather than to a hypertable), the chunk interval of a CAGG's own " +
   'materialization hypertable, and NULLS FIRST/LAST placement on a columnstore ORDER BY. Those ' +
   'are invisible to introspection today, so "not reproduced: none" above cannot speak for them — ' +
-  'check them by hand before treating a pulled migration as a complete copy.';
+  'check them by hand before treating a pulled migration as a complete copy. ' +
+  'Finally, this migration targets an EMPTY database. It is not idempotent against the database ' +
+  'it came from: CREATE MATERIALIZED VIEW has no IF NOT EXISTS, so running it back on the source ' +
+  'fails partway. On the source, record it as already applied instead of running it.';
 
 /** What `pull` managed to reproduce, and what it did not. */
 export interface PullCoverage {

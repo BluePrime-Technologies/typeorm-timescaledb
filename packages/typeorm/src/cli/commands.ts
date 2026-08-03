@@ -243,3 +243,25 @@ export async function pullCommand(
   }
   return 'complete';
 }
+
+/**
+ * Map a {@link PushOutcome} to a process exit code.
+ *
+ * Extracted from `main.ts` purely so it is testable: the bin's dispatch had no test, so the
+ * mapping that makes `pull`/`push` usable as CI gates ("did this find drift?") was asserted
+ * nowhere, and silently returning 0 on drift would make a gate that never fails.
+ *
+ * `2` rather than `1` for the found-but-not-applied case, so a script can tell "there is drift"
+ * apart from "the command itself failed" (which exits 1).
+ */
+export function exitCodeForPush(outcome: PushOutcome): number {
+  return outcome === 'previewed' ? 2 : 0;
+}
+
+/**
+ * Map a {@link PullOutcome} to a process exit code. `2` = the reproduction is PARTIAL — exiting 0
+ * there would let CI treat an incomplete schema copy as a faithful one.
+ */
+export function exitCodeForPull(outcome: PullOutcome): number {
+  return outcome === 'partial' ? 2 : 0;
+}

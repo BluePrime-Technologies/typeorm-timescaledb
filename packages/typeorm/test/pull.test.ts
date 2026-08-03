@@ -9,7 +9,8 @@ import type { SchemaStateIR } from '@blueprime/timescaledb-core';
 const introspectMock = vi.hoisted(() => vi.fn());
 vi.mock('../src/runtime/introspect.js', () => ({ introspect: introspectMock }));
 
-const { parseArgs, CliError, pullCommand } = await import('../src/cli/index.js');
+const { parseArgs, CliError, pullCommand, exitCodeForPull, exitCodeForPush } =
+  await import('../src/cli/index.js');
 const { pullSchema, formatPullCoverage, PULL_BASE_DDL_CAVEAT } = await import('../src/index.js');
 
 const EMPTY_IR: SchemaStateIR = { hypertables: [], continuousAggregates: [] };
@@ -231,5 +232,67 @@ describe('pullCommand', () => {
     expect(outcome).toBe('partial');
     expect(files).toEqual([]);
     expect(out.join('\n')).toContain('Nothing could be reproduced');
+  });
+});
+
+describe('exit-code mapping (the CI-gate contract)', () => {
+  it.each([
+    ['partial', 2],
+    ['complete', 0],
+    ['nothing-to-pull', 0],
+  ] as const)('pull %s -> exit %i', (outcome, code) => {
+    // Previously asserted nowhere: main.ts had no test, so a mapping that returned 0 on a partial
+    // pull would have turned the CI gate into a silent pass.
+    expect(exitCodeForPull(outcome)).toBe(code);
+  });
+
+  it.each([
+    ['previewed', 2],
+    ['no-drift', 0],
+    ['applied', 0],
+  ] as const)('push %s -> exit %i', (outcome, code) => {
+    expect(exitCodeForPush(outcome)).toBe(code);
+  });
+});
+
+describe('pullSchema with continuous aggregates', () => {
+  const CAGG_IR: SchemaStateIR = {
+    hypertables: [
+      {
+        table: 'public.metrics',
+        dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '01:00:00' }],
+      },
+    ],
+    continuousAggregates: [
+      {
+        viewName: 'public.metrics_hourly',
+        source: 'public.metrics',
+        hierarchical: false,
+        materializedOnly: false,
+        definition: "SELECT time_bucket('1 hour', ts) AS bucket FROM metrics GROUP BY 1",
+        refresh: {
+          kind: 'refresh',
+          startOffset: '1 mon',
+          endOffset: '01:00:00',
+          scheduleInterval: '30 mins',
+        },
+      },
+    ],
+  };
+
+  it('reproduces hypertables AND CAGGs, counting both, with catalog-rendered intervals', async () => {
+    // Every other fixture in this file has `continuousAggregates: []`, so the CAGG path was
+    // exercised only in core — and all of them used round-trip-safe interval strings.
+    introspectMock.mockResolvedValue(CAGG_IR);
+    const { coverage, migration } = await pullSchema(fakeDataSource);
+    expect(coverage).toMatchObject({
+      hypertablesFound: 1,
+      continuousAggregatesFound: 1,
+      complete: true,
+    });
+    const sql = migration.up.join('\n');
+    expect(sql).toContain('CREATE MATERIALIZED VIEW');
+    expect(sql).toContain('add_continuous_aggregate_policy');
+    expect(sql).toContain("INTERVAL '01:00:00'");
   });
 });

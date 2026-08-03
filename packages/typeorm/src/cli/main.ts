@@ -10,6 +10,8 @@ import {
   checkCommand,
   pushCommand,
   pullCommand,
+  exitCodeForPush,
+  exitCodeForPull,
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
@@ -64,9 +66,7 @@ async function main(argv: readonly string[]): Promise<void> {
           allowDrops: args.allowDrops,
           allowRefused: args.allowRefused,
         });
-        // 0 = converged (or nothing to do); 2 = drift found but NOT applied. 2 rather than 1 so a
-        // script can tell "there is drift" apart from "the command failed" (which exits 1).
-        if (outcome === 'previewed') process.exitCode = 2;
+        process.exitCode = exitCodeForPush(outcome);
         break;
       }
       case 'pull': {
@@ -75,10 +75,7 @@ async function main(argv: readonly string[]): Promise<void> {
           ...(args.name !== undefined && { name: args.name }),
           output: args.output,
         });
-        // 2 = the reproduction is PARTIAL. Same convention as `push`: 2 means "succeeded, but you
-        // must look at this", distinct from 1 (the command failed). Exiting 0 on a partial pull
-        // would let CI treat an incomplete schema copy as a faithful one.
-        if (outcome === 'partial') process.exitCode = 2;
+        process.exitCode = exitCodeForPull(outcome);
         break;
       }
     }
