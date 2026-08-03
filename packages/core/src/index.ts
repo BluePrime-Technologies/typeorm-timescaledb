@@ -16,6 +16,7 @@ export {
   removeRetentionPolicySQL,
   removeCompressionPolicySQL,
   createContinuousAggregateSQL,
+  renderContinuousAggregateSelect,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
 } from './sql/index.js';

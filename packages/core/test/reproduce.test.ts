@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { stateToOperations } from '../src/reproduce.js';
 import { compileOperation } from '../src/operation.js';
 import { classifyOperation } from '../src/safety.js';
-import { createContinuousAggregateRawSQL } from '../src/sql/continuous-aggregate.js';
+import {
+  createContinuousAggregateRawSQL,
+  createContinuousAggregateSQL,
+  renderContinuousAggregateSelect,
+} from '../src/sql/continuous-aggregate.js';
 import { TimescaleError } from '../src/errors.js';
 import type {
   ContinuousAggregateState,
@@ -705,5 +709,34 @@ describe('open (null) refresh bounds', () => {
     expect(kinds(result)).toEqual(['createContinuousAggregateRaw', 'addContinuousAggregatePolicy']);
     expect(result.skipped).toEqual([]);
     expect(result.operations[1]).toMatchObject({ startOffset: null, endOffset: null });
+  });
+});
+
+describe('renderContinuousAggregateSelect', () => {
+  const input = {
+    view: 'public.metrics_hourly',
+    source: 'public.metrics',
+    timeColumn: 'ts',
+    bucketInterval: '1 hour',
+    groupBy: ['device'],
+    aggregates: [{ fn: 'avg' as const, column: 'value', as: 'avg_value' }],
+  };
+
+  it('is byte-identical to the body the structured builder embeds', () => {
+    // The desired-state path renders the CAGG as SQL text; the builder emits the CREATE. If these
+    // two ever diverge, `check` would compare against a statement the engine would not actually
+    // emit. Sharing one renderer makes that impossible — this pins it.
+    const body = renderContinuousAggregateSelect(input);
+    const full = createContinuousAggregateSQL(input).up[0]!;
+    expect(full).toContain(`AS ${body} WITH NO DATA;`);
+    expect(body.startsWith('SELECT ')).toBe(true);
+    expect(body).not.toContain('WITH NO DATA');
+    expect(body).not.toContain('CREATE MATERIALIZED VIEW');
+  });
+
+  it('carries the resolved physical columns, not property names', () => {
+    expect(renderContinuousAggregateSelect(input)).toBe(
+      `SELECT time_bucket(INTERVAL '1 hour', "ts") AS "bucket", "device", avg("value") AS "avg_value" FROM "public"."metrics" GROUP BY time_bucket(INTERVAL '1 hour', "ts"), "device"`,
+    );
   });
 });

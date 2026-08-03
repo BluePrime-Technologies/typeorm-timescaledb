@@ -15,6 +15,7 @@ export {
 export {
   createContinuousAggregateSQL,
   createContinuousAggregateRawSQL,
+  renderContinuousAggregateSelect,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
 } from './continuous-aggregate.js';
