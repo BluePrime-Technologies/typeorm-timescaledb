@@ -99,7 +99,28 @@ export function resolveContinuousAggregates(
     );
   }
 
-  return ordered.map((ctor) => resolveOne(dataSource, ctor));
+  const resolved = ordered.map((ctor) => resolveOne(dataSource, ctor));
+
+  // De-duplication above is by CLASS IDENTITY, which does not catch two DIFFERENT classes declaring
+  // the same view name — an easy copy-paste in a large entity tree. Both would miss the current
+  // state, both would take the create branch, and `push --apply` would execute the first CREATE and
+  // die on the second with `relation already exists`, mid-transaction. Refuse up front, naming both
+  // classes — the same treatment `compileDesiredState` gives conflicting hypertable declarations.
+  const byView = new Map<string, string>();
+  for (const [i, r] of resolved.entries()) {
+    const className = (ordered[i] as { name?: string }).name ?? 'class';
+    const previous = byView.get(r.qualifiedView);
+    if (previous !== undefined) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `two continuous aggregates declare the same view name "${r.qualifiedView}" (${previous} and ${className}) — view names must be unique`,
+        { view: r.qualifiedView },
+      );
+    }
+    byView.set(r.qualifiedView, className);
+  }
+
+  return resolved;
 }
 
 function resolveOne(dataSource: DataSource, caggCtor: Ctor): ResolvedCagg {

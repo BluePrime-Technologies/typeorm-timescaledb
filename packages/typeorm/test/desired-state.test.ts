@@ -489,6 +489,24 @@ describe('compileDesiredState — continuous aggregates', () => {
     );
   });
 
+  it('refuses two DIFFERENT classes declaring the same view name', () => {
+    // De-duplication is by class identity, which does not catch a copy-paste that reuses the name.
+    // Both would miss the current state, both would take the create branch, and `push --apply`
+    // would run the first CREATE and die on the second with `relation already exists`, mid-txn.
+    class DupA {}
+    ContinuousAggregate({ name: 'dup_view', source: Reading, bucket: '1 hour' })(DupA);
+    BucketColumn()(DupA.prototype, 'bucket');
+    AggregateColumn({ fn: 'count' })(DupA.prototype, 'n');
+    class DupB {}
+    ContinuousAggregate({ name: 'dup_view', source: Reading, bucket: '1 day' })(DupB);
+    BucketColumn()(DupB.prototype, 'bucket');
+    AggregateColumn({ fn: 'count' })(DupB.prototype, 'n');
+
+    expect(() => compileDesiredState(ds, { continuousAggregates: [DupA, DupB] })).toThrow(
+      /same view name "public\.dup_view" \(DupA and DupB\)/,
+    );
+  });
+
   it('de-duplicates a CAGG class passed twice', () => {
     const ir = compileDesiredState(ds, { continuousAggregates: [ReadingHourly, ReadingHourly] });
     expect(ir.continuousAggregates.map((c) => c.viewName)).toEqual(['public.reading_hourly']);

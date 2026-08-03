@@ -42,6 +42,7 @@ async function main(argv: readonly string[]): Promise<void> {
           outDir: args.outDir,
           ...(args.name !== undefined && { name: args.name }),
           output: args.output,
+          ...caggs,
         });
         logger.log(
           result === null

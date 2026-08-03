@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { Column, DataSource, Entity, PrimaryColumn } from 'typeorm';
-import { pushCommand } from '../src/cli/index.js';
+import { generateMigrationFile, pushCommand } from '../src/cli/index.js';
 import {
   AggregateColumn,
   BucketColumn,
@@ -227,6 +227,36 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
     const live = await introspect(ds);
     expect(live.continuousAggregates.map((c) => c.viewName)).toContain('public.reading_hourly');
   }, 300_000);
+
+  it('generate emits the CAGG too, so check/generate/run actually converges', async () => {
+    // Found by red-team: `check` could SEE aggregates while `generate` stayed blind, so the
+    // migration workflow was a closed loop — check reports drift, generate writes a migration
+    // without the CAGG, it runs, check reports the same drift, forever. Whatever `check` reports as
+    // drift, `generate` must be able to emit.
+    const written: Array<{ path: string; content: string }> = [];
+    const writer = {
+      mkdirp: () => {},
+      write: (path: string, content: string) => {
+        written.push({ path, content });
+      },
+    };
+
+    const result = generateMigrationFile(
+      ds,
+      {
+        outDir: '/tmp/unused',
+        output: 'sql',
+        timestamp: 1_700_000_000_000,
+        continuousAggregates: [ReadingHourly],
+      },
+      writer,
+    );
+    expect(result).not.toBeNull();
+    const sql = written[0]?.content ?? '';
+    expect(sql).toMatch(/CREATE MATERIALIZED VIEW/i);
+    expect(sql).toContain('reading_hourly');
+    expect(sql).toMatch(/add_continuous_aggregate_policy/i);
+  }, 120_000);
 
   it("compiles a desired IR whose CAGG names match introspect()'s exactly", async () => {
     // The defect the unit suite caught, re-verified against the real catalog rather than against my

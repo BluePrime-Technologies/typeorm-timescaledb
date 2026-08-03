@@ -43,6 +43,12 @@ export interface GenerateFileOptions {
   readonly timestamp?: number;
   /** Emit format: `ts` (TypeORM class, default) or `sql` (raw `.sql`). */
   readonly output?: OutputFormat;
+  /**
+   * The `@ContinuousAggregate` classes to include. Must be kept in step with what `check` compares:
+   * if `check` can see an aggregate that `generate` cannot emit, drift becomes unfixable through
+   * the migration workflow.
+   */
+  readonly continuousAggregates?: readonly (abstract new (...args: never[]) => unknown)[];
 }
 
 /**
@@ -62,6 +68,13 @@ export function generateMigrationFile(
   const migration = generateTimescaleMigration(dataSource, {
     name: base,
     ...(options.timestamp !== undefined && { timestamp: options.timestamp }),
+    // Thread the CAGG list through. Without it `generate` was blind to aggregates while `check`
+    // could see them, which is a CLOSED LOOP the user cannot exit: check reports drift, generate
+    // writes a migration without the CAGG, the migration runs, check reports the same drift —
+    // forever. Being consistently blind was bad; being inconsistently blind is worse.
+    ...(options.continuousAggregates !== undefined && {
+      continuousAggregates: options.continuousAggregates,
+    }),
   });
   if (migration.up.length === 0) return null;
   const content =
