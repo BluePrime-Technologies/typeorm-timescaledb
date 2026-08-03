@@ -1088,3 +1088,37 @@ describe('diffSchemaState — CAGG advisories', () => {
     );
   });
 });
+
+describe('diffSchemaState — materialized_only is reported, not silently ignored', () => {
+  const base = (over: Partial<ContinuousAggregateState> = {}): ContinuousAggregateState => ({
+    viewName: 'public.v',
+    source: 'public.t',
+    hierarchical: false,
+    materializedOnly: false,
+    definition: 'SELECT 1',
+    ...over,
+  });
+  const withCaggs = (...c: ContinuousAggregateState[]): SchemaStateIR => ({
+    hypertables: [],
+    continuousAggregates: c,
+  });
+
+  it('raises not-expressible when materialized_only differs from the declaration', () => {
+    // The plan for this slice promised "report, do not emit" for this facet. It was compiled into
+    // the desired IR and read back by introspect(), then never compared — so the promise was only
+    // half kept, and the blanket not-compared note does not mention it.
+    const plan = diffSchemaState(
+      withCaggs(base({ materializedOnly: true })),
+      withCaggs(base({ materializedOnly: false })),
+    );
+    expect(ops(plan)).toEqual([]); // still never emitted
+    const blocking = (plan.advisories ?? []).filter((a) => a.kind === 'not-expressible');
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0]?.detail).toMatch(/materialized_only is true .* but false/);
+  });
+
+  it('stays quiet when materialized_only matches', () => {
+    const plan = diffSchemaState(withCaggs(base()), withCaggs(base()));
+    expect((plan.advisories ?? []).filter((a) => a.kind === 'not-expressible')).toEqual([]);
+  });
+});

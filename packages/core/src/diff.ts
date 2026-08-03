@@ -754,6 +754,24 @@ function diffContinuousAggregates(
         'textually match. Verify changes to an existing aggregate by hand.',
     });
 
+    // `materialized_only` is a real, comparable facet — it is a boolean the catalog reports
+    // directly, not part of the deparsed definition. The plan for this slice said such changes are
+    // to be REPORTED, not emitted (flipping it needs an ALTER this engine does not have). Reporting
+    // was the half that went missing: it was compiled into the desired IR and read by introspect(),
+    // then never inspected. The blanket not-compared note does not cover it either — that text
+    // names "bucket width, group keys, aggregates".
+    if (c.materializedOnly !== d.materializedOnly) {
+      advisories.push({
+        kind: 'not-expressible',
+        object: d.viewName,
+        detail:
+          `materialized_only is ${String(c.materializedOnly)} in the database but ${String(d.materializedOnly)} in the ` +
+          `declaration. Changing it is not yet supported — run ` +
+          `ALTER MATERIALIZED VIEW ... SET (timescaledb.materialized_only = ${String(d.materializedOnly)}) by hand, ` +
+          `or align the decorator with the database.`,
+      });
+    }
+
     if (desiredRefresh === undefined) continue;
 
     if (c.refresh === undefined) {
