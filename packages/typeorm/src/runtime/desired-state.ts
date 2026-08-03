@@ -3,6 +3,7 @@ import {
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
+  renderContinuousAggregateSelect,
   type ColumnstoreState,
   type DimensionState,
   type HypertableState,
@@ -11,6 +12,7 @@ import {
   type SchemaStateIR,
 } from '@blueprime/timescaledb-core';
 import { getTimescaleMetadata, hasTimescaleMetadata } from '../decorators/index.js';
+import { resolveContinuousAggregates } from './cagg-resolve.js';
 
 type Ctor = abstract new (...args: never[]) => unknown;
 
@@ -37,15 +39,34 @@ type Ctor = abstract new (...args: never[]) => unknown;
  * `timescaledbVersion` is likewise omitted here (a read-time pin, not a diffed field — S2 must exclude it).
  *
  * Scope (M4.2 S1): hypertables + dimensions + columnstore + compression/retention policies.
- * **Continuous aggregates are not yet compiled** (`continuousAggregates` is always `[]`) — the CAGG
- * structural-facet diff needs `introspect()`'s `ContinuousAggregateState` enriched first (a later slice).
+ * **Continuous aggregates are compiled only when passed via `options.continuousAggregates`** — they
+ * live in a module-private WeakMap and are not TypeORM entities, so they cannot be discovered from
+ * the DataSource. Their STRUCTURE is still never diffed: the catalog reports a parse-tree deparse
+ * that an identical CAGG does not textually match, so only presence is comparable (a later slice
+ * needs `introspect()`'s `ContinuousAggregateState` enriched with parsed facets).
  * Until then the S2 diff MUST be hypertable-scoped and must NOT act on CAGGs (else it would drop every
  * CAGG in a live DB, which this always-empty list would otherwise imply).
  *
  * @throws {TimescaleError} `INVALID_ARGUMENT` if the DataSource is not initialized (entityMetadatas is
  *   empty until `initialize()`), or `NO_TIME_COLUMN` if a hypertable entity has no resolvable time column.
  */
-export function compileDesiredState(dataSource: DataSource): SchemaStateIR {
+export interface DesiredStateOptions {
+  /**
+   * The `@ContinuousAggregate` classes to compile.
+   *
+   * **Required to compare CAGGs at all.** CAGG metadata lives in a module-private `WeakMap` and
+   * CAGG classes are not TypeORM entities, so they can NEVER be discovered from the DataSource —
+   * they must be passed, exactly as `generateTimescaleMigration` already requires. Omitting them
+   * is not an error (a project may declare none), but it means CAGGs are not compared, which the
+   * caller is expected to surface rather than let "no drift" imply otherwise.
+   */
+  readonly continuousAggregates?: readonly (abstract new (...args: never[]) => unknown)[];
+}
+
+export function compileDesiredState(
+  dataSource: DataSource,
+  options: DesiredStateOptions = {},
+): SchemaStateIR {
   // entityMetadatas is empty until initialize() builds it; fail loudly rather than silently
   // producing an empty desired state (which would diff as "drop everything").
   if (!dataSource.isInitialized) {
@@ -169,5 +190,27 @@ export function compileDesiredState(dataSource: DataSource): SchemaStateIR {
     hypertables.push(state);
   }
 
-  return { hypertables, continuousAggregates: [] };
+  // Continuous aggregates. `definition` is rendered with the SAME renderer the builder embeds, so
+  // the desired text is exactly what the engine would emit. It is NOT comparable to the catalog's
+  // `view_definition` (a parse-tree deparse), so the diff must never structurally compare it.
+  const continuousAggregates = resolveContinuousAggregates(
+    dataSource,
+    options.continuousAggregates ?? [],
+  ).map((r) => ({
+    viewName: r.meta.viewName,
+    source: r.create.source,
+    hierarchical: r.hierarchical,
+    materializedOnly: r.meta.materializedOnly ?? false,
+    definition: renderContinuousAggregateSelect(r.create),
+    ...(r.refresh && {
+      refresh: {
+        kind: 'refresh' as const,
+        ...(r.refresh.startOffset !== null && { startOffset: r.refresh.startOffset }),
+        ...(r.refresh.endOffset !== null && { endOffset: r.refresh.endOffset }),
+        scheduleInterval: r.refresh.scheduleInterval,
+      },
+    }),
+  }));
+
+  return { hypertables, continuousAggregates };
 }
