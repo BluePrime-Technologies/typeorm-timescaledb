@@ -124,7 +124,8 @@ The following items are product direction, not shipped functionality:
   constructs.
 - Other stable Toolkit aggregates not listed in the 0.3.0 / 0.4.0 release scope.
 - Destructive auto-migrations (dropping a hypertable, disabling a columnstore).
-- Structural diffing of continuous aggregates (the diff engine is hypertable-scoped).
+- Structural diffing of continuous aggregates (presence and refresh policies are
+  diffed; an existing aggregate's definition is not compared).
 - Automatic reconciliation of space (hash) dimensions.
 - Validated cross-store references.
 - Complete coverage of every TimescaleDB feature.
@@ -143,10 +144,13 @@ resolve renames; and — only when drops are explicitly enabled — remove reten
 and compression policies (both reversible).
 
 It deliberately does NOT perform destructive changes: dropping a hypertable or
-disabling a columnstore is never emitted. Continuous aggregates are not
-structurally diffed, and space (hash) dimensions cannot be reconciled in place —
-a divergence there is reported as an error naming the required manual migration,
-never silently ignored.
+disabling a columnstore is never emitted. Continuous aggregates are diffed
+ADDITIVELY — a declared aggregate the database lacks is created and a missing
+refresh policy attached, but an existing one is never dropped or recreated and
+its definition is not compared. Space (hash) dimensions cannot be reconciled in
+place. Every such gap is named in the command's output (`Not compared:` /
+`Not auto-converged:`) rather than silently ignored, and an unconvergeable
+divergence still makes `check` exit non-zero.
 
 For now, removals or altering operations should be handled through hand-written
 migrations. Public copy should keep this distinction clear.
