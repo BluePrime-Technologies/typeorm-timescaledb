@@ -1,6 +1,5 @@
 import { assertSafeIdentifier, quoteIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
-import { assertInterval, assertPositiveInterval } from '../interval.js';
 import { assertParsableInterval } from '../normalize.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
@@ -121,7 +120,7 @@ export function parseTable(table: string): ParsedTable {
 const DO_TAG = '$tsdb_notice$';
 
 /** A no-op `down` that documents why the `up` is intentionally not reversed. */
-function nonDestructiveNotice(reason: string, tableIdent: string): string {
+export function nonDestructiveNotice(reason: string, tableIdent: string): string {
   const body = `BEGIN RAISE NOTICE ${quoteLiteral(`timescaledb: not reverting ${reason} on % — reverting would lose data (non-destructive down)`)}, ${quoteLiteral(tableIdent)}; END`;
   if (body.includes(DO_TAG)) {
     // Unreachable for any allow-listed identifier, but never emit a block the tag cannot close.
@@ -175,7 +174,7 @@ export function createHypertableSQL(input: CreateHypertableInput): MigrationStat
   const range =
     input.chunkInterval === undefined
       ? `by_range(${quoteLiteral(timeColumn)})`
-      : `by_range(${quoteLiteral(timeColumn)}, INTERVAL ${quoteLiteral(assertPositiveInterval(input.chunkInterval, 'chunkInterval'))})`;
+      : `by_range(${quoteLiteral(timeColumn)}, INTERVAL ${quoteLiteral(assertParsableInterval(input.chunkInterval, 'chunkInterval', { positive: true }))})`;
 
   const up: string[] = [
     `SELECT create_hypertable(${t.regclass}, ${range}` +
@@ -306,7 +305,7 @@ export function addColumnstorePolicySQL(input: ColumnstorePolicyInput): Migratio
   } else {
     const ifNotExists = input.ifNotExists ?? true;
     up.push(
-      `CALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(assertInterval(input.after, 'after'))}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`,
+      `CALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(assertParsableInterval(input.after, 'after', { nonNegative: true }))}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`,
     );
     down = [`CALL remove_columnstore_policy(${t.regclass}, if_exists => TRUE);`];
   }
@@ -346,7 +345,7 @@ export function addRetentionPolicySQL(input: RetentionPolicyInput): MigrationSta
   const ifNotExists = input.ifNotExists ?? true;
 
   const up = [
-    `SELECT add_retention_policy(${t.regclass}, drop_after => INTERVAL ${quoteLiteral(assertInterval(input.dropAfter, 'dropAfter'))}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`,
+    `SELECT add_retention_policy(${t.regclass}, drop_after => INTERVAL ${quoteLiteral(assertParsableInterval(input.dropAfter, 'dropAfter', { nonNegative: true }))}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'});`,
   ];
   const down = [`SELECT remove_retention_policy(${t.regclass}, if_exists => TRUE);`];
 
@@ -408,7 +407,7 @@ export interface AddCompressionPolicyInput {
  */
 export function addCompressionPolicySQL(input: AddCompressionPolicyInput): MigrationStatement {
   const t = parseTable(input.table);
-  const after = assertInterval(input.after, 'after');
+  const after = assertParsableInterval(input.after, 'after', { nonNegative: true });
   const ifNotExists = input.ifNotExists ?? true;
   return {
     up: [addCompressionPolicyCall(t, after, ifNotExists)],

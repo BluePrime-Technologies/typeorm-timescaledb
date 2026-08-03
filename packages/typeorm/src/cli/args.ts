@@ -1,5 +1,5 @@
 /** The CLI subcommands. */
-export const COMMANDS = ['generate', 'run', 'revert', 'status', 'check', 'push'] as const;
+export const COMMANDS = ['generate', 'run', 'revert', 'status', 'check', 'push', 'pull'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 /** Thrown on malformed CLI input; carries a user-facing message (with usage). */
@@ -49,12 +49,13 @@ Commands:
   status     Show whether migrations are pending
   check      Diff the live DB against @Hypertable declarations; exit non-zero on drift (CI gate)
   push       Converge the live DB to your entities — PREVIEWS by default, --apply to run it
+  pull       Reproduce the live DB's TimescaleDB layer as a migration (read-only, brownfield adopt)
 
 Options:
   -d, --dataSource <path>   Module exporting a DataSource, default or named (required)
-  -o, --outDir <dir>        Output dir for 'generate' (default: migrations)
-  -n, --name <name>         Migration class-name prefix for 'generate'
-      --output <ts|sql>     Emit format for 'generate' (default: ts)
+  -o, --outDir <dir>        Output dir for 'generate'/'pull' (default: migrations)
+  -n, --name <name>         Migration class-name prefix for 'generate'/'pull'
+      --output <ts|sql>     Emit format for 'generate'/'pull' (default: ts)
       --apply               'push': actually converge the database (default: preview only)
       --allow-drops         'push': also apply reversible policy removals
       --allow-refused       'push': also apply steps classified refuse-by-default

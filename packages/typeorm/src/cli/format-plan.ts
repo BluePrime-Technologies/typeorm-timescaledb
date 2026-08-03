@@ -24,6 +24,10 @@ function describeOperation(operation: Operation): string {
       return `add retention policy on ${operation.table} (drop after ${operation.dropAfter})`;
     case 'createContinuousAggregate':
       return `create continuous aggregate ${operation.view} (source ${operation.source})`;
+    case 'createContinuousAggregateRaw':
+      // Deliberately does NOT echo the definition: it is arbitrary SQL from the catalog and can be
+      // long enough to bury the rest of the plan. The generated migration is where to read it.
+      return `create continuous aggregate ${operation.view} (reproduced from the database's own definition)`;
     case 'addContinuousAggregatePolicy':
       return `add refresh policy on ${operation.view}`;
     case 'addCompressionPolicy':

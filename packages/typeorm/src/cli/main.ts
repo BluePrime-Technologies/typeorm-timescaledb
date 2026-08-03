@@ -9,6 +9,9 @@ import {
   statusCommand,
   checkCommand,
   pushCommand,
+  pullCommand,
+  exitCodeForPush,
+  exitCodeForPull,
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
@@ -63,9 +66,16 @@ async function main(argv: readonly string[]): Promise<void> {
           allowDrops: args.allowDrops,
           allowRefused: args.allowRefused,
         });
-        // 0 = converged (or nothing to do); 2 = drift found but NOT applied. 2 rather than 1 so a
-        // script can tell "there is drift" apart from "the command failed" (which exits 1).
-        if (outcome === 'previewed') process.exitCode = 2;
+        process.exitCode = exitCodeForPush(outcome);
+        break;
+      }
+      case 'pull': {
+        const outcome = await pullCommand(dataSource, logger, {
+          outDir: args.outDir,
+          ...(args.name !== undefined && { name: args.name }),
+          output: args.output,
+        });
+        process.exitCode = exitCodeForPull(outcome);
         break;
       }
     }

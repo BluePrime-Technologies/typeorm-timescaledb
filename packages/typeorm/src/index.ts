@@ -113,6 +113,9 @@ export { applyDirect } from './runtime/apply.js';
 // The `push` verb's programmatic form: introspect -> diff -> (optionally) apply, preview by default.
 export { pushSchema } from './runtime/push.js';
 export type { PushOptions, PushResult } from './runtime/push.js';
+// The `pull` verb (M4.4b) — reproduce a live database's TimescaleDB layer as a migration. Read-only.
+export { pullSchema, formatPullCoverage, PULL_BASE_DDL_CAVEAT } from './runtime/pull.js';
+export type { PullOptions, PullResult, PullCoverage } from './runtime/pull.js';
 export type { ApplyDirection, ApplyDirectOptions, ApplyDirectResult } from './runtime/apply.js';
 
 // Migration generation — Django/Prisma-style codegen from @Hypertable metadata.

@@ -5,10 +5,20 @@ export {
   statusCommand,
   checkCommand,
   pushCommand,
+  pullCommand,
   reportPlan,
+  exitCodeForPush,
+  exitCodeForPull,
   nodeFileWriter,
 } from './commands.js';
-export type { Logger, FileWriter, GenerateFileOptions } from './commands.js';
+export type {
+  Logger,
+  FileWriter,
+  GenerateFileOptions,
+  PushOutcome,
+  PullOutcome,
+  PullFileOptions,
+} from './commands.js';
 export { formatPlanPreview } from './format-plan.js';
 export { parseArgs, COMMANDS, CliError, USAGE } from './args.js';
 export type { Command, ParsedArgs } from './args.js';

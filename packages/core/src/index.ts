@@ -171,3 +171,6 @@ export { diffSchemaState, isEmptyPlan, compilePlan } from './diff.js';
 export type { Plan, PlanStep, DiffOptions, CompiledPlan } from './diff.js';
 export { classifyOperation } from './safety.js';
 export type { SafetyClass, OperationSafety } from './safety.js';
+// Reproduce (M4.4b) — a live SchemaStateIR back into the operations that recreate it, for `pull`.
+export { stateToOperations } from './reproduce.js';
+export type { ReproduceResult, SkippedObject, SkipReason, SkippedFacet } from './reproduce.js';
