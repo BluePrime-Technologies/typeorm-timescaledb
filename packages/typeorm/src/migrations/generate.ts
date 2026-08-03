@@ -1,4 +1,5 @@
 import type { DataSource, MigrationInterface, QueryRunner } from 'typeorm';
+import { resolveContinuousAggregates } from '../runtime/cagg-resolve.js';
 import {
   compileOperation,
   compileOperations,
@@ -6,13 +7,10 @@ import {
   TimescaleError,
   TimescaleErrorCode,
   validateHypertableMetadata,
-  type ContinuousAggregateFn,
   type Operation,
   type Plan,
 } from '@blueprime/timescaledb-core';
 import {
-  getContinuousAggregateMeta,
-  hasContinuousAggregateMeta,
   getTimescaleMetadata,
   hasTimescaleMetadata,
   assertTypeOrmPrimaryKeyIncludesPartitioning,
@@ -211,157 +209,12 @@ export function generateTimescaleMigration(
   // Order the CAGGs so a hierarchical parent (whose source is another CAGG in this set) is
   // created AFTER its child. Independent CAGGs keep a deterministic view-name order. The
   // per-CAGG `down` is `unshift`ed below, so this ordering also drops parents before children.
-  // Dedupe first: a class passed twice must not be emitted twice, and the topo
-  // termination check below compares against this length (dupes would false-trip it).
-  const declaredCaggs: Ctor[] = [...new Set<Ctor>(options.continuousAggregates ?? [])];
-  const caggInSet = new Set<Ctor>(declaredCaggs);
-  const caggSourceInSet = (c: Ctor): Ctor | undefined => {
-    const src = getContinuousAggregateMeta(c)?.source as Ctor | undefined;
-    return src !== undefined && caggInSet.has(src) && hasContinuousAggregateMeta(src)
-      ? src
-      : undefined;
-  };
-  const byViewName = [...declaredCaggs].sort((a, b) =>
-    (getContinuousAggregateMeta(a)?.viewName ?? '').localeCompare(
-      getContinuousAggregateMeta(b)?.viewName ?? '',
-    ),
-  );
-  const caggs: Ctor[] = [];
-  const emittedCaggs = new Set<Ctor>();
-  let topoProgress = true;
-  while (caggs.length < byViewName.length && topoProgress) {
-    topoProgress = false;
-    for (const c of byViewName) {
-      if (emittedCaggs.has(c)) continue;
-      const dep = caggSourceInSet(c);
-      if (dep === undefined || emittedCaggs.has(dep)) {
-        caggs.push(c);
-        emittedCaggs.add(c);
-        topoProgress = true;
-      }
-    }
-  }
-  if (caggs.length < byViewName.length) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      'continuous aggregates have a circular source dependency',
-    );
-  }
-  for (const caggCtor of caggs) {
-    const meta = getContinuousAggregateMeta(caggCtor);
-    if (!meta) {
-      throw new TimescaleError(
-        TimescaleErrorCode.INVALID_ARGUMENT,
-        `${(caggCtor as { name?: string }).name ?? 'class'} was passed as a continuous aggregate but is not decorated with @ContinuousAggregate`,
-      );
-    }
-    // Resolve the source: a hypertable @Entity (the common case) or, for a hierarchical
-    // CAGG, another @ContinuousAggregate (its view). These produce the FROM target, the
-    // property->column resolver, and the time-bucket source column.
-    let sourceRef: string; // schema-qualified table/view for FROM
-    let srcToDb: (property: string) => string; // property -> physical column name
-    let srcTimeProp: string | undefined;
-    let sourceLabel: string; // for error messages
-
-    const sourceCagg = hasContinuousAggregateMeta(meta.source as Ctor)
-      ? getContinuousAggregateMeta(meta.source as Ctor)
-      : undefined;
-
-    if (sourceCagg) {
-      // Hierarchical CAGG: FROM the child's view, so every referenced column must be one of the
-      // CHILD's OUTPUT names. The child's bucket and aggregate outputs are property-named verbatim,
-      // but a child `@GroupColumn` is projected UNALIASED — its output is the child's *source*
-      // physical column name. Resolving by identity therefore emits the property name whenever the
-      // child's source hypertable remaps it with `@Column({ name })` (`sensorId` → `sensor_id`),
-      // producing `column "sensorId" does not exist` and rolling back the whole migration. Build the
-      // child's own property→column map and resolve group properties through it.
-      const childSourceEm = dataSource.entityMetadatas.find((e) => e.target === sourceCagg.source);
-      const childDb = new Map<string, string>(
-        (childSourceEm?.columns ?? []).map((col) => [col.propertyName, col.databaseName]),
-      );
-      const childGroupProps = new Set(sourceCagg.groupProperties);
-      sourceRef = sourceCagg.viewName;
-      srcToDb = (property) =>
-        childGroupProps.has(property) ? (childDb.get(property) ?? property) : property;
-      srcTimeProp = meta.timeColumn ?? sourceCagg.bucketProperty;
-      sourceLabel = sourceCagg.viewName;
-    } else {
-      const sourceEm = dataSource.entityMetadatas.find((e) => e.target === meta.source);
-      const sourceName = (meta.source as { name?: string }).name ?? 'source';
-      if (!sourceEm) {
-        throw new TimescaleError(
-          TimescaleErrorCode.INVALID_ARGUMENT,
-          `@ContinuousAggregate ${meta.viewName}: source ${sourceName} is neither a registered @Hypertable entity nor a @ContinuousAggregate`,
-          { view: meta.viewName },
-        );
-      }
-      const sourceHt = getTimescaleMetadata(meta.source as Ctor);
-      if (!sourceHt) {
-        throw new TimescaleError(
-          TimescaleErrorCode.NOT_A_HYPERTABLE,
-          `@ContinuousAggregate ${meta.viewName}: source ${sourceEm.tableName} is not a @Hypertable`,
-          { view: meta.viewName, source: sourceEm.tableName },
-        );
-      }
-      // Group/aggregate columns + the time column reference SOURCE columns — resolve
-      // property -> databaseName via the source entity (honours @Column({ name })).
-      const srcDb = new Map<string, string>(
-        (sourceEm.columns ?? []).map((c) => [c.propertyName, c.databaseName]),
-      );
-      srcToDb = (property) => srcDb.get(property) ?? property;
-      srcTimeProp = meta.timeColumn ?? sourceHt.timeColumn ?? sourceHt.options.timeColumn;
-      sourceRef = sourceEm.schema ? `${sourceEm.schema}.${sourceEm.tableName}` : sourceEm.tableName;
-      sourceLabel = sourceEm.tableName;
-    }
-
-    if (srcTimeProp === undefined) {
-      throw new TimescaleError(
-        TimescaleErrorCode.NO_TIME_COLUMN,
-        `@ContinuousAggregate ${meta.viewName}: source ${sourceLabel} has no resolvable time column`,
-        { view: meta.viewName },
-      );
-    }
-
-    // Guard: the view's output columns must be mutually distinct, else Postgres
-    // rejects the view with "column specified more than once". Surface it at codegen
-    // with a clear message instead of a raw driver error at migration-run time. The
-    // output names are the bucket alias (verbatim property), each group column
-    // (projected unaliased → its source db name), and each aggregate alias (verbatim
-    // property). See continuous-aggregate.ts for how these become SELECT aliases.
-    const groupOutputs = meta.groupProperties.map(srcToDb);
-    const outputNames = [
-      meta.bucketProperty,
-      ...groupOutputs,
-      ...meta.aggregates.map((a) => a.property),
-    ];
-    const seenOutputs = new Set<string>();
-    for (const name of outputNames) {
-      if (seenOutputs.has(name)) {
-        throw new TimescaleError(
-          TimescaleErrorCode.INVALID_ARGUMENT,
-          `@ContinuousAggregate ${meta.viewName}: duplicate output column "${name}" — the time bucket, group columns, and aggregate columns must all have distinct names`,
-          { view: meta.viewName },
-        );
-      }
-      seenOutputs.add(name);
-    }
-
-    const stmt = compileOperation({
-      kind: 'createContinuousAggregate',
-      view: meta.viewName,
-      source: sourceRef,
-      timeColumn: srcToDb(srcTimeProp),
-      bucketInterval: meta.bucketInterval,
-      // Output-column names come from the CAGG property names (verbatim).
-      bucketAlias: meta.bucketProperty,
-      ...(meta.materializedOnly !== undefined && { materializedOnly: meta.materializedOnly }),
-      groupBy: groupOutputs,
-      aggregates: meta.aggregates.map((a) => ({
-        fn: a.fn as ContinuousAggregateFn,
-        ...(a.column !== undefined && { column: srcToDb(a.column) }),
-        as: a.property,
-      })),
-    });
+  for (const resolved of resolveContinuousAggregates(
+    dataSource,
+    options.continuousAggregates ?? [],
+  )) {
+    const meta = resolved.meta;
+    const stmt = compileOperation({ kind: 'createContinuousAggregate', ...resolved.create });
     caggUp.push(...stmt.up);
     // Per-CAGG down: DROP the view (reversed relative to `up`). A refresh policy, if any,
     // is removed BEFORE the DROP (true reverse of "create then add policy").
@@ -372,10 +225,7 @@ export function generateTimescaleMigration(
       // supported floor, has no `add_continuous_aggregate_policy` overload that omits it.
       const policy = compileOperation({
         kind: 'addContinuousAggregatePolicy',
-        view: meta.viewName,
-        startOffset: meta.refresh.startOffset,
-        endOffset: meta.refresh.endOffset,
-        scheduleInterval: meta.refresh.scheduleInterval ?? meta.bucketInterval,
+        ...resolved.refresh!,
       });
       caggUp.push(...policy.up); // add policy AFTER the CREATE MATERIALIZED VIEW
       caggThisDown.unshift(...policy.down); // remove policy BEFORE the DROP
