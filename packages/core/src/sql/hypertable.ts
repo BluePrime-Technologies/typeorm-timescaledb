@@ -121,7 +121,7 @@ export function parseTable(table: string): ParsedTable {
 const DO_TAG = '$tsdb_notice$';
 
 /** A no-op `down` that documents why the `up` is intentionally not reversed. */
-function nonDestructiveNotice(reason: string, tableIdent: string): string {
+export function nonDestructiveNotice(reason: string, tableIdent: string): string {
   const body = `BEGIN RAISE NOTICE ${quoteLiteral(`timescaledb: not reverting ${reason} on % — reverting would lose data (non-destructive down)`)}, ${quoteLiteral(tableIdent)}; END`;
   if (body.includes(DO_TAG)) {
     // Unreachable for any allow-listed identifier, but never emit a block the tag cannot close.

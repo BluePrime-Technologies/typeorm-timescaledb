@@ -366,10 +366,13 @@ describe('createContinuousAggregateRawSQL', () => {
   it('wraps the definition and appends WITH NO DATA exactly once', () => {
     const { up, down } = createContinuousAggregateRawSQL(base);
     expect(up).toHaveLength(1);
+    // The NEWLINE before WITH NO DATA is deliberate, not cosmetic — see the builder: with a space,
+    // a definition ending in a `--` comment swallows the clause and the CAGG is created WITH DATA.
     expect(up[0]).toBe(
-      'CREATE MATERIALIZED VIEW "public"."v" WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS SELECT 1 AS x FROM t WITH NO DATA;',
+      'CREATE MATERIALIZED VIEW "public"."v" WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS SELECT 1 AS x FROM t\nWITH NO DATA;',
     );
-    expect(down).toEqual(['DROP MATERIALIZED VIEW IF EXISTS "public"."v";']);
+    // down() must NOT drop a reproduced CAGG — it already holds materialized data.
+    expect(down.join('\n')).toContain('RAISE NOTICE');
   });
 
   it('strips a trailing semicolon from the catalog definition rather than double-terminating', () => {
@@ -397,5 +400,167 @@ describe('createContinuousAggregateRawSQL', () => {
     expect(() =>
       createContinuousAggregateRawSQL({ ...base, view: 'bad name; DROP TABLE t' }),
     ).toThrow(TimescaleError);
+  });
+});
+
+/**
+ * Regressions from the M4.4b review panel. Each of these FAILS against the pre-fix implementation —
+ * that is the point of writing them, so a future refactor cannot quietly reintroduce the defect.
+ */
+describe('review-panel regressions', () => {
+  it('does NOT emit a child CAGG whose parent was skipped (would fail on apply)', () => {
+    // Codex HIGH: the ordering loop removed a parent from `pending` because it was "ready",
+    // regardless of whether anything was actually emitted for it. The child then looked ready and
+    // was emitted referencing a view the migration never creates.
+    const parent = cagg({ viewName: 'public.hourly', definition: 'SELECT 1; SELECT 2' });
+    const child = cagg({
+      viewName: 'public.daily',
+      source: 'public.hourly',
+      hierarchical: true,
+      definition: "SELECT time_bucket('1 day', bucket) AS bucket FROM hourly GROUP BY 1",
+    });
+    const result = stateToOperations(ir({ continuousAggregates: [parent, child] }));
+
+    expect(result.operations).toEqual([]);
+    expect(result.skipped.map((s) => s.reason)).toEqual([
+      'cagg-definition-unusable',
+      'cagg-parent-not-reproduced',
+    ]);
+  });
+
+  it('still emits a child whose parent WAS reproduced', () => {
+    // The guard must not over-fire: a healthy hierarchy is still emitted, parent first.
+    const parent = cagg({ viewName: 'public.hourly' });
+    const child = cagg({
+      viewName: 'public.daily',
+      source: 'public.hourly',
+      hierarchical: true,
+      definition: "SELECT time_bucket('1 day', bucket) AS bucket FROM hourly GROUP BY 1",
+    });
+    const result = stateToOperations(ir({ continuousAggregates: [child, parent] }));
+    expect(result.operations.map((o) => (o as { view: string }).view)).toEqual([
+      'public.hourly',
+      'public.daily',
+    ]);
+    expect(result.skipped).toEqual([]);
+  });
+
+  it.each([
+    ['semicolon inside a string literal', "SELECT string_agg(device, ';') AS d FROM m"],
+    ['semicolon in a FILTER literal', "SELECT count(*) FILTER (WHERE tag <> 'a;b') AS n FROM m"],
+    ['semicolon in a dollar-quoted body', 'SELECT $tag$a;b$tag$::text AS x FROM m'],
+  ])('reproduces a CAGG with a %s', (_label, definition) => {
+    // Codex + o3 MEDIUM: `body.includes(';')` rejected valid single-statement definitions and
+    // reported "multiple statements", which was simply untrue.
+    const result = stateToOperations(ir({ continuousAggregates: [cagg({ definition })] }));
+    expect(kinds(result)).toEqual(['createContinuousAggregateRaw']);
+    expect(result.skipped).toEqual([]);
+  });
+
+  it('still rejects a genuinely multi-statement definition', () => {
+    const result = stateToOperations(
+      ir({ continuousAggregates: [cagg({ definition: 'SELECT 1 FROM m; DROP TABLE users' })] }),
+    );
+    expect(result.operations).toEqual([]);
+    expect(result.skipped[0]).toMatchObject({ reason: 'cagg-definition-unusable' });
+  });
+
+  it('reports every space dimension beyond the first instead of dropping it silently', () => {
+    const result = stateToOperations(
+      ir({
+        hypertables: [
+          hypertable({
+            dimensions: [
+              { column: 'ts', kind: 'time', chunkInterval: '1 day' },
+              { column: 'device', kind: 'space', numPartitions: 4 },
+              { column: 'region', kind: 'space', numPartitions: 2 },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.operations[0]).toMatchObject({
+      spacePartition: { column: 'device', partitions: 4 },
+    });
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]?.detail).toContain('region');
+  });
+
+  it.each([
+    ['compression', { compressionPolicy: { kind: 'retention' as const, after: '1 day' } }],
+    ['retention', { retentionPolicy: { kind: 'refresh' as const, scheduleInterval: '1 h' } }],
+  ])('reports a mis-kinded %s policy rather than ignoring it', (_l, overrides) => {
+    const result = stateToOperations(
+      ir({
+        hypertables: [hypertable({ columnstore: { segmentBy: [], orderBy: [] }, ...overrides })],
+      }),
+    );
+    expect(result.skipped.some((s) => s.reason === 'policy-kind-mismatch')).toBe(true);
+  });
+
+  it('asserts the columnstore segmentBy/orderBy actually reach the operation', () => {
+    // Red-team: no test asserted these contents, so mutating the direction mapping or dropping
+    // segmentBy entirely passed the whole unit suite.
+    const result = stateToOperations(
+      ir({
+        hypertables: [
+          hypertable({
+            columnstore: {
+              segmentBy: ['device', 'region'],
+              orderBy: [
+                { column: 'ts', desc: true, nullsFirst: false },
+                { column: 'seq', desc: false, nullsFirst: false },
+              ],
+            },
+          }),
+        ],
+      }),
+    );
+    expect(result.operations[1]).toMatchObject({
+      segmentBy: ['device', 'region'],
+      orderBy: [
+        { column: 'ts', direction: 'DESC' },
+        { column: 'seq', direction: 'ASC' },
+      ],
+    });
+  });
+});
+
+describe('createContinuousAggregateRawSQL — review-panel regressions', () => {
+  const base = { view: 'public.v', definition: 'SELECT 1 AS x FROM t' };
+
+  it('never drops the view on down() — a pulled CAGG already holds data', () => {
+    // Red-team HIGH: `DROP MATERIALIZED VIEW` on revert destroys aggregate rows whose source
+    // chunks retention may already have dropped. Unrecoverable.
+    const { down } = createContinuousAggregateRawSQL(base);
+    expect(down.join('\n')).not.toMatch(/DROP MATERIALIZED VIEW/i);
+    expect(down.join('\n')).toContain('RAISE NOTICE');
+  });
+
+  it('keeps WITH NO DATA effective when the definition ends in a line comment', () => {
+    // Red-team: with a space separator, `-- note` swallowed `WITH NO DATA;` and the statement still
+    // succeeded — materializing the entire history inside a migration.
+    const { up } = createContinuousAggregateRawSQL({
+      ...base,
+      definition: 'SELECT 1 AS x FROM t -- note',
+    });
+    const sql = up[0]!;
+    expect(sql.endsWith('WITH NO DATA;')).toBe(true);
+    // The clause must be on its own line, after the comment terminates.
+    expect(sql).toMatch(/\nWITH NO DATA;$/);
+  });
+
+  it('rejects a definition ending inside an unterminated block comment', () => {
+    expect(() =>
+      createContinuousAggregateRawSQL({ ...base, definition: 'SELECT 1 AS x FROM t /* oops' }),
+    ).toThrow(TimescaleError);
+  });
+
+  it('accepts a semicolon inside a literal', () => {
+    const { up } = createContinuousAggregateRawSQL({
+      ...base,
+      definition: "SELECT ';'::text AS x FROM t",
+    });
+    expect(up[0]).toContain("';'::text");
   });
 });

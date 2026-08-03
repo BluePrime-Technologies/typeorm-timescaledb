@@ -120,13 +120,18 @@ describe.skipIf(!IMAGE)('M4.4b pull — live round-trip', () => {
     expect(after.continuousAggregates).toEqual(before.continuousAggregates);
   }, 300_000);
 
-  it('emits a down() that removes the policies it added without dropping data', async () => {
+  it('emits a down() that removes the policies it added without dropping any object', async () => {
     const { migration } = await pullSchema(source);
     const down = migration.down.join('\n');
     expect(down).toContain('remove_retention_policy');
-    // Reverting must never decompress or drop the hypertable itself.
+    // Reverting must never destroy data. The earlier version of this test only checked
+    // `drop_chunks` and `DROP TABLE` — neither of which matches `DROP MATERIALIZED VIEW`, so it
+    // kept passing while `down()` dropped a pulled CAGG whose materialized rows may be the only
+    // surviving copy of data its source chunks no longer hold. Assert on every drop form.
     expect(down).not.toMatch(/drop_chunks/i);
     expect(down).not.toMatch(/DROP TABLE/i);
+    expect(down).not.toMatch(/DROP MATERIALIZED VIEW/i);
+    expect(down).not.toMatch(/DROP VIEW/i);
   });
 
   it('is read-only: pulling twice changes nothing in the source', async () => {

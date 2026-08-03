@@ -6,6 +6,11 @@ import type {
   SchemaStateIR,
 } from './schema-state.js';
 import type { Operation } from './operation.js';
+import {
+  classifyDefinitionBody,
+  normalizeCaggDefinitionBody,
+  DEFINITION_REJECTION,
+} from './sql/continuous-aggregate.js';
 
 /**
  * **Reproduce** a `SchemaStateIR` as an ordered `Operation[]` — the engine half of the `pull`
@@ -62,7 +67,16 @@ export type SkipReason =
   /** A continuous aggregate's definition is empty or not a single statement. */
   | 'cagg-definition-unusable'
   /** Hierarchical CAGGs form a cycle, so no valid creation order exists. */
-  | 'cagg-dependency-cycle';
+  | 'cagg-dependency-cycle'
+  /**
+   * A hierarchical CAGG whose parent CAGG was itself not reproduced. Emitting it anyway would
+   * produce a migration that FAILS on apply, referencing a view this migration never creates — the
+   * one case where a skip elsewhere would otherwise corrupt an emitted operation rather than merely
+   * omit one.
+   */
+  | 'cagg-parent-not-reproduced'
+  /** A policy whose `kind` does not match the field it was found on (hand-built IR / future producer). */
+  | 'policy-kind-mismatch';
 
 /** Which part of the schema a skip refers to, so a report can group by object. */
 export type SkippedFacet =
@@ -134,7 +148,8 @@ function reproduceHypertable(h: HypertableState, skipped: SkippedObject[]): Oper
     });
   }
 
-  const space = findDimension(h, 'space');
+  const spaceDims = h.dimensions.filter((d) => d.kind === 'space');
+  const space = spaceDims[0];
   let spacePartition: { readonly column: string; readonly partitions: number } | undefined;
   if (space !== undefined) {
     if (space.numPartitions === undefined) {
@@ -147,6 +162,17 @@ function reproduceHypertable(h: HypertableState, skipped: SkippedObject[]): Oper
     } else {
       spacePartition = { column: space.column, partitions: space.numPartitions };
     }
+  }
+  // `createHypertable` carries at most ONE space dimension (matching the diff engine's own limit),
+  // so any further ones would be dropped. Report each rather than losing it silently — this is a
+  // case where the reproduction is genuinely narrower than the source.
+  for (const extra of spaceDims.slice(1)) {
+    skipped.push({
+      object: h.table,
+      facet: 'spaceDimension',
+      reason: 'space-dimension-incomplete',
+      detail: `additional space dimension "${extra.column}" cannot be reproduced — the builder emits a single space partition`,
+    });
   }
 
   const ops: Operation[] = [
@@ -186,6 +212,14 @@ function reproduceHypertable(h: HypertableState, skipped: SkippedObject[]): Oper
               : `compression threshold ${String(cp.after)} is an integer, which the interval-based builder cannot express — the columnstore is still enabled, but its policy is not reproduced`,
           });
         }
+      } else {
+        // See the matching note on the retention slot: the union permits a mis-kinded policy.
+        skipped.push({
+          object: h.table,
+          facet: 'compressionPolicy',
+          reason: 'policy-kind-mismatch',
+          detail: `the compression slot holds a "${cp.kind}" policy, which cannot be reproduced as a compression policy`,
+        });
       }
     }
     ops.push({
@@ -236,6 +270,16 @@ function reproduceHypertable(h: HypertableState, skipped: SkippedObject[]): Oper
             : `retention threshold ${String(rp.after)} is an integer, which the interval-based builder cannot express`,
         });
       }
+    } else {
+      // `PolicyState` is a union, so the type permits a policy whose `kind` disagrees with the
+      // field it was found on. Unreachable via `introspect` (which keys off `proc_name`), but a
+      // hand-built IR or a future producer could do it — report rather than drop it silently.
+      skipped.push({
+        object: h.table,
+        facet: 'retentionPolicy',
+        reason: 'policy-kind-mismatch',
+        detail: `the retention slot holds a "${rp.kind}" policy, which cannot be reproduced as a retention policy`,
+      });
     }
   }
 
@@ -244,17 +288,16 @@ function reproduceHypertable(h: HypertableState, skipped: SkippedObject[]): Oper
 
 /** Reproduce one CAGG plus (when expressible) its refresh policy. */
 function reproduceCagg(c: ContinuousAggregateState, skipped: SkippedObject[]): Operation[] {
-  const definition = c.definition.trim().replace(/;\s*$/, '').trim();
-  // Guard here as well as in the builder: the builder THROWS, and this function must stay total.
-  if (definition.length === 0 || definition.includes(';')) {
+  // Classify with the SAME predicate the builder uses, so the two can never disagree: the builder
+  // throws on a non-usable body and this function must stay total, so it reports instead.
+  const definition = normalizeCaggDefinitionBody(c.definition);
+  const verdict = classifyDefinitionBody(definition);
+  if (verdict !== 'usable') {
     skipped.push({
       object: c.viewName,
       facet: 'continuousAggregate',
       reason: 'cagg-definition-unusable',
-      detail:
-        definition.length === 0
-          ? `continuous aggregate ${c.viewName} reports an empty definition`
-          : `continuous aggregate ${c.viewName} reports a definition containing multiple statements`,
+      detail: `continuous aggregate ${c.viewName}: ${DEFINITION_REJECTION[verdict]}`,
     });
     return [];
   }
@@ -280,7 +323,15 @@ function reproduceCagg(c: ContinuousAggregateState, skipped: SkippedObject[]): O
     });
     return ops;
   }
-  if (refresh.kind !== 'refresh') return ops;
+  if (refresh.kind !== 'refresh') {
+    skipped.push({
+      object: c.viewName,
+      facet: 'refreshPolicy',
+      reason: 'policy-kind-mismatch',
+      detail: `the refresh slot holds a "${refresh.kind}" policy, which cannot be reproduced as a refresh policy`,
+    });
+    return ops;
+  }
 
   // `add_continuous_aggregate_policy` requires a schedule_interval on TSDB 2.18 (this package's
   // floor) and takes interval strings or NULL for the window bounds. An integer offset is an
@@ -331,6 +382,13 @@ export function stateToOperations(ir: SchemaStateIR): ReproduceResult {
   // in dependency order by repeatedly taking every remaining CAGG whose source is not itself still
   // pending. A pass that emits nothing while items remain means the sources form a cycle — which a
   // real database cannot contain, but a hand-built IR can, so it is reported instead of looping.
+  // Which names in this IR are CAGGs (as opposed to source hypertables), and which ones actually
+  // made it into `operations`. Being "ready" to emit is NOT the same as having been emitted: a
+  // parent can be dropped by `reproduceCagg` (unusable definition), and emitting its child anyway
+  // would produce a migration that fails on apply against a view this migration never creates.
+  const caggViews = new Set(ir.continuousAggregates.map((c) => c.viewName));
+  const emittedViews = new Set<string>();
+
   let pending = [...ir.continuousAggregates];
   while (pending.length > 0) {
     const pendingViews = new Set(pending.map((c) => c.viewName));
@@ -346,7 +404,22 @@ export function stateToOperations(ir: SchemaStateIR): ReproduceResult {
       }
       break;
     }
-    for (const c of ready) operations.push(...reproduceCagg(c, skipped));
+    for (const c of ready) {
+      if (caggViews.has(c.source) && !emittedViews.has(c.source)) {
+        skipped.push({
+          object: c.viewName,
+          facet: 'continuousAggregate',
+          reason: 'cagg-parent-not-reproduced',
+          detail: `continuous aggregate ${c.viewName} reads from ${c.source}, which was itself not reproduced — emitting it would create a migration that fails on apply`,
+        });
+        continue;
+      }
+      const ops = reproduceCagg(c, skipped);
+      if (ops.length > 0) {
+        operations.push(...ops);
+        emittedViews.add(c.viewName);
+      }
+    }
     const readyViews = new Set(ready.map((c) => c.viewName));
     pending = pending.filter((c) => !readyViews.has(c.viewName));
   }

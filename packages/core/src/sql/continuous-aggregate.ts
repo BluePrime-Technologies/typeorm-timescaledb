@@ -3,7 +3,7 @@ import { quoteLiteral } from '../literal.js';
 import { assertPositiveInterval } from '../interval.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 import { timeBucketExpr } from './hyperfunctions.js';
-import { parseTable, type MigrationStatement } from './hypertable.js';
+import { parseTable, nonDestructiveNotice, type MigrationStatement } from './hypertable.js';
 
 /**
  * Pure SQL builders for TimescaleDB **continuous aggregates** (CAGGs).
@@ -290,29 +290,103 @@ export interface CreateContinuousAggregateRawInput {
  * a catalog value can never smuggle extra statements into the migration. The view NAME is
  * validated normally.
  */
+/** Why a raw definition cannot be reproduced, or `'usable'`. */
+export type DefinitionVerdict = 'usable' | 'empty' | 'multi-statement' | 'unterminated';
+
+/** Operator-facing explanation per non-`usable` verdict. Shared by the builder (which throws) and
+ * `stateToOperations` (which reports), so the two can never disagree about the reason. */
+export const DEFINITION_REJECTION: Record<Exclude<DefinitionVerdict, 'usable'>, string> = {
+  empty: 'empty definition — nothing to reproduce',
+  'multi-statement': 'definition contains a statement separator outside any literal or comment',
+  unterminated:
+    'definition ends inside an unterminated block comment or dollar-quoted string, so the appended WITH NO DATA clause would be swallowed',
+};
+
+/** Strip the catalog's trailing terminator and surrounding whitespace; we re-terminate ourselves. */
+export function normalizeCaggDefinitionBody(definition: string): string {
+  return definition.trim().replace(/;\s*$/, '').trim();
+}
+
+/**
+ * Decide whether a normalized definition body can be safely embedded in a
+ * `CREATE MATERIALIZED VIEW … AS <body> WITH NO DATA;` statement.
+ *
+ * A naive `body.includes(';')` is WRONG, and was the first implementation: a perfectly legal
+ * continuous aggregate can carry a semicolon inside a constant — `count(*) FILTER (WHERE tag <>
+ * 'a;b')`, `to_char(ts, 'HH24;MI')`, `string_agg(x, ';')`. `pg_get_viewdef` preserves those
+ * literals, so rejecting them refuses to reproduce a valid schema AND reports "multiple
+ * statements", an explanation that is simply false.
+ *
+ * So scan properly, skipping single-quoted literals (with `''` escapes), dollar-quoted blocks, and
+ * both comment forms. A `;` found outside all of those is a real separator.
+ *
+ * An UNTERMINATED block comment or dollar quote is rejected separately: the appended clause would
+ * land inside it. A line comment running to end-of-input is fine, because the clause is appended
+ * after a newline.
+ */
+export function classifyDefinitionBody(body: string): DefinitionVerdict {
+  if (body.length === 0) return 'empty';
+  let i = 0;
+  while (i < body.length) {
+    const ch = body[i];
+    if (ch === "'") {
+      i++;
+      let closed = false;
+      while (i < body.length) {
+        if (body[i] === "'") {
+          if (body[i + 1] === "'") {
+            i += 2; // escaped quote inside the literal
+            continue;
+          }
+          i++;
+          closed = true;
+          break;
+        }
+        i++;
+      }
+      // An unterminated string literal would swallow the appended clause just like a comment would.
+      if (!closed) return 'unterminated';
+      continue;
+    }
+    if (ch === '-' && body[i + 1] === '-') {
+      const nl = body.indexOf('\n', i);
+      if (nl === -1) return 'usable'; // comment to end-of-input; the \n we append clears it
+      i = nl + 1;
+      continue;
+    }
+    if (ch === '/' && body[i + 1] === '*') {
+      const end = body.indexOf('*/', i + 2);
+      if (end === -1) return 'unterminated';
+      i = end + 2;
+      continue;
+    }
+    if (ch === '$') {
+      const tag = /^\$[A-Za-z_0-9]*\$/.exec(body.slice(i))?.[0];
+      if (tag !== undefined) {
+        const end = body.indexOf(tag, i + tag.length);
+        if (end === -1) return 'unterminated';
+        i = end + tag.length;
+        continue;
+      }
+    }
+    if (ch === ';') return 'multi-statement';
+    i++;
+  }
+  return 'usable';
+}
+
 export function createContinuousAggregateRawSQL(
   input: CreateContinuousAggregateRawInput,
 ): MigrationStatement {
   const view = parseTable(input.view);
   const materializedOnly = input.materializedOnly ?? false;
 
-  // Normalize: the catalog renders the definition with a trailing `;` and surrounding
-  // whitespace, and we re-terminate ourselves after appending WITH NO DATA.
-  const body = input.definition.trim().replace(/;\s*$/, '').trim();
-  if (body.length === 0) {
+  const body = normalizeCaggDefinitionBody(input.definition);
+  const verdict = classifyDefinitionBody(body);
+  if (verdict !== 'usable') {
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,
-      `continuous aggregate ${input.view}: empty definition — nothing to reproduce`,
-      { view: input.view },
-    );
-  }
-  // Each `up` entry must be exactly ONE statement (pg rejects multi-command prepared queries,
-  // and a smuggled second statement would execute unreviewed). A `;` surviving the strip above
-  // means the text is not a single SELECT.
-  if (body.includes(';')) {
-    throw new TimescaleError(
-      TimescaleErrorCode.INVALID_ARGUMENT,
-      `continuous aggregate ${input.view}: definition contains multiple statements`,
+      `continuous aggregate ${input.view}: ${DEFINITION_REJECTION[verdict]}`,
       { view: input.view },
     );
   }
@@ -320,9 +394,18 @@ export function createContinuousAggregateRawSQL(
   const up = [
     `CREATE MATERIALIZED VIEW ${view.ident} ` +
       `WITH (timescaledb.continuous, timescaledb.materialized_only = ${materializedOnly ? 'TRUE' : 'FALSE'}) AS ` +
-      `${body} WITH NO DATA;`,
+      // NEWLINE, not a space, before the appended clause. A definition ending in a `--` line comment
+      // would otherwise swallow `WITH NO DATA` *and* the terminator — and Postgres accepts an
+      // unterminated single statement, so it would SUCCEED and materialize the whole history inside
+      // a migration, silently falsifying this operation's "created WITH NO DATA" safety premise.
+      `${body}\nWITH NO DATA;`,
   ];
-  const down = [`DROP MATERIALIZED VIEW IF EXISTS ${view.ident};`];
+  // NEVER drop the view on `down`. This builder reproduces a CAGG that ALREADY EXISTS and is
+  // ALREADY MATERIALIZED — unlike `createContinuousAggregateSQL`, where `down` dropping a
+  // just-created empty view is genuinely lossless. Here the aggregate rows may be the only
+  // surviving copy of data whose source chunks a retention policy has long since dropped, so
+  // dropping them is unrecoverable. Same treatment as a hypertable/columnstore conversion.
+  const down = [nonDestructiveNotice('continuous aggregate', view.ident)];
   const inspect =
     `SELECT view_schema, view_name, materialized_only FROM timescaledb_information.continuous_aggregates ` +
     `WHERE view_schema = ${quoteLiteral(view.schema)} AND view_name = ${quoteLiteral(view.name)};`;

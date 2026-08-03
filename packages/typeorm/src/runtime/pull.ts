@@ -28,7 +28,12 @@ export const PULL_BASE_DDL_CAVEAT =
   'Base relational DDL is NOT included: tables, columns, types, indexes, constraints, triggers, ' +
   "functions and extensions are outside this library and must come from TypeORM's own " +
   'migration:generate or stay hand-written. The reproduced migration assumes those objects ' +
-  'already exist — a create_hypertable runs against a table it does not create.';
+  'already exist — a create_hypertable runs against a table it does not create. ' +
+  'Also NOT reproduced, and NOT counted above: compression/retention policies attached to a ' +
+  "continuous aggregate (rather than to a hypertable), the chunk interval of a CAGG's own " +
+  'materialization hypertable, and NULLS FIRST/LAST placement on a columnstore ORDER BY. Those ' +
+  'are invisible to introspection today, so "not reproduced: none" above cannot speak for them — ' +
+  'check them by hand before treating a pulled migration as a complete copy.';
 
 /** What `pull` managed to reproduce, and what it did not. */
 export interface PullCoverage {
