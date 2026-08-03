@@ -473,6 +473,16 @@ describe('pushSchema / checkCommand — continuous-aggregate advisory', () => {
     expect(plan.advisories?.[0]?.detail).toMatch(/NONE were compared/);
   });
 
+  it('does not repeat itself: the umbrella advisory suppresses the per-view ones', async () => {
+    // The diff also names each live-but-undeclared aggregate (for callers composing the pipeline by
+    // hand). Through pushSchema with an OMITTED list, both fire and say the same thing — a project
+    // with 12 aggregates got 13 paragraphs for one fact.
+    const { plan } = await pushSchema(convergedDs());
+    const notCompared = (plan.advisories ?? []).filter((a) => a.kind === 'not-compared');
+    expect(notCompared).toHaveLength(1);
+    expect(notCompared[0]?.object).toBe('(all continuous aggregates)');
+  });
+
   it('does NOT warn when an empty list is passed — that is an affirmative "there are none"', async () => {
     const { plan } = await pushSchema(convergedDs(), { continuousAggregates: [] });
     expect(plan.advisories).toBeUndefined();

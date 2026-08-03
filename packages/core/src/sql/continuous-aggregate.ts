@@ -157,7 +157,18 @@ export function renderContinuousAggregateSelect(input: CreateContinuousAggregate
   return extractSelectBody(createContinuousAggregateSQL(input).up[0] ?? '');
 }
 
-/** Pull the `SELECT … ` body back out of a rendered CREATE MATERIALIZED VIEW statement. */
+/**
+ * Pull the `SELECT … ` body back out of a rendered CREATE MATERIALIZED VIEW statement.
+ *
+ * Exported (under an explicit `ForTest` name, not part of the documented surface) ONLY so its
+ * failure mode is pinnable: it is reachable in production solely through
+ * `renderContinuousAggregateSelect`, whose own input always matches, so the throw below could not
+ * otherwise be exercised — and an unexercised throw is an unpinned one.
+ */
+export function extractSelectBodyForTest(statement: string): string {
+  return extractSelectBody(statement);
+}
+
 function extractSelectBody(statement: string): string {
   // Whitespace-tolerant: the builder emits `) AS <body> WITH NO DATA;` on one line today, but a
   // reformat that broke the line would silently stop matching.

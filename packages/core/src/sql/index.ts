@@ -16,6 +16,7 @@ export {
   createContinuousAggregateSQL,
   createContinuousAggregateRawSQL,
   renderContinuousAggregateSelect,
+  extractSelectBodyForTest,
   refreshContinuousAggregateSQL,
   addContinuousAggregatePolicySQL,
 } from './continuous-aggregate.js';

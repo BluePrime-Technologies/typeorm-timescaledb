@@ -101,9 +101,17 @@ export async function pushSchema(
   // desired list is indistinguishable from "this project declares none". Only this layer knows the
   // difference, so the advisory has to be raised here. Without it, option B (pass the list
   // explicitly) would silently reinstate the false-green for anyone who forgets the export.
+  const listAbsent = options.continuousAggregates === undefined;
+  // When the umbrella advisory fires, drop the diff's per-view "exists but is not declared" notes:
+  // they say the same thing once per aggregate, so a project with 12 of them got 13 paragraphs for
+  // one fact. (The diff still emits them on its own, for callers that compose the pipeline by hand
+  // and never reach this function — that is the case they exist for.)
+  const fromDiff = (diffed.advisories ?? []).filter(
+    (a) => !(listAbsent && a.kind === 'not-compared'),
+  );
   const advisories: PlanAdvisory[] = [
-    ...(options.continuousAggregates === undefined ? [CAGG_LIST_ABSENT_ADVISORY] : []),
-    ...(diffed.advisories ?? []),
+    ...(listAbsent ? [CAGG_LIST_ABSENT_ADVISORY] : []),
+    ...fromDiff,
   ];
   const plan: Plan = { ...diffed, ...(advisories.length > 0 && { advisories }) };
 
