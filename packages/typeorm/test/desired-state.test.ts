@@ -6,6 +6,10 @@ import {
   Hypertable,
   TimeColumn,
   HypertablePrimaryKey,
+  ContinuousAggregate,
+  BucketColumn,
+  GroupColumn,
+  AggregateColumn,
   TimescaleError,
 } from '../src/index.js';
 import type { HypertableState, SchemaStateIR } from '@blueprime/timescaledb-core';
@@ -140,7 +144,7 @@ describe('compileDesiredState', () => {
     expect(ir.hypertables.map((h) => h.table)).toEqual(['public.events', 'public.trades']);
   });
 
-  it('skips non-hypertable entities and never compiles continuous aggregates (S1 scope)', () => {
+  it('skips non-hypertable entities and compiles no CAGGs when none are passed', () => {
     const ir = compileDesiredState(
       stubDataSource([
         { target: Plain, tableName: 'plain' },
@@ -225,10 +229,269 @@ describe('compileDesiredState — deliberate omissions the S2 diff must reconcil
     expect(compileDesiredState(ds).timescaledbVersion).toBeUndefined();
   });
 
-  it('always yields continuousAggregates [] — the S2 diff MUST be hypertable-scoped and never drop live CAGGs', () => {
-    // A DB with CAGGs would introspect to a non-empty list; desired is always []. A naive array compare
-    // in S2 would drop every CAGG — hence the hypertable-scoped contract, pinned here.
+  it('yields continuousAggregates [] when the list is NOT passed — the diff must never drop live CAGGs', () => {
+    // CAGG classes cannot be discovered from a DataSource (module-private WeakMap, not entities), so
+    // omitting the list is indistinguishable from "this project has none". A DB with CAGGs would
+    // introspect to a non-empty list against this empty desired one; a naive array compare would drop
+    // every CAGG. Hence the never-drop contract, pinned here. The `check` advisory covers the
+    // user-facing half: it must fire on an ABSENT list, not merely on an uncompared CAGG.
     expect(compileDesiredState(ds).continuousAggregates).toEqual([]);
+    expect(compileDesiredState(ds, {}).continuousAggregates).toEqual([]);
+    expect(compileDesiredState(ds, { continuousAggregates: [] }).continuousAggregates).toEqual([]);
+  });
+});
+
+// The CAGG half of the compiler. CAGG classes are passed EXPLICITLY (option B) because they live in
+// a module-private WeakMap and are not TypeORM entities — there is no way to discover them from a
+// DataSource. These tests cover the capability itself: flat + hierarchical compilation, property ->
+// physical-column resolution, refresh mapping, and ordering.
+describe('compileDesiredState — continuous aggregates', () => {
+  class Reading {}
+  Hypertable({ chunkInterval: '1 day' })(Reading);
+  TimeColumn()(Reading.prototype, 'time');
+  HypertablePrimaryKey()(Reading.prototype, 'time');
+
+  // Source whose properties are remapped to physical columns via @Column({ name }).
+  class Mapped {}
+  Hypertable({ chunkInterval: '1 day' })(Mapped);
+  TimeColumn()(Mapped.prototype, 'measuredAt');
+  HypertablePrimaryKey()(Mapped.prototype, 'measuredAt');
+
+  class ReadingHourly {}
+  ContinuousAggregate({ name: 'reading_hourly', source: Reading, bucket: '1 hour' })(ReadingHourly);
+  BucketColumn()(ReadingHourly.prototype, 'bucket');
+  GroupColumn()(ReadingHourly.prototype, 'sensor');
+  AggregateColumn({ fn: 'avg', column: 'value' })(ReadingHourly.prototype, 'avgValue');
+
+  class MappedByDevice {}
+  ContinuousAggregate({
+    name: 'mapped_by_device',
+    source: Mapped,
+    bucket: '1 day',
+    materializedOnly: true,
+  })(MappedByDevice);
+  BucketColumn()(MappedByDevice.prototype, 'day');
+  GroupColumn()(MappedByDevice.prototype, 'deviceId');
+  AggregateColumn({ fn: 'sum', column: 'reading' })(MappedByDevice.prototype, 'total');
+
+  class Refreshed {}
+  ContinuousAggregate({
+    name: 'refreshed',
+    source: Reading,
+    bucket: '1 hour',
+    refresh: { startOffset: '1 month', endOffset: '1 hour', scheduleInterval: '30 minutes' },
+  })(Refreshed);
+  BucketColumn()(Refreshed.prototype, 'bucket');
+  AggregateColumn({ fn: 'count' })(Refreshed.prototype, 'n');
+
+  class DefaultSchedule {}
+  ContinuousAggregate({
+    name: 'default_schedule',
+    source: Reading,
+    bucket: '2 hours',
+    refresh: { startOffset: '7 days', endOffset: '1 hour' },
+  })(DefaultSchedule);
+  BucketColumn()(DefaultSchedule.prototype, 'bucket');
+  AggregateColumn({ fn: 'count' })(DefaultSchedule.prototype, 'n');
+
+  // Hierarchical: a daily rollup built FROM the hourly CAGG, not from the hypertable.
+  class HourlyRollup {}
+  ContinuousAggregate({ name: 'hourly_rollup', source: Mapped, bucket: '1 hour' })(HourlyRollup);
+  BucketColumn()(HourlyRollup.prototype, 'bucket');
+  GroupColumn()(HourlyRollup.prototype, 'deviceId');
+  AggregateColumn({ fn: 'sum', column: 'reading' })(HourlyRollup.prototype, 'sumValue');
+
+  class DailyRollup {}
+  ContinuousAggregate({ name: 'daily_rollup', source: HourlyRollup, bucket: '1 day' })(DailyRollup);
+  BucketColumn()(DailyRollup.prototype, 'bucket');
+  GroupColumn()(DailyRollup.prototype, 'deviceId');
+  AggregateColumn({ fn: 'sum', column: 'sumValue' })(DailyRollup.prototype, 'sumValue');
+
+  const MAPPED_COLUMNS = [
+    { propertyName: 'measuredAt', databaseName: 'measured_at' },
+    { propertyName: 'deviceId', databaseName: 'device_id' },
+    { propertyName: 'reading', databaseName: 'reading_value' },
+  ];
+
+  const ds = stubDataSource([
+    { target: Reading, tableName: 'readings' },
+    { target: Mapped, tableName: 'mapped', columns: MAPPED_COLUMNS },
+  ]);
+
+  const withSchema = stubDataSource([
+    { target: Reading, tableName: 'readings', schema: 'analytics' },
+    { target: Mapped, tableName: 'mapped', columns: MAPPED_COLUMNS },
+  ]);
+
+  const cagg = (ir: SchemaStateIR, viewName: string) => {
+    const found = ir.continuousAggregates.find((c) => c.viewName === viewName);
+    if (!found)
+      throw new Error(
+        `cagg ${viewName} not found: ${JSON.stringify(ir.continuousAggregates.map((c) => c.viewName))}`,
+      );
+    return found;
+  };
+
+  it('compiles a flat CAGG into ContinuousAggregateState', () => {
+    const c = cagg(
+      compileDesiredState(ds, { continuousAggregates: [ReadingHourly] }),
+      'public.reading_hourly',
+    );
+    expect(c.source).toBe('public.readings');
+    expect(c.hierarchical).toBe(false);
+    expect(c.materializedOnly).toBe(false);
+    expect(c.refresh).toBeUndefined();
+    // The definition is rendered by the SAME renderer the CREATE builder embeds, so desired text is
+    // exactly what the engine would emit. It is deliberately NOT comparable to the catalog's
+    // view_definition (a parse-tree deparse) — see the diff engine's presence-only contract.
+    expect(c.definition).toBe(
+      `SELECT time_bucket(INTERVAL '1 hour', "time") AS "bucket", "sensor", avg("value") AS "avgValue" FROM "public"."readings" GROUP BY time_bucket(INTERVAL '1 hour', "time"), "sensor"`,
+    );
+  });
+
+  it('resolves source property names to physical columns (@Column({ name })) in the definition', () => {
+    const c = cagg(
+      compileDesiredState(ds, { continuousAggregates: [MappedByDevice] }),
+      'public.mapped_by_device',
+    );
+    expect(c.materializedOnly).toBe(true);
+    // time column, group column and the aggregate's argument are all SOURCE columns → physical names.
+    expect(c.definition).toContain('"measured_at"');
+    expect(c.definition).toContain('"device_id"');
+    expect(c.definition).toContain('sum("reading_value")');
+    // ...but the CAGG's own OUTPUT names are its property names, verbatim.
+    expect(c.definition).toContain('AS "day"');
+    expect(c.definition).toContain('AS "total"');
+    // Source-side property names must never leak into the emitted SQL.
+    expect(c.definition).not.toContain('measuredAt');
+    expect(c.definition).not.toContain('deviceId');
+    expect(c.definition).not.toContain('"reading"');
+  });
+
+  it('maps a declared refresh policy onto the IR policy shape', () => {
+    const c = cagg(
+      compileDesiredState(ds, { continuousAggregates: [Refreshed] }),
+      'public.refreshed',
+    );
+    expect(c.refresh).toEqual({
+      kind: 'refresh',
+      startOffset: '1 month',
+      endOffset: '1 hour',
+      scheduleInterval: '30 minutes',
+    });
+  });
+
+  it('defaults an omitted scheduleInterval to the bucket width (2.18 has no overload without it)', () => {
+    const c = cagg(
+      compileDesiredState(ds, { continuousAggregates: [DefaultSchedule] }),
+      'public.default_schedule',
+    );
+    expect(c.refresh?.scheduleInterval).toBe('2 hours');
+  });
+
+  it('compiles a hierarchical CAGG, sourcing it from the parent VIEW and ordering it after the parent', () => {
+    // Declared child-first on purpose: the topological pass must reorder, else `push` would try to
+    // create the daily rollup before the hourly view it reads from.
+    const ir = compileDesiredState(ds, { continuousAggregates: [DailyRollup, HourlyRollup] });
+    expect(ir.continuousAggregates.map((c) => c.viewName)).toEqual([
+      'public.hourly_rollup',
+      'public.daily_rollup',
+    ]);
+
+    const child = cagg(ir, 'public.daily_rollup');
+    expect(child.hierarchical).toBe(true);
+    expect(child.source).toBe('public.hourly_rollup');
+    // Reading FROM a view: the group column resolves to the PARENT's projected output name, which for
+    // an unaliased @GroupColumn is the parent's SOURCE physical column ('device_id', not 'deviceId').
+    expect(child.definition).toContain('FROM "public"."hourly_rollup"');
+    expect(child.definition).toContain('"device_id"');
+    // The parent's aggregate output IS property-named, so the child re-aggregates it verbatim.
+    expect(child.definition).toContain('sum("sumValue")');
+  });
+
+  // REGRESSION. The IR is compared against introspect(), which reports `view_schema.view_name` and
+  // `raw_schema.raw_table` — ALWAYS qualified. The decorator's `name` is normally bare, and emitting
+  // it bare here made every CAGG that ALREADY EXISTS look absent to the diff, so the additive pass
+  // would emit a CREATE for a live view (`push --apply` then fails, or silently claims convergence).
+  // Nothing in the SQL output reveals this — the builder qualifies bare names itself — so only an
+  // IR-shape assertion catches it.
+  it('schema-qualifies viewName and source, matching introspect() (bare names default to public)', () => {
+    const ir = compileDesiredState(ds, { continuousAggregates: [ReadingHourly, MappedByDevice] });
+    for (const c of ir.continuousAggregates) {
+      expect(c.viewName).toMatch(/^[^.]+\.[^.]+$/);
+      expect(c.source).toMatch(/^[^.]+\.[^.]+$/);
+    }
+    expect(ir.continuousAggregates.map((c) => c.viewName).sort()).toEqual([
+      'public.mapped_by_device',
+      'public.reading_hourly',
+    ]);
+  });
+
+  it("uses the source entity's own schema, not a hardcoded public", () => {
+    const c = cagg(
+      compileDesiredState(withSchema, { continuousAggregates: [ReadingHourly] }),
+      'public.reading_hourly',
+    );
+    expect(c.source).toBe('analytics.readings');
+    expect(c.definition).toContain('FROM "analytics"."readings"');
+  });
+
+  it('does not double-qualify a CAGG declared with an explicit schema.view name', () => {
+    class Explicit {}
+    ContinuousAggregate({ name: 'reports.explicit', source: Reading, bucket: '1 hour' })(Explicit);
+    BucketColumn()(Explicit.prototype, 'bucket');
+    AggregateColumn({ fn: 'count' })(Explicit.prototype, 'n');
+
+    const ir = compileDesiredState(ds, { continuousAggregates: [Explicit] });
+    expect(ir.continuousAggregates.map((c) => c.viewName)).toEqual(['reports.explicit']);
+  });
+
+  it('compiles hypertables and CAGGs together, leaving hypertable compilation unchanged', () => {
+    const ir = compileDesiredState(ds, { continuousAggregates: [ReadingHourly] });
+    expect(ir.hypertables.map((h) => h.table)).toEqual(['public.mapped', 'public.readings']);
+    expect(ir.continuousAggregates).toHaveLength(1);
+  });
+
+  it('rejects a class that is not decorated with @ContinuousAggregate', () => {
+    expect(() => compileDesiredState(ds, { continuousAggregates: [Plain] })).toThrow(
+      TimescaleError,
+    );
+  });
+
+  it('rejects a CAGG whose source is neither a registered hypertable nor another CAGG', () => {
+    class Orphan {}
+    Hypertable({ chunkInterval: '1 day' })(Orphan);
+    TimeColumn()(Orphan.prototype, 'ts');
+    HypertablePrimaryKey()(Orphan.prototype, 'ts');
+    class OrphanHourly {}
+    ContinuousAggregate({ name: 'orphan_hourly', source: Orphan, bucket: '1 hour' })(OrphanHourly);
+    BucketColumn()(OrphanHourly.prototype, 'bucket');
+    AggregateColumn({ fn: 'count' })(OrphanHourly.prototype, 'n');
+
+    // `Orphan` is decorated but never registered on this DataSource.
+    expect(() => compileDesiredState(ds, { continuousAggregates: [OrphanHourly] })).toThrow(
+      /is neither a registered @Hypertable entity nor a @ContinuousAggregate/,
+    );
+  });
+
+  it('rejects a circular CAGG source dependency instead of looping or emitting a partial list', () => {
+    class CycA {}
+    class CycB {}
+    ContinuousAggregate({ name: 'cyc_a', source: CycB, bucket: '1 hour' })(CycA);
+    ContinuousAggregate({ name: 'cyc_b', source: CycA, bucket: '1 hour' })(CycB);
+    BucketColumn()(CycA.prototype, 'bucket');
+    AggregateColumn({ fn: 'count' })(CycA.prototype, 'n');
+    BucketColumn()(CycB.prototype, 'bucket');
+    AggregateColumn({ fn: 'count' })(CycB.prototype, 'n');
+
+    expect(() => compileDesiredState(ds, { continuousAggregates: [CycA, CycB] })).toThrow(
+      /circular source dependency/,
+    );
+  });
+
+  it('de-duplicates a CAGG class passed twice', () => {
+    const ir = compileDesiredState(ds, { continuousAggregates: [ReadingHourly, ReadingHourly] });
+    expect(ir.continuousAggregates.map((c) => c.viewName)).toEqual(['public.reading_hourly']);
   });
 });
 

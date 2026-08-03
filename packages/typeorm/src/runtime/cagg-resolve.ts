@@ -31,6 +31,23 @@ export interface ResolvedCagg {
   readonly refresh?: ContinuousAggregatePolicyInput;
   /** `true` when the source is another CAGG (hierarchical) rather than a hypertable. */
   readonly hierarchical: boolean;
+  /**
+   * `schema.view`, ALWAYS qualified (bare names default to `public`).
+   *
+   * Distinct from `create.view` on purpose. `create` feeds the SQL builder, which qualifies bare
+   * names itself, so its fields stay exactly as declared and `generate.ts` keeps emitting
+   * byte-identical SQL. The IR, by contrast, is compared against `introspect()`, which reports
+   * `view_schema.view_name` — always qualified. Using the declared (bare) name in the IR made every
+   * existing CAGG look ABSENT to the diff, which would emit a CREATE for a view that already exists.
+   */
+  readonly qualifiedView: string;
+  /** `schema.table` (or `schema.view` when hierarchical), qualified to match `introspect()`. */
+  readonly qualifiedSource: string;
+}
+
+/** Qualify a possibly-bare object name the way the SQL builder and `introspect()` both do. */
+function qualify(name: string): string {
+  return name.includes('.') ? name : `public.${name}`;
 }
 
 /**
@@ -98,6 +115,7 @@ function resolveOne(dataSource: DataSource, caggCtor: Ctor): ResolvedCagg {
   // another @ContinuousAggregate (its view). These produce the FROM target, the property->column
   // resolver, and the time-bucket source column.
   let sourceRef: string;
+  let qualifiedSource: string;
   let srcToDb: (property: string) => string;
   let srcTimeProp: string | undefined;
   let sourceLabel: string;
@@ -119,6 +137,7 @@ function resolveOne(dataSource: DataSource, caggCtor: Ctor): ResolvedCagg {
     );
     const childGroupProps = new Set(sourceCagg.groupProperties);
     sourceRef = sourceCagg.viewName;
+    qualifiedSource = qualify(sourceCagg.viewName);
     srcToDb = (property) =>
       childGroupProps.has(property) ? (childDb.get(property) ?? property) : property;
     srcTimeProp = meta.timeColumn ?? sourceCagg.bucketProperty;
@@ -149,6 +168,7 @@ function resolveOne(dataSource: DataSource, caggCtor: Ctor): ResolvedCagg {
     srcToDb = (property) => srcDb.get(property) ?? property;
     srcTimeProp = meta.timeColumn ?? sourceHt.timeColumn ?? sourceHt.options.timeColumn;
     sourceRef = sourceEm.schema ? `${sourceEm.schema}.${sourceEm.tableName}` : sourceEm.tableName;
+    qualifiedSource = `${sourceEm.schema ?? 'public'}.${sourceEm.tableName}`;
     sourceLabel = sourceEm.tableName;
   }
 
@@ -201,6 +221,8 @@ function resolveOne(dataSource: DataSource, caggCtor: Ctor): ResolvedCagg {
     meta,
     create,
     hierarchical: sourceCagg !== undefined,
+    qualifiedView: qualify(meta.viewName),
+    qualifiedSource,
     ...(meta.refresh && {
       refresh: {
         view: meta.viewName,

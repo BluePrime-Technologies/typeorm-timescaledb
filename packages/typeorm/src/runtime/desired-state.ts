@@ -197,8 +197,12 @@ export function compileDesiredState(
     dataSource,
     options.continuousAggregates ?? [],
   ).map((r) => ({
-    viewName: r.meta.viewName,
-    source: r.create.source,
+    // ALWAYS schema-qualified, exactly as introspect() reports (`view_schema.view_name` and
+    // `raw_schema.raw_table` / `parent_schema.parent_view`). The declared name is usually bare, and
+    // using it here made every existing CAGG look ABSENT to the diff — which would emit a CREATE for
+    // a view that already exists. Same reason the hypertable branch above qualifies with `public`.
+    viewName: r.qualifiedView,
+    source: r.qualifiedSource,
     hierarchical: r.hierarchical,
     materializedOnly: r.meta.materializedOnly ?? false,
     definition: renderContinuousAggregateSelect(r.create),
