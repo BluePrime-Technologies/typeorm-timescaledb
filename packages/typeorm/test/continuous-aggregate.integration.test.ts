@@ -252,7 +252,9 @@ describe.skipIf(!IMAGE)('M2.5a continuous aggregates', () => {
     });
     const caggUp = gen.up.filter((s) => s.includes('reading_hourly_cagg'));
     expect(caggUp).toHaveLength(1);
-    expect(caggUp[0]).toContain('CREATE MATERIALIZED VIEW "public"."reading_hourly_cagg"');
+    expect(caggUp[0]).toContain(
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly_cagg"',
+    );
     expect(gen.down).toContain('DROP MATERIALIZED VIEW IF EXISTS "public"."reading_hourly_cagg";');
 
     // Run the generated CAGG DDL inside a transaction (the migration model).
@@ -341,10 +343,10 @@ describe.skipIf(!IMAGE)('M2.5a continuous aggregates', () => {
       continuousAggregates: [DailyRollupCagg, HourlyRollupCagg],
     });
     const childCreate = gen.up.findIndex((s) =>
-      s.includes('CREATE MATERIALIZED VIEW "public"."hourly_rollup_cagg"'),
+      s.includes('CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."hourly_rollup_cagg"'),
     );
     const parentCreate = gen.up.findIndex((s) =>
-      s.includes('CREATE MATERIALIZED VIEW "public"."daily_rollup_cagg"'),
+      s.includes('CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."daily_rollup_cagg"'),
     );
     expect(childCreate).toBeGreaterThanOrEqual(0);
     expect(childCreate).toBeLessThan(parentCreate);

@@ -21,7 +21,7 @@ describe('createContinuousAggregateSQL', () => {
   it('builds a real-time CAGG (materialized_only=false by default), WITH NO DATA', () => {
     const s = createContinuousAggregateSQL(base);
     expect(s.up).toEqual([
-      'CREATE MATERIALIZED VIEW "public"."reading_hourly" ' +
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly" ' +
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 hour', "ts") AS "bucket", avg("value") AS "avg_v", count(*) AS "n" ` +
         `FROM "public"."reading" GROUP BY time_bucket(INTERVAL '1 hour', "ts") WITH NO DATA;`,
@@ -40,7 +40,7 @@ describe('createContinuousAggregateSQL', () => {
   it('honours groupBy columns (in SELECT and GROUP BY) and a custom bucket alias', () => {
     const s = createContinuousAggregateSQL({ ...base, groupBy: ['sensor'], bucketAlias: 'hour' });
     expect(s.up[0]).toBe(
-      'CREATE MATERIALIZED VIEW "public"."reading_hourly" ' +
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly" ' +
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 hour', "ts") AS "hour", "sensor", avg("value") AS "avg_v", count(*) AS "n" ` +
         `FROM "public"."reading" GROUP BY time_bucket(INTERVAL '1 hour', "ts"), "sensor" WITH NO DATA;`,
@@ -58,7 +58,7 @@ describe('createContinuousAggregateSQL', () => {
       view: 'rollups.reading_hourly',
       source: 'ts.reading',
     });
-    expect(s.up[0]).toContain('CREATE MATERIALIZED VIEW "rollups"."reading_hourly"');
+    expect(s.up[0]).toContain('CREATE MATERIALIZED VIEW IF NOT EXISTS "rollups"."reading_hourly"');
     expect(s.up[0]).toContain('FROM "ts"."reading"');
     expect(s.inspect).toContain("view_schema = 'rollups'");
   });

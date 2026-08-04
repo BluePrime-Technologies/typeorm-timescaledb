@@ -478,7 +478,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       continuousAggregates: [ReadingHourly],
     });
     expect(gen.up).toContain(
-      'CREATE MATERIALIZED VIEW "public"."reading_hourly" ' +
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly" ' +
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 hour', "time") AS "bucket", "sensor", ` +
         'avg("value") AS "avgValue", count(*) AS "samples" ' +
@@ -503,7 +503,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       continuousAggregates: [MappedDaily],
     });
     expect(gen.up).toContain(
-      'CREATE MATERIALIZED VIEW "public"."mapped_daily" ' +
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."mapped_daily" ' +
         'WITH (timescaledb.continuous, timescaledb.materialized_only = TRUE) AS ' +
         `SELECT time_bucket(INTERVAL '1 day', "measured_at") AS "day", ` +
         'sum("reading_val") AS "total" ' +
@@ -581,7 +581,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       continuousAggregates: [MappedByDevice],
     });
     expect(gen.up).toContain(
-      'CREATE MATERIALIZED VIEW "public"."mapped_by_device" ' +
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."mapped_by_device" ' +
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 day', "measured_at") AS "day", "device_id", ` +
         'sum("reading_val") AS "total" ' +
@@ -668,7 +668,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       continuousAggregates: [ReadingHourlyRefreshed],
     });
     const createIdx = gen.up.findIndex((s) =>
-      s.includes('CREATE MATERIALIZED VIEW "public"."reading_hourly_refreshed"'),
+      s.includes('CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly_refreshed"'),
     );
     const addIdx = gen.up.findIndex((s) => s.includes('add_continuous_aggregate_policy'));
     expect(createIdx).toBeGreaterThanOrEqual(0);
@@ -760,7 +760,9 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       continuousAggregates: [ReadingDailyRollup, ReadingHourlyRollup],
     });
     const parent = gen.up.find((s) => s.includes('"public"."reading_daily_rollup"')) ?? '';
-    expect(parent).toContain('CREATE MATERIALIZED VIEW "public"."reading_daily_rollup"');
+    expect(parent).toContain(
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_daily_rollup"',
+    );
     // buckets on the child's @BucketColumn output, FROM the child's view (not the hypertable)
     expect(parent).toContain(`time_bucket(INTERVAL '1 day', "bucket")`);
     expect(parent).toContain('FROM "public"."reading_hourly_rollup"');
@@ -778,10 +780,10 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       continuousAggregates: [ReadingDailyRollup, ReadingHourlyRollup],
     });
     const childCreate = gen.up.findIndex((s) =>
-      s.includes('CREATE MATERIALIZED VIEW "public"."reading_hourly_rollup"'),
+      s.includes('CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly_rollup"'),
     );
     const parentCreate = gen.up.findIndex((s) =>
-      s.includes('CREATE MATERIALIZED VIEW "public"."reading_daily_rollup"'),
+      s.includes('CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_daily_rollup"'),
     );
     expect(childCreate).toBeGreaterThanOrEqual(0);
     expect(childCreate).toBeLessThan(parentCreate);
@@ -801,7 +803,9 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
     expect(parent).toContain('FROM "public"."reading_hourly_rollup"');
     // the child is NOT (re)created in this migration
     expect(
-      gen.up.some((s) => s.includes('CREATE MATERIALIZED VIEW "public"."reading_hourly_rollup"')),
+      gen.up.some((s) =>
+        s.includes('CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly_rollup"'),
+      ),
     ).toBe(false);
   });
 
@@ -821,7 +825,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       continuousAggregates: [ChainTop, ChainMid, ChainBase], // deliberately unsorted
     });
     const up = (v: string): number =>
-      gen.up.findIndex((s) => s.includes(`CREATE MATERIALIZED VIEW "public"."${v}"`));
+      gen.up.findIndex((s) => s.includes(`CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."${v}"`));
     expect(up('zzz_chain_base')).toBeGreaterThanOrEqual(0);
     expect(up('zzz_chain_base')).toBeLessThan(up('mmm_chain_mid')); // base before mid
     expect(up('mmm_chain_mid')).toBeLessThan(up('aaa_chain_top')); // mid before top
@@ -837,7 +841,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       continuousAggregates: [ReadingHourlyRollup, ReadingHourlyRollup],
     });
     const creates = gen.up.filter((s) =>
-      s.includes('CREATE MATERIALIZED VIEW "public"."reading_hourly_rollup"'),
+      s.includes('CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly_rollup"'),
     );
     expect(creates).toHaveLength(1);
   });
@@ -879,7 +883,7 @@ describe('generateTimescaleMigration — continuous aggregates', () => {
       `CALL add_columnstore_policy('"public"."trades"', after => INTERVAL '7 days', if_not_exists => TRUE);`,
       `SELECT add_retention_policy('"public"."trades"', drop_after => INTERVAL '90 days', if_not_exists => TRUE);`,
       // CAGGs after the hypertables: CREATE then add-policy.
-      'CREATE MATERIALIZED VIEW "public"."reading_hourly_refreshed" ' +
+      'CREATE MATERIALIZED VIEW IF NOT EXISTS "public"."reading_hourly_refreshed" ' +
         'WITH (timescaledb.continuous, timescaledb.materialized_only = FALSE) AS ' +
         `SELECT time_bucket(INTERVAL '1 hour', "time") AS "bucket", avg("value") AS "avgValue" ` +
         `FROM "public"."reading" GROUP BY time_bucket(INTERVAL '1 hour', "time") WITH NO DATA;`,
