@@ -5,6 +5,7 @@ import type {
   IntervalOrInt,
   OrderByElement,
   PolicyState,
+  RefreshPolicy,
   SchemaStateIR,
 } from './schema-state.js';
 import type { ColumnstoreConfig } from './sql/index.js';
@@ -19,6 +20,13 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * state (`introspect()`) against the desired decorator state (`compileDesiredState()`) — both the
  * canonical {@link SchemaStateIR} — and returns an ordered {@link Plan}: the operations needed to
  * converge current → desired. An unchanged schema yields an **empty plan** (no drift).
+ *
+ * **Continuous aggregates are ADDITIVE-ONLY**: a desired CAGG absent from the database is created
+ * (plus its declared refresh policy), and a declared refresh policy missing from an existing CAGG is
+ * attached. An EXISTING CAGG is never dropped, never recreated, and its definition is never compared
+ * — the catalog's `view_definition` is a parse-tree deparse that an unchanged aggregate does not
+ * textually match. Every such CAGG raises a `not-compared` {@link PlanAdvisory} so a clean `check`
+ * never implies more than it verified. See {@link diffContinuousAggregates}.
  *
  * **Scope: additive creates + POLICY alters.** It emits:
  *   - a hypertable in `desired` not in `current` → the full create sequence (create_hypertable +
@@ -54,8 +62,9 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  * **Step order is significant.** Steps are emitted in dependency order (e.g. a `renameHypertable`
  * precedes any policy op that targets the new name) and `compileOperations` preserves it. Consumers
  * must execute `Plan.steps` in order and MUST NOT re-sort them (e.g. by safety class).
- *   - **continuous aggregates** — `compileDesiredState()` does not yet compile them, so acting on them
- *     would drop every live CAGG. The diff is hypertable-scoped and ignores `continuousAggregates`.
+ *   - **dropping or recreating a continuous aggregate** — see the CAGG pass below. A CAGG present in
+ *     the database but absent from `desired` is left alone even under `allowDrops`: its materialized
+ *     rows may be the only surviving copy of data whose source chunks retention has dropped.
  *   - **clearing a columnstore facet** — an EMPTY desired `segmentBy`/`orderBy` means "unmanaged / accept
  *     the engine default", not "remove"; the IR can't distinguish unset from explicitly-empty, so the diff
  *     never emits an alter to clear a facet the current DB has set. Also: **NULLS placement is unmanaged**
@@ -118,8 +127,32 @@ export interface PlanStep extends OperationSafety {
 /** An ordered migration plan — the steps to converge the current schema toward the desired one, each
  * tagged with its safety class so the `check`/`generate` verbs can gate or refuse per step. */
 export interface Plan {
-  /** Steps in apply order. Empty ⇒ no drift. */
+  /** Steps in apply order. Empty ⇒ no drift **among the things this engine compares**. */
   readonly steps: readonly PlanStep[];
+  /**
+   * Things the caller must be told that are NOT expressed as steps. Never empty-but-present: omitted
+   * when there is nothing to say.
+   *
+   * This exists so "no drift detected" can never mean "I didn't look". Anything the engine
+   * deliberately does not compare, or compares but cannot converge, is named here instead of
+   * silently passing.
+   */
+  readonly advisories?: readonly PlanAdvisory[];
+}
+
+/**
+ * A fact about the diff that is not a step.
+ *
+ * `not-compared` — in scope but deliberately unexamined (informational; not drift).
+ * `not-expressible` — a genuine divergence the engine refuses to guess at. This IS drift: a `check`
+ *   that exits clean on one of these would be exactly the false-green the advisory exists to prevent.
+ */
+export interface PlanAdvisory {
+  readonly kind: 'not-compared' | 'not-expressible';
+  /** The object the advisory is about (e.g. a schema-qualified CAGG view name). */
+  readonly object: string;
+  /** Human-readable explanation, including the remedy where one exists. */
+  readonly detail: string;
 }
 
 /** `true` when the plan has no steps (no drift) — the gate behind the `check` verb. NOTE: this
@@ -604,5 +637,221 @@ export function diffSchemaState(
     }
   }
 
-  return { steps: operations.map((operation) => ({ operation, ...classifyOperation(operation) })) };
+  // ── Continuous aggregates — ADDITIVE ONLY ──────────────────────────────────────────────────
+  const advisories = diffContinuousAggregates(current, desired, operations);
+
+  return {
+    steps: operations.map((operation) => ({ operation, ...classifyOperation(operation) })),
+    ...(advisories.length > 0 && { advisories }),
+  };
+}
+
+/**
+ * The CAGG pass: create a desired CAGG the database lacks, and attach a declared refresh policy the
+ * database lacks. **Nothing else.** Appends its operations to `operations` (after every hypertable
+ * op, since a CAGG reads from one) and returns any advisories.
+ *
+ * Deliberately NOT done, and why:
+ *
+ * - **Never drop.** A CAGG in the database but absent from code is left alone, even under
+ *   `allowDrops`. Its materialized rows may be the ONLY surviving copy of data whose source chunks
+ *   retention has already dropped — that is the whole point of a rollup. `allowDrops` is documented
+ *   as covering only reversible policy removals; a CAGG drop is neither reversible nor a policy.
+ *
+ * - **Never recreate, and never compare structure.** `introspect()` reports `view_definition`, which
+ *   is a parse-tree DEPARSE, not the text that created the view: `INTERVAL '1 hour'` comes back as
+ *   `'01:00:00'::interval`, identifiers lose their quoting and schema qualifier, `GROUP BY` gains
+ *   parentheses. An unchanged CAGG therefore does not textually match the definition we would emit,
+ *   so a text diff would report PERMANENT false drift on every CAGG and `push --apply` would
+ *   recreate — destroying materialized data — on a schema that never changed. Presence is the only
+ *   honest comparison until the IR carries parsed facets (bucket width, group keys, aggregates).
+ *   Each existing CAGG gets a `not-compared` advisory so this is visible rather than implied.
+ *
+ * - **A CHANGED refresh threshold is reported, not emitted.** Converging it needs a remove-then-add
+ *   `alterContinuousAggregatePolicy` operation that does not exist yet. Emitting nothing AND saying
+ *   nothing would report a diverged schema as converged, so it raises a `not-expressible` advisory.
+ */
+function diffContinuousAggregates(
+  current: SchemaStateIR,
+  desired: SchemaStateIR,
+  operations: Operation[],
+): PlanAdvisory[] {
+  const advisories: PlanAdvisory[] = [];
+
+  if (desired.continuousAggregates.length === 0) {
+    // Nothing desired. If the DATABASE has aggregates, say so: either the caller genuinely declares
+    // none (in which case naming the undeclared live ones is useful — they will never be managed),
+    // or the caller forgot to pass the list, which is the false-green this whole pass exists to
+    // close. The diff cannot tell those apart, but it does not need to: the advisory is correct and
+    // worth printing either way, and it covers callers who compose introspect -> compileDesiredState
+    // -> diffSchemaState by hand and so never reach `pushSchema`'s absent-list check.
+    for (const c of current.continuousAggregates) {
+      advisories.push({
+        kind: 'not-compared',
+        object: c.viewName,
+        detail:
+          'exists in the database but is not declared, so it is NOT managed or compared. If you ' +
+          'do declare it, pass it via `continuousAggregates` — aggregates cannot be discovered ' +
+          'from a DataSource. It will never be dropped.',
+      });
+    }
+    return advisories;
+  }
+
+  const currentByView = new Map(current.continuousAggregates.map((c) => [c.viewName, c]));
+  // Views that will EXIST once this plan has run: already in the database, plus the ones created
+  // earlier in this same pass.
+  const availableViews = new Set(currentByView.keys());
+
+  for (const d of desired.continuousAggregates) {
+    const c = currentByView.get(d.viewName);
+    // `ContinuousAggregateState.refresh` is the general PolicyState union; only the refresh kind is
+    // meaningful here. A desired side carrying anything else is a malformed hand-built IR — treat it
+    // as "no refresh declared" rather than emitting a policy op from a compression threshold.
+    const desiredRefresh: RefreshPolicy | undefined =
+      d.refresh?.kind === 'refresh' ? d.refresh : undefined;
+
+    if (c === undefined) {
+      // A hierarchical CAGG must be created AFTER the view it reads from. The desired list arrives
+      // topologically ordered (the compiler's own pass), so this only fires on a hand-built IR — but
+      // emitting the create anyway would produce a plan whose SQL fails halfway through, leaving the
+      // schema partly converged. Refuse to build such a plan.
+      if (d.hierarchical && !availableViews.has(d.source)) {
+        // NOT gated on the parent being in the desired list. Gating on that missed the commoner
+        // mistake by far: declaring only the child (`continuousAggregates: [DailyRollup]`) and
+        // forgetting its parent. The parent then appears in NEITHER the database nor the plan, the
+        // create is emitted anyway, and apply dies on "relation hourly_rollup does not exist" with
+        // the schema half-migrated. Refuse whenever the source will not exist by this point,
+        // whatever the reason.
+        throw new TimescaleError(
+          TimescaleErrorCode.INVALID_ARGUMENT,
+          `continuous aggregate ${d.viewName} reads from ${d.source}, which is neither in the ` +
+            `database nor created earlier in this plan — declare ${d.source} too, or order the ` +
+            `desired continuous aggregates so it comes first`,
+          { view: d.viewName, source: d.source },
+        );
+      }
+      operations.push({
+        kind: 'createContinuousAggregateRaw',
+        view: d.viewName,
+        definition: d.definition,
+        materializedOnly: d.materializedOnly,
+      });
+      availableViews.add(d.viewName);
+      if (desiredRefresh !== undefined) {
+        operations.push(refreshPolicyOperation(d.viewName, desiredRefresh));
+      }
+      continue;
+    }
+
+    // The CAGG already exists. Presence-only from here (see the doc comment).
+    advisories.push({
+      kind: 'not-compared',
+      object: d.viewName,
+      detail:
+        'exists in the database; its definition (bucket width, group keys, aggregates) is NOT ' +
+        'compared — the catalog reports a parse-tree deparse that an unchanged aggregate does not ' +
+        'textually match. Verify changes to an existing aggregate by hand.',
+    });
+
+    // `materialized_only` is a real, comparable facet — it is a boolean the catalog reports
+    // directly, not part of the deparsed definition. The plan for this slice said such changes are
+    // to be REPORTED, not emitted (flipping it needs an ALTER this engine does not have). Reporting
+    // was the half that went missing: it was compiled into the desired IR and read by introspect(),
+    // then never inspected. The blanket not-compared note does not cover it either — that text
+    // names "bucket width, group keys, aggregates".
+    if (c.materializedOnly !== d.materializedOnly) {
+      advisories.push({
+        kind: 'not-expressible',
+        object: d.viewName,
+        detail:
+          `materialized_only is ${String(c.materializedOnly)} in the database but ${String(d.materializedOnly)} in the ` +
+          `declaration. Changing it is not yet supported — run ` +
+          `ALTER MATERIALIZED VIEW ... SET (timescaledb.materialized_only = ${String(d.materializedOnly)}) by hand, ` +
+          `or align the decorator with the database.`,
+      });
+    }
+
+    if (desiredRefresh === undefined) continue;
+
+    if (c.refresh === undefined) {
+      // Additive: the aggregate exists but carries no refresh job — attach the declared one.
+      operations.push(refreshPolicyOperation(d.viewName, desiredRefresh));
+    } else if (c.refresh.kind !== 'refresh') {
+      advisories.push({
+        kind: 'not-expressible',
+        object: d.viewName,
+        detail:
+          `a refresh policy is declared, but the database has a ${c.refresh.kind} job attached to ` +
+          `this aggregate. Reconcile it by hand — this engine will not replace a job it did not create.`,
+      });
+    } else if (!refreshPolicyEqual(c.refresh, desiredRefresh)) {
+      advisories.push({
+        kind: 'not-expressible',
+        object: d.viewName,
+        detail:
+          'its refresh policy differs from the declared one, but altering a refresh policy is not ' +
+          'yet supported. Adjust it by hand (remove_continuous_aggregate_policy + ' +
+          'add_continuous_aggregate_policy), or align the decorator with the database.',
+      });
+    }
+  }
+
+  return advisories;
+}
+
+/** Build the `addContinuousAggregatePolicy` op for a declared refresh policy. An omitted offset is
+ * OPEN (`null`) — refresh from the beginning of time / up to now — which is what the builder's
+ * `string | null` expresses. A non-string offset is an integer-time threshold the string-only
+ * builder cannot emit, so it throws rather than converge wrongly. */
+function refreshPolicyOperation(view: string, refresh: RefreshPolicy): Operation {
+  const offset = (value: IntervalOrInt | undefined, what: string): string | null => {
+    // `== null` on purpose: catches both `undefined` and an explicit `null`. The IR type forbids
+    // null, but null is the OPEN-bound sentinel everywhere else in this codebase (the builder's own
+    // `startOffset: string | null`), so a hand-built IR using it must mean "open", not "throw".
+    if (value == null) return null;
+    if (typeof value !== 'string') {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `continuous aggregate ${view}: integer-time refresh ${what} (${String(value)}) is not expressible by the migration builder`,
+        { view },
+      );
+    }
+    return value;
+  };
+  // schedule_interval is REQUIRED: TimescaleDB 2.18 (this package's floor) has no
+  // add_continuous_aggregate_policy overload without it. The desired-state compiler always supplies
+  // one (defaulting to the bucket width), so an absent value means a hand-built IR — refuse rather
+  // than emit SQL that fails at migration time with "function ... does not exist".
+  if (refresh.scheduleInterval === undefined) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `continuous aggregate ${view}: a refresh policy needs a schedule interval — TimescaleDB 2.18 has no add_continuous_aggregate_policy overload without one`,
+      { view },
+    );
+  }
+  return {
+    kind: 'addContinuousAggregatePolicy',
+    view,
+    startOffset: offset(refresh.startOffset, 'start offset'),
+    endOffset: offset(refresh.endOffset, 'end offset'),
+    scheduleInterval: stringThreshold(refresh.scheduleInterval, view, 'refresh schedule interval'),
+  };
+}
+
+/** Do two refresh policies match? Offsets compare via the M4.0 interval normalizer (so `'1 mon'`
+ * from the catalog equals a declared `'1 month'`). `scheduleInterval` is compared only when the
+ * desired side declares one — the engine fills a default the introspected side always carries, so
+ * comparing it unconditionally would be permanent false drift (the same rule the hypertable policy
+ * comparison follows). */
+function refreshPolicyEqual(current: RefreshPolicy, desired: RefreshPolicy): boolean {
+  if (!intervalsEqual(current.startOffset, desired.startOffset)) return false;
+  if (!intervalsEqual(current.endOffset, desired.endOffset)) return false;
+  if (
+    desired.scheduleInterval !== undefined &&
+    !intervalsEqual(current.scheduleInterval, desired.scheduleInterval)
+  ) {
+    return false;
+  }
+  return true;
 }

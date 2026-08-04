@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
 import {
   loadDataSource,
+  loadDataSourceModule,
   isDataSource,
   initializeForCli,
   classifyLoadError,
@@ -170,5 +171,65 @@ describe('initializeForCli', () => {
 
     await initializeForCli(ds);
     expect(touched).toBe(false);
+  });
+});
+
+// The `continuousAggregates` convention. It exists because CAGG classes are undiscoverable: their
+// metadata lives in a module-private WeakMap and they are not TypeORM entities, so nothing reachable
+// from the DataSource can enumerate them.
+describe('loadDataSourceModule — the continuousAggregates convention', () => {
+  it('returns the DataSource alone when the module has no such export', async () => {
+    const path = writeModule('cagg-none.mjs', `export default ${DS_LITERAL};`);
+    const loaded = await loadDataSourceModule(path);
+    expect(isDataSource(loaded.dataSource)).toBe(true);
+    // undefined, NOT [] — `check` distinguishes "never looked" from "declared none", and collapsing
+    // them here would suppress the advisory for every project that forgets the export.
+    expect(loaded.continuousAggregates).toBeUndefined();
+    expect('continuousAggregates' in loaded).toBe(false);
+  });
+
+  it('picks up the named export alongside the DataSource', async () => {
+    const path = writeModule(
+      'cagg-some.mjs',
+      `export default ${DS_LITERAL};\nclass A {}\nclass B {}\nexport const continuousAggregates = [A, B];`,
+    );
+    const loaded = await loadDataSourceModule(path);
+    expect(loaded.continuousAggregates).toHaveLength(2);
+  });
+
+  it('preserves an explicitly EMPTY list as [] rather than undefined', async () => {
+    const path = writeModule(
+      'cagg-empty.mjs',
+      `export default ${DS_LITERAL};\nexport const continuousAggregates = [];`,
+    );
+    expect((await loadDataSourceModule(path)).continuousAggregates).toEqual([]);
+  });
+
+  it('FAILS on a non-array export instead of ignoring it', async () => {
+    // Ignoring it would be the worst outcome: the user believes their aggregates are checked, the
+    // run compares none, and the advisory is suppressed by the export merely existing.
+    const path = writeModule(
+      'cagg-bad.mjs',
+      `export default ${DS_LITERAL};\nexport const continuousAggregates = { nope: true };`,
+    );
+    await expect(loadDataSourceModule(path)).rejects.toThrow(CliError);
+  });
+
+  it('FAILS on an array containing a non-class entry, naming the index', async () => {
+    const path = writeModule(
+      'cagg-bad-entry.mjs',
+      `export default ${DS_LITERAL};\nclass A {}\nexport const continuousAggregates = [A, 'nope'];`,
+    );
+    await expect(loadDataSourceModule(path)).rejects.toThrow(/entry 1 is string/);
+  });
+
+  it('still finds the DataSource when continuousAggregates is exported first', async () => {
+    const path = writeModule(
+      'cagg-order.mjs',
+      `class A {}\nexport const continuousAggregates = [A];\nexport const ds = ${DS_LITERAL};`,
+    );
+    const loaded = await loadDataSourceModule(path);
+    expect(isDataSource(loaded.dataSource)).toBe(true);
+    expect(loaded.continuousAggregates).toHaveLength(1);
   });
 });

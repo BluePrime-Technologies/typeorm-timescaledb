@@ -1,16 +1,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DataSource } from 'typeorm';
-import { diffSchemaState, isEmptyPlan, type Plan } from '@blueprime/timescaledb-core';
+import { isEmptyPlan, type Plan, type PlanAdvisory } from '@blueprime/timescaledb-core';
 import {
   generateTimescaleMigration,
   renderTimescaleMigration,
   renderTimescaleMigrationSql,
 } from '../migrations/index.js';
 import type { OutputFormat } from './args.js';
-import { compileDesiredState } from '../runtime/desired-state.js';
-import { collectRenames } from '../runtime/renames.js';
-import { introspect } from '../runtime/introspect.js';
 import { pushSchema, type PushOptions } from '../runtime/push.js';
 import { pullSchema, formatPullCoverage } from '../runtime/pull.js';
 import { formatPlanPreview } from './format-plan.js';
@@ -46,6 +43,12 @@ export interface GenerateFileOptions {
   readonly timestamp?: number;
   /** Emit format: `ts` (TypeORM class, default) or `sql` (raw `.sql`). */
   readonly output?: OutputFormat;
+  /**
+   * The `@ContinuousAggregate` classes to include. Must be kept in step with what `check` compares:
+   * if `check` can see an aggregate that `generate` cannot emit, drift becomes unfixable through
+   * the migration workflow.
+   */
+  readonly continuousAggregates?: readonly (abstract new (...args: never[]) => unknown)[];
 }
 
 /**
@@ -65,6 +68,13 @@ export function generateMigrationFile(
   const migration = generateTimescaleMigration(dataSource, {
     name: base,
     ...(options.timestamp !== undefined && { timestamp: options.timestamp }),
+    // Thread the CAGG list through. Without it `generate` was blind to aggregates while `check`
+    // could see them, which is a CLOSED LOOP the user cannot exit: check reports drift, generate
+    // writes a migration without the CAGG, the migration runs, check reports the same drift —
+    // forever. Being consistently blind was bad; being inconsistently blind is worse.
+    ...(options.continuousAggregates !== undefined && {
+      continuousAggregates: options.continuousAggregates,
+    }),
   });
   if (migration.up.length === 0) return null;
   const content =
@@ -107,12 +117,43 @@ export async function statusCommand(dataSource: DataSource, logger: Logger): Pro
  * DataSource (a canned `Plan` is enough; no DB round-trip needed).
  */
 export function reportPlan(plan: Plan, logger: Logger): boolean {
-  if (isEmptyPlan(plan)) {
+  const advisories = plan.advisories ?? [];
+  // `not-expressible` advisories are REAL divergence the engine declined to guess at. Reporting them
+  // and still exiting clean would be a false green — the failure mode this whole slice exists to
+  // close — so they count as drift for the gate even though they produce no step.
+  const blocking = advisories.filter((a) => a.kind === 'not-expressible');
+  const hasSteps = !isEmptyPlan(plan);
+
+  if (hasSteps) {
+    logger.log(formatPlanPreview(plan));
+  } else if (blocking.length === 0) {
     logger.log('No drift detected — schema matches the @Hypertable declarations.');
-    return false;
   }
-  logger.log(formatPlanPreview(plan));
-  return true;
+
+  if (advisories.length > 0) logger.log(formatAdvisories(advisories));
+
+  if (!hasSteps && blocking.length > 0) {
+    logger.log(
+      '\nDrift was found that this engine cannot converge automatically (see above). Resolve it by ' +
+        'hand, or align the declarations with the database.',
+    );
+  }
+  return hasSteps || blocking.length > 0;
+}
+
+/** Render advisories, loudest first, so a clean-looking run still shows what was NOT verified. */
+function formatAdvisories(advisories: readonly PlanAdvisory[]): string {
+  const render = (a: PlanAdvisory): string => `  - ${a.object}: ${a.detail}`;
+  const notExpressible = advisories.filter((a) => a.kind === 'not-expressible');
+  const notCompared = advisories.filter((a) => a.kind === 'not-compared');
+  const sections: string[] = [];
+  if (notExpressible.length > 0) {
+    sections.push(`\nNot auto-converged:\n${notExpressible.map(render).join('\n')}`);
+  }
+  if (notCompared.length > 0) {
+    sections.push(`\nNot compared:\n${notCompared.map(render).join('\n')}`);
+  }
+  return sections.join('\n');
 }
 
 /**
@@ -121,17 +162,22 @@ export function reportPlan(plan: Plan, logger: Logger): boolean {
  * drift gate). Returns `true` when drift was found, so the caller (`main.ts`) can set a non-zero
  * exit code without this function reaching into `process` itself.
  */
-export async function checkCommand(dataSource: DataSource, logger: Logger): Promise<boolean> {
-  const current = await introspect(dataSource);
-  const desired = compileDesiredState(dataSource);
-  const renames = collectRenames(dataSource);
-  const plan = diffSchemaState(current, desired, { renames });
+export async function checkCommand(
+  dataSource: DataSource,
+  logger: Logger,
+  options: Pick<PushOptions, 'continuousAggregates'> = {},
+): Promise<boolean> {
+  // Delegate to `pushSchema` in preview mode rather than re-composing introspect → compile → diff
+  // here. The two used to be parallel implementations, which is how `check` and `push` could drift
+  // apart; sharing one path also means the "no aggregates were compared" advisory is raised
+  // identically for both.
+  const { plan } = await pushSchema(dataSource, { ...options, apply: false });
   return reportPlan(plan, logger);
 }
 
 /** The disposition of a {@link pushCommand} run, so `main.ts` can pick an exit code without
  * reaching into `process` itself. */
-export type PushOutcome = 'no-drift' | 'previewed' | 'applied';
+export type PushOutcome = 'no-drift' | 'previewed' | 'applied' | 'applied-with-drift';
 
 /**
  * CLI half of the `push` verb: report the plan, apply it when asked, and say which happened.
@@ -154,13 +200,31 @@ export async function pushCommand(
     throw err;
   }
   const { plan, applied, statements } = result;
+  const advisories = plan.advisories ?? [];
+  // `push` had its OWN empty-plan branch, so the advisory handling added to `reportPlan` for
+  // `check` did not cover it: a database whose only divergence is unconvergeable (a changed refresh
+  // threshold, say) produced zero steps, printed "No drift detected", and exited 0 — the same false
+  // green, on the other verb. Blocking advisories are drift here too.
+  const blocking = advisories.filter((a) => a.kind === 'not-expressible');
 
-  if (isEmptyPlan(plan)) {
+  if (isEmptyPlan(plan) && blocking.length === 0) {
     logger.log('No drift detected — the database already matches your @Hypertable declarations.');
+    if (advisories.length > 0) logger.log(formatAdvisories(advisories));
     return 'no-drift';
   }
 
+  if (isEmptyPlan(plan)) {
+    // Blocking advisories only: there is nothing to apply, but this is NOT a clean run.
+    logger.log(formatAdvisories(advisories));
+    logger.log(
+      '\nDrift was found that this engine cannot converge automatically (see above). Resolve it by ' +
+        'hand, or align the declarations with the database.',
+    );
+    return 'previewed';
+  }
+
   logger.log(formatPlanPreview(plan));
+  if (advisories.length > 0) logger.log(formatAdvisories(advisories));
 
   if (!applied) {
     logger.log(
@@ -169,6 +233,18 @@ export async function pushCommand(
         'removals) and --allow-refused (operations classified refuse-by-default).',
     );
     return 'previewed';
+  }
+
+  if (blocking.length > 0) {
+    // Applied what could be applied, but divergence REMAINS. Returning 'applied' here (exit 0) with
+    // "the database now matches your entities" would be an affirmative false claim — worse than the
+    // silence this slice set out to fix, because the user is told convergence happened. Blocking
+    // advisories are drift whether or not the plan also had executable steps.
+    logger.log(
+      `\nApplied ${statements.length} statement(s), but drift REMAINS that this engine cannot ` +
+        `converge automatically (see above). The database does NOT yet match your declarations.`,
+    );
+    return 'applied-with-drift';
   }
 
   logger.log(
@@ -255,7 +331,9 @@ export async function pullCommand(
  * apart from "the command itself failed" (which exits 1).
  */
 export function exitCodeForPush(outcome: PushOutcome): number {
-  return outcome === 'previewed' ? 2 : 0;
+  // 'applied-with-drift' must NOT be 0: statements ran, but divergence the engine cannot express
+  // is still there. Exiting 0 would tell CI the schema converged when it did not.
+  return outcome === 'previewed' || outcome === 'applied-with-drift' ? 2 : 0;
 }
 
 /**

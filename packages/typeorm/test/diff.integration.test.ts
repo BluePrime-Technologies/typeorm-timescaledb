@@ -267,8 +267,11 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     const logger: Logger = { log: (m) => lines.push(m), error: (m) => lines.push(`ERR:${m}`) };
 
     // Baseline: the prior tests already converged `metric` to the Metric entity's declared config.
+    // Assert on the whole output, not `lines.at(-1)`: the verdict is now followed by the
+    // "no continuous aggregates were compared" advisory (this call passes no CAGG list), which is
+    // deliberate — a clean check must still say what it did not look at.
     expect(await checkCommand(ds, logger)).toBe(false);
-    expect(lines.at(-1)).toContain('No drift detected');
+    expect(lines.join('\n')).toContain('No drift detected');
 
     // Drift retention out-of-band (mirrors the earlier "detects a CHANGED retention threshold" test).
     await runAll(ds, [
@@ -276,8 +279,8 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
       `SELECT add_retention_policy('public.metric', drop_after => INTERVAL '30 days');`,
     ]);
     expect(await checkCommand(ds, logger)).toBe(true);
-    expect(lines.at(-1)).toContain('Drift detected');
-    expect(lines.at(-1)).toContain('alter retention policy on public.metric');
+    expect(lines.join('\n')).toContain('Drift detected');
+    expect(lines.join('\n')).toContain('alter retention policy on public.metric');
 
     // Restore convergence — later tests depend on `metric` matching the Metric entity's declared config.
     const plan = diffSchemaState(await introspect(ds), compileDesiredState(ds));

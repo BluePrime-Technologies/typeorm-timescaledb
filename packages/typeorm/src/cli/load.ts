@@ -106,6 +106,38 @@ export function classifyLoadError(error: unknown, modulePath: string): CliError 
  *   or if the module exports no `DataSource`.
  */
 export async function loadDataSource(modulePath: string): Promise<DataSource> {
+  return (await loadDataSourceModule(modulePath)).dataSource;
+}
+
+/** What a DataSource module contributes to a CLI run. */
+export interface LoadedDataSourceModule {
+  readonly dataSource: DataSource;
+  /**
+   * The module's named `continuousAggregates` export, when it has one.
+   *
+   * `undefined` (no export) is meaningfully different from `[]` (an explicit "there are none"):
+   * `check`/`push` compare no aggregates in either case, but only the former warrants the
+   * "nothing was compared" advisory. Keeping them distinct is what stops the convention from
+   * silently reinstating the false-green it exists to close.
+   */
+  readonly continuousAggregates?: readonly (abstract new (...args: never[]) => unknown)[];
+}
+
+/**
+ * Load a DataSource module, picking up both the DataSource and an optional named
+ * `continuousAggregates` export.
+ *
+ * The convention exists because continuous aggregates **cannot be discovered**: their metadata
+ * lives in a module-private WeakMap and the classes are not TypeORM entities, so nothing on the
+ * DataSource can reach them. Exporting the array is the smallest thing a user can do to make
+ * `check`/`push` see them, and it mirrors how the DataSource itself is exported.
+ *
+ * ```ts
+ * export default new DataSource({ entities: [Reading] });
+ * export const continuousAggregates = [ReadingHourly];
+ * ```
+ */
+export async function loadDataSourceModule(modulePath: string): Promise<LoadedDataSourceModule> {
   const url = pathToFileURL(resolve(modulePath)).href;
 
   let mod: Record<string, unknown>;
@@ -115,15 +147,53 @@ export async function loadDataSource(modulePath: string): Promise<DataSource> {
     throw classifyLoadError(error, modulePath) ?? error;
   }
 
+  const continuousAggregates = readContinuousAggregates(mod, modulePath);
+
   const candidates =
     mod.default !== undefined ? [mod.default, ...Object.values(mod)] : Object.values(mod);
   for (const candidate of candidates) {
     const resolved = await candidate; // support Promise<DataSource> exports
-    if (isDataSource(resolved)) return resolved;
+    if (isDataSource(resolved)) {
+      return { dataSource: resolved, ...(continuousAggregates && { continuousAggregates }) };
+    }
   }
   throw new CliError(
     `No DataSource export found in ${modulePath} — export your DataSource (e.g. \`export default new DataSource(...)\`)`,
   );
+}
+
+/**
+ * Read and validate the optional `continuousAggregates` export.
+ *
+ * A malformed export FAILS the command rather than being ignored. Ignoring it would leave the user
+ * believing their aggregates are being checked while the run silently compares none — the exact
+ * failure mode the advisory exists to prevent, but worse, because the advisory would be suppressed
+ * by the export's mere presence.
+ */
+function readContinuousAggregates(
+  mod: Record<string, unknown>,
+  modulePath: string,
+): readonly (abstract new (...args: never[]) => unknown)[] | undefined {
+  const exported = mod.continuousAggregates;
+  if (exported === undefined) return undefined;
+  if (!Array.isArray(exported)) {
+    throw new CliError(
+      `The \`continuousAggregates\` export in ${modulePath} must be an array of @ContinuousAggregate classes, got ${typeof exported}`,
+    );
+  }
+  const bad = exported.findIndex((entry) => typeof entry !== 'function');
+  if (bad !== -1) {
+    throw new CliError(
+      `The \`continuousAggregates\` export in ${modulePath} must contain only @ContinuousAggregate classes — entry ${String(bad)} is ${typeof exported[bad]}`,
+    );
+  }
+  // Deliberately NOT checked here: whether each entry actually carries @ContinuousAggregate
+  // metadata. `resolveContinuousAggregates` already rejects an undecorated class by name
+  // ("X was passed as a continuous aggregate but is not decorated with @ContinuousAggregate"),
+  // which is a clear, typed error at the point the metadata is genuinely needed. Duplicating it
+  // here would only add the module path, at the cost of this loader depending on the decorator
+  // store — so the shape check above is where this function's responsibility ends.
+  return exported as readonly (abstract new (...args: never[]) => unknown)[];
 }
 
 /**

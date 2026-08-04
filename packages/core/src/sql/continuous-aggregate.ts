@@ -125,11 +125,11 @@ export function createContinuousAggregateSQL(
   // unambiguous and equivalent for flat CAGGs.
   const groupByItems = [bucketExpr, ...groupCols];
 
+  const body = `SELECT ${selectItems.join(', ')} FROM ${source.ident} GROUP BY ${groupByItems.join(', ')}`;
   const up = [
     `CREATE MATERIALIZED VIEW ${view.ident} ` +
       `WITH (timescaledb.continuous, timescaledb.materialized_only = ${materializedOnly ? 'TRUE' : 'FALSE'}) AS ` +
-      `SELECT ${selectItems.join(', ')} FROM ${source.ident} ` +
-      `GROUP BY ${groupByItems.join(', ')} WITH NO DATA;`,
+      `${body} WITH NO DATA;`,
   ];
   const down = [`DROP MATERIALIZED VIEW IF EXISTS ${view.ident};`];
   const inspect =
@@ -137,6 +137,55 @@ export function createContinuousAggregateSQL(
     `WHERE view_schema = ${quoteLiteral(view.schema)} AND view_name = ${quoteLiteral(view.name)};`;
 
   return { up, down, inspect };
+}
+
+/**
+ * Render just the `SELECT …` body of a continuous aggregate — byte-identical to what
+ * {@link createContinuousAggregateSQL} embeds, because that function now builds its statement from
+ * this exact string.
+ *
+ * Exists for the DESIRED-STATE path: `SchemaStateIR.ContinuousAggregateState` carries the CAGG as
+ * SQL text, so the decorator side needs the same rendering the builder would use. Sharing one
+ * renderer means the two can never drift apart.
+ *
+ * NOTE this text is NOT comparable to the catalog's `view_definition`. `pg_get_viewdef` is a
+ * parse-tree deparse — it re-renders intervals (`INTERVAL '1 hour'` -> `'01:00:00'::interval`),
+ * unquotes identifiers, drops the schema qualifier and parenthesises GROUP BY — so an identical
+ * CAGG compares UNEQUAL. Never diff desired-vs-current CAGG structure on this string.
+ */
+export function renderContinuousAggregateSelect(input: CreateContinuousAggregateInput): string {
+  return extractSelectBody(createContinuousAggregateSQL(input).up[0] ?? '');
+}
+
+/**
+ * Pull the `SELECT … ` body back out of a rendered CREATE MATERIALIZED VIEW statement.
+ *
+ * Exported (under an explicit `ForTest` name, not part of the documented surface) ONLY so its
+ * failure mode is pinnable: it is reachable in production solely through
+ * `renderContinuousAggregateSelect`, whose own input always matches, so the throw below could not
+ * otherwise be exercised — and an unexercised throw is an unpinned one.
+ */
+export function extractSelectBodyForTest(statement: string): string {
+  return extractSelectBody(statement);
+}
+
+function extractSelectBody(statement: string): string {
+  // Whitespace-tolerant: the builder emits `) AS <body> WITH NO DATA;` on one line today, but a
+  // reformat that broke the line would silently stop matching.
+  const open = /\)\s+AS\s+/.exec(statement);
+  const close = /\s+WITH\s+NO\s+DATA;?\s*$/.exec(statement);
+  if (open === null || close === null) {
+    // Deliberately THROW rather than fall back to the whole statement. The previous fallback
+    // returned the entire `CREATE MATERIALIZED VIEW ... AS SELECT ...` text as if it were the
+    // SELECT body — which a raw-create then embeds inside another CREATE, producing nonsense SQL
+    // from a silent mismatch. A loud failure here is the only safe behaviour for a function whose
+    // output goes on to be emitted as DDL.
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      'could not locate the SELECT body in the generated continuous-aggregate statement — the builder output shape changed',
+    );
+  }
+  return statement.slice(open.index + open[0].length, close.index);
 }
 
 /**

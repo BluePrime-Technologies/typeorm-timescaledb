@@ -22,4 +22,11 @@ export type {
 export { formatPlanPreview } from './format-plan.js';
 export { parseArgs, COMMANDS, CliError, USAGE } from './args.js';
 export type { Command, ParsedArgs } from './args.js';
-export { loadDataSource, isDataSource, initializeForCli, classifyLoadError } from './load.js';
+export {
+  loadDataSource,
+  loadDataSourceModule,
+  isDataSource,
+  initializeForCli,
+  classifyLoadError,
+} from './load.js';
+export type { LoadedDataSourceModule } from './load.js';

@@ -1,5 +1,10 @@
 import type { DataSource } from 'typeorm';
-import { diffSchemaState, isEmptyPlan, type Plan } from '@blueprime/timescaledb-core';
+import {
+  diffSchemaState,
+  isEmptyPlan,
+  type Plan,
+  type PlanAdvisory,
+} from '@blueprime/timescaledb-core';
 import { introspect } from './introspect.js';
 import { compileDesiredState } from './desired-state.js';
 import { collectRenames } from './renames.js';
@@ -20,7 +25,35 @@ export interface PushOptions {
    * different risks, and one flag must not silently grant both.
    */
   readonly allowRefused?: boolean;
+  /**
+   * The `@ContinuousAggregate` classes to compare, exactly as `generateTimescaleMigration` takes
+   * them. CAGG metadata lives in a module-private WeakMap and CAGG classes are not TypeORM entities,
+   * so they can NEVER be discovered from a DataSource — an omitted list means CAGGs are not compared
+   * at all.
+   *
+   * **Omitting it is not silent.** The returned plan carries a `not-compared` advisory naming the
+   * gap, because "no drift detected" from a run that never looked at aggregates is precisely the
+   * false-green this whole comparison was added to close. Pass `[]` to state affirmatively that the
+   * project declares none; that is not advised against.
+   */
+  readonly continuousAggregates?: readonly (abstract new (...args: never[]) => unknown)[];
 }
+
+/**
+ * The advisory raised when {@link PushOptions.continuousAggregates} is omitted entirely.
+ *
+ * Exported so `check`, `push`, and their tests all assert on ONE string rather than three copies
+ * that can drift apart.
+ */
+export const CAGG_LIST_ABSENT_ADVISORY: PlanAdvisory = {
+  kind: 'not-compared',
+  object: '(all continuous aggregates)',
+  detail:
+    'No continuous aggregates were passed, so NONE were compared — a declared aggregate missing ' +
+    'from this database would not be reported. Continuous aggregates cannot be discovered from a ' +
+    'DataSource (they are not entities); export a `continuousAggregates` array from your DataSource ' +
+    'module, or pass one explicitly. Pass an empty array to declare that there are none.',
+};
 
 /** The outcome of a {@link pushSchema} run. */
 export interface PushResult {
@@ -53,12 +86,34 @@ export async function pushSchema(
   options: PushOptions = {},
 ): Promise<PushResult> {
   const current = await introspect(dataSource);
-  const desired = compileDesiredState(dataSource);
+  const desired = compileDesiredState(dataSource, {
+    ...(options.continuousAggregates !== undefined && {
+      continuousAggregates: options.continuousAggregates,
+    }),
+  });
   const renames = collectRenames(dataSource);
-  const plan = diffSchemaState(current, desired, {
+  const diffed = diffSchemaState(current, desired, {
     renames,
     allowDrops: options.allowDrops ?? false,
   });
+
+  // An OMITTED list means no aggregate was compared — which the diff cannot detect, since an empty
+  // desired list is indistinguishable from "this project declares none". Only this layer knows the
+  // difference, so the advisory has to be raised here. Without it, option B (pass the list
+  // explicitly) would silently reinstate the false-green for anyone who forgets the export.
+  const listAbsent = options.continuousAggregates === undefined;
+  // When the umbrella advisory fires, drop the diff's per-view "exists but is not declared" notes:
+  // they say the same thing once per aggregate, so a project with 12 of them got 13 paragraphs for
+  // one fact. (The diff still emits them on its own, for callers that compose the pipeline by hand
+  // and never reach this function — that is the case they exist for.)
+  const fromDiff = (diffed.advisories ?? []).filter(
+    (a) => !(listAbsent && a.kind === 'not-compared'),
+  );
+  const advisories: PlanAdvisory[] = [
+    ...(listAbsent ? [CAGG_LIST_ABSENT_ADVISORY] : []),
+    ...fromDiff,
+  ];
+  const plan: Plan = { ...diffed, ...(advisories.length > 0 && { advisories }) };
 
   if (options.apply !== true || isEmptyPlan(plan)) {
     return { plan, applied: false, statements: [] };

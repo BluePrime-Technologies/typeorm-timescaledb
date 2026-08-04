@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { stateToOperations } from '../src/reproduce.js';
 import { compileOperation } from '../src/operation.js';
 import { classifyOperation } from '../src/safety.js';
-import { createContinuousAggregateRawSQL } from '../src/sql/continuous-aggregate.js';
+import {
+  createContinuousAggregateRawSQL,
+  createContinuousAggregateSQL,
+  renderContinuousAggregateSelect,
+  extractSelectBodyForTest,
+} from '../src/sql/continuous-aggregate.js';
 import { TimescaleError } from '../src/errors.js';
 import type {
   ContinuousAggregateState,
@@ -705,5 +710,58 @@ describe('open (null) refresh bounds', () => {
     expect(kinds(result)).toEqual(['createContinuousAggregateRaw', 'addContinuousAggregatePolicy']);
     expect(result.skipped).toEqual([]);
     expect(result.operations[1]).toMatchObject({ startOffset: null, endOffset: null });
+  });
+});
+
+describe('renderContinuousAggregateSelect', () => {
+  const input = {
+    view: 'public.metrics_hourly',
+    source: 'public.metrics',
+    timeColumn: 'ts',
+    bucketInterval: '1 hour',
+    groupBy: ['device'],
+    aggregates: [{ fn: 'avg' as const, column: 'value', as: 'avg_value' }],
+  };
+
+  it('is byte-identical to the body the structured builder embeds', () => {
+    // The desired-state path renders the CAGG as SQL text; the builder emits the CREATE. If these
+    // two ever diverge, `check` would compare against a statement the engine would not actually
+    // emit. Sharing one renderer makes that impossible — this pins it.
+    const body = renderContinuousAggregateSelect(input);
+    const full = createContinuousAggregateSQL(input).up[0]!;
+    expect(full).toContain(`AS ${body} WITH NO DATA;`);
+    expect(body.startsWith('SELECT ')).toBe(true);
+    expect(body).not.toContain('WITH NO DATA');
+    expect(body).not.toContain('CREATE MATERIALIZED VIEW');
+  });
+
+  it('carries the resolved physical columns, not property names', () => {
+    expect(renderContinuousAggregateSelect(input)).toBe(
+      `SELECT time_bucket(INTERVAL '1 hour', "ts") AS "bucket", "device", avg("value") AS "avg_value" FROM "public"."metrics" GROUP BY time_bucket(INTERVAL '1 hour', "ts"), "device"`,
+    );
+  });
+});
+
+// `renderContinuousAggregateSelect` slices the SELECT body back out of a rendered CREATE. The
+// slicing used to fall back to returning the WHOLE statement when its marker did not match, which a
+// raw-create would then embed inside another CREATE — silent nonsense SQL. It now throws. Pinning
+// both halves: an adversarial review showed the anchored regex could be weakened to an unanchored
+// one with the entire core suite still green, i.e. the new behaviour was unpinned in both directions.
+describe('extractSelectBody (via renderContinuousAggregateSelect)', () => {
+  it('throws rather than returning the whole statement when the body cannot be located', () => {
+    // Reach the private helper through the only public door, by making the builder's output
+    // unparseable for the slicer: `createContinuousAggregateSQL` is the sole producer, so simulate
+    // a shape change by calling the extractor's contract directly through a crafted statement.
+    // (If the builder's output shape ever changes, THIS is the test that fires.)
+    const statement = 'CREATE MATERIALIZED VIEW x AS SELECT 1;'; // no `) AS `, no `WITH NO DATA`
+    expect(() => extractSelectBodyForTest(statement)).toThrow(TimescaleError);
+    expect(() => extractSelectBodyForTest(statement)).toThrow(/could not locate the SELECT body/);
+  });
+
+  it('tolerates the whitespace its comment promises (a reformat must not silently stop matching)', () => {
+    const reformatted =
+      'CREATE MATERIALIZED VIEW "public"."v"\n  WITH (timescaledb.continuous)\n  AS\n' +
+      '  SELECT 1 AS "a"\n  WITH NO DATA;';
+    expect(extractSelectBodyForTest(reformatted)).toBe('SELECT 1 AS "a"');
   });
 });

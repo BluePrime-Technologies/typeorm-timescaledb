@@ -120,6 +120,47 @@ declarations, prints a readable preview of any drift, and exits non-zero if
 drift is found — a schema gate for CI. It reports drift; it does not apply
 anything.
 
+### Making `check` and `push` see your continuous aggregates
+
+Continuous aggregates **cannot be discovered automatically.** A
+`@ContinuousAggregate` class is not a TypeORM entity, and its metadata lives in a
+module-private `WeakMap`, so nothing reachable from a `DataSource` can enumerate
+them. Export them by name from your DataSource module and both verbs pick them
+up:
+
+```ts
+// src/data-source.ts
+export default new DataSource({ entities: [Reading] });
+export const continuousAggregates = [ReadingHourly];
+```
+
+If you omit the export, `check` and `push` compare **no** aggregates — and say
+so, rather than reporting a clean run:
+
+```
+No drift detected — schema matches the @Hypertable declarations.
+
+Not compared:
+  - (all continuous aggregates): No continuous aggregates were passed, so NONE
+    were compared — a declared aggregate missing from this database would not be
+    reported. …
+```
+
+Export an empty array to state affirmatively that your project has none; that
+produces no warning.
+
+**What is compared, and what is not.** An aggregate you declare that the database
+lacks is created (with its refresh policy), and a declared refresh policy missing
+from an existing aggregate is attached. An aggregate that **already exists** is
+never dropped and never recreated, and its definition is not compared — the
+catalog reports a parse-tree deparse (`INTERVAL '1 hour'` reads back as
+`'01:00:00'::interval`, identifiers lose their quoting), so an unchanged
+aggregate would not textually match and `push --apply` would recreate it,
+destroying materialized rows. Every existing aggregate is therefore listed under
+`Not compared:` — change one, and you change it by hand. A refresh policy whose
+threshold has changed is reported under `Not auto-converged:` and **counts as
+drift**, so `check` still exits non-zero.
+
 ### The programmatic API: read → diff → apply
 
 The same engine is three calls, each telling you how risky the next one is
