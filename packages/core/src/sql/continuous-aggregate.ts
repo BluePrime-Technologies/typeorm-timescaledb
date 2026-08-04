@@ -319,6 +319,21 @@ export interface CreateContinuousAggregateRawInput {
   readonly definition: string;
   /** `timescaledb.materialized_only`. Default `false` (real-time aggregation on). */
   readonly materializedOnly?: boolean;
+  /**
+   * What this statement is FOR. It changes `down()` and the safety classification, and nothing else.
+   *
+   * - `'reproduce'` (DEFAULT) — the aggregate already exists somewhere and is already materialized;
+   *   this reproduces it elsewhere (the `pull` path). `down()` must NOT drop it: its rows may be
+   *   the only surviving copy of data whose source chunks a retention policy has already dropped.
+   * - `'create'` — the aggregate does not exist and is being created new (the diff path). It is
+   *   created `WITH NO DATA` and holds nothing, so `down()` dropping it is genuinely lossless —
+   *   and leaving it behind instead means a reverted migration strands an empty, unwanted view.
+   *
+   * Defaults to `'reproduce'` deliberately: a caller who forgets gets the NON-destructive `down()`.
+   * The cost of that default is a stranded empty view; the cost of the other default is deleting a
+   * rollup that cannot be recomputed.
+   */
+  readonly intent?: 'reproduce' | 'create';
 }
 
 /**
@@ -335,9 +350,17 @@ export interface CreateContinuousAggregateRawInput {
  * definition instead.
  *
  * **TRUST BOUNDARY — read before reusing.** Unlike every other builder here, `definition` is
- * NOT identifier-validated: it is opaque SQL. That is sound for its one intended caller
- * (`stateToOperations`, fed by `introspect()`, i.e. the server's own catalog) and NOT sound for
- * user- or config-supplied text. The one structural guard applied is single-statement-ness: a
+ * NOT identifier-validated: it is opaque SQL. That is sound for BOTH of its current callers, and
+ * NOT sound for user- or config-supplied text:
+ *   1. `stateToOperations` (the `pull` path) — fed by `introspect()`, i.e. the server's own catalog;
+ *   2. `diffContinuousAggregates` (the desired-state path) — fed by
+ *      `renderContinuousAggregateSelect`, i.e. text THIS package rendered, with every identifier
+ *      already through `assertSafeIdentifier` and every aggregate function allow-listed.
+ * Neither source is free text. Do not add a third caller without re-establishing that its
+ * `definition` has the same provenance. (This note previously claimed a single caller; the
+ * desired-state path was added later and the claim was left stale — the kind of invariant a reader
+ * relies on, so it is spelled out rather than trimmed.)
+ * The one structural guard applied is single-statement-ness: a
  * definition that still contains a `;` after its trailing terminator is stripped is rejected, so
  * a catalog value can never smuggle extra statements into the migration. The view NAME is
  * validated normally.
@@ -452,12 +475,20 @@ export function createContinuousAggregateRawSQL(
       // a migration, silently falsifying this operation's "created WITH NO DATA" safety premise.
       `${body}\nWITH NO DATA;`,
   ];
-  // NEVER drop the view on `down`. This builder reproduces a CAGG that ALREADY EXISTS and is
-  // ALREADY MATERIALIZED — unlike `createContinuousAggregateSQL`, where `down` dropping a
-  // just-created empty view is genuinely lossless. Here the aggregate rows may be the only
-  // surviving copy of data whose source chunks a retention policy has long since dropped, so
-  // dropping them is unrecoverable. Same treatment as a hypertable/columnstore conversion.
-  const down = [nonDestructiveNotice('continuous aggregate', view.ident)];
+  // `down` depends on WHY this statement exists — the two cases are genuinely different objects.
+  //
+  // reproduce (pull): the aggregate ALREADY EXISTS and is ALREADY MATERIALIZED elsewhere. Its rows
+  // may be the only surviving copy of data whose source chunks a retention policy has long since
+  // dropped, so dropping is unrecoverable. Same treatment as a hypertable/columnstore conversion.
+  //
+  // create (diff): the aggregate did not exist and is created here `WITH NO DATA`, so it holds
+  // nothing and dropping it is lossless — exactly the reasoning `createContinuousAggregateSQL`
+  // already documents. Refusing to drop it in this case is not caution, it is a bug: a reverted
+  // migration leaves behind an empty view the user never had and cannot easily notice.
+  const down =
+    (input.intent ?? 'reproduce') === 'create'
+      ? [`DROP MATERIALIZED VIEW IF EXISTS ${view.ident};`]
+      : [nonDestructiveNotice('continuous aggregate', view.ident)];
   const inspect =
     `SELECT view_schema, view_name, materialized_only FROM timescaledb_information.continuous_aggregates ` +
     `WHERE view_schema = ${quoteLiteral(view.schema)} AND view_name = ${quoteLiteral(view.name)};`;

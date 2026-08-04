@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
+import { classifyOperation, compileOperation } from '@blueprime/timescaledb-core';
 import { Column, DataSource, Entity, PrimaryColumn } from 'typeorm';
 import { exitCodeForPush, generateMigrationFile, pushCommand } from '../src/cli/index.js';
 import {
@@ -246,6 +247,65 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
       "SELECT remove_continuous_aggregate_policy('reading_hourly', if_exists => TRUE)",
     );
     await pushSchema(ds, { continuousAggregates: [ReadingHourly], apply: true });
+  }, 300_000);
+
+  it('a CREATE-intent aggregate is dropped by down(); a reproduce-intent one is not (#190)', async () => {
+    // Proven against a live database, because the whole point is what a REVERTED migration leaves
+    // behind — a string assertion cannot show that.
+    //
+    // Deliberately self-contained: its own table, its own view names, and the operations built
+    // directly rather than through the DataSource-bound diff. The earlier tests in this file
+    // mutate shared state (dropping and hand-recreating aggregates, moving policies), and an
+    // ordering coupling here would make a future failure look like a bug in `down()` when it was
+    // really test residue. The diff's `intent: 'create'` wiring is pinned separately, by the
+    // operation-shape assertion in core/test/diff.test.ts.
+    await ds.query(`
+      CREATE TABLE IF NOT EXISTS t190 (
+        ts TIMESTAMPTZ NOT NULL,
+        v  DOUBLE PRECISION
+      );
+    `);
+    await ds.query("SELECT create_hypertable('t190','ts', if_not_exists => TRUE)");
+    const definition =
+      'SELECT time_bucket(INTERVAL \'1 day\', "ts") AS "bucket", count(*) AS "n" ' +
+      'FROM "public"."t190" GROUP BY time_bucket(INTERVAL \'1 day\', "ts")';
+
+    const run = async (view: string, intent: 'create' | 'reproduce'): Promise<string[]> => {
+      const compiled = compileOperation({
+        kind: 'createContinuousAggregateRaw',
+        view,
+        definition,
+        materializedOnly: false,
+        intent,
+      });
+      for (const up of compiled.up) await ds.query(up);
+      const exists = async (): Promise<boolean> =>
+        (await introspect(ds)).continuousAggregates.some((c) => c.viewName === `public.${view}`);
+      expect(await exists()).toBe(true);
+      for (const down of compiled.down) await ds.query(down);
+      return [String(await exists())];
+    };
+
+    // create → down() DROPs it. It was made WITH NO DATA and holds nothing, so this is lossless;
+    // refusing to drop it strands an empty view the user never had.
+    expect(await run('t190_created', 'create')).toEqual(['false']);
+
+    // reproduce → down() must NOT drop. Its rows may be the only surviving copy of data whose
+    // source chunks retention has already removed. This is the property #190 must not break.
+    expect(await run('t190_reproduced', 'reproduce')).toEqual(['true']);
+
+    // The preview text a user reads before running the plan must match what each actually does.
+    const created = classifyOperation({
+      kind: 'createContinuousAggregateRaw',
+      view: 'x',
+      definition,
+      intent: 'create',
+    });
+    expect(created.reason).toMatch(/created WITH NO DATA/);
+    expect(created.reason).not.toMatch(/EXISTING/);
+
+    await ds.query('DROP MATERIALIZED VIEW IF EXISTS t190_reproduced');
+    await ds.query('DROP TABLE IF EXISTS t190 CASCADE');
   }, 300_000);
 
   it('never drops a CAGG the entities no longer declare, even with allowDrops', async () => {

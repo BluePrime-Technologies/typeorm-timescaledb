@@ -877,6 +877,10 @@ describe('diffSchemaState — continuous aggregates (additive only)', () => {
         view: 'public.metric_hourly',
         definition: cagg().definition,
         materializedOnly: false,
+        // The diff only ever emits this for an aggregate it has established is ABSENT, so the
+        // intent is always 'create' here — which is what makes down() drop it and the plan preview
+        // describe it honestly.
+        intent: 'create',
       },
     ]);
   });

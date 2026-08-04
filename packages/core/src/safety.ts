@@ -84,11 +84,21 @@ export function classifyOperation(operation: Operation): OperationSafety {
           'a continuous aggregate is created WITH NO DATA — dropping it on down() discards only materialized (recomputable) rows, not source data',
       };
     case 'createContinuousAggregateRaw':
-      return {
-        safety: 'one-way',
-        reason:
-          'reproducing an EXISTING continuous aggregate is not reverted by down() — unlike a freshly created one, its materialized rows may be the only surviving copy of data whose source chunks a retention policy has already dropped, so down() raises a notice instead of dropping the view',
-      };
+      // The reason string is printed verbatim to the user by formatPlanPreview, so it has to
+      // describe what the step ACTUALLY does. Saying "reproducing an EXISTING continuous aggregate"
+      // to someone creating a brand new one was simply false, and it is the sentence they use to
+      // decide whether to run the plan.
+      return (operation.intent ?? 'reproduce') === 'create'
+        ? {
+            safety: 'one-way',
+            reason:
+              'a continuous aggregate is created WITH NO DATA from a rendered definition — dropping it on down() discards only materialized (recomputable) rows, not source data',
+          }
+        : {
+            safety: 'one-way',
+            reason:
+              'reproducing an EXISTING continuous aggregate is not reverted by down() — unlike a freshly created one, its materialized rows may be the only surviving copy of data whose source chunks a retention policy has already dropped, so down() raises a notice instead of dropping the view',
+          };
     case 'addContinuousAggregatePolicy':
       return {
         safety: 'online-safe',
