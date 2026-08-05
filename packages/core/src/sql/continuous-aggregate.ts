@@ -126,8 +126,25 @@ export function createContinuousAggregateSQL(
   const groupByItems = [bucketExpr, ...groupCols];
 
   const body = `SELECT ${selectItems.join(', ')} FROM ${source.ident} GROUP BY ${groupByItems.join(', ')}`;
+  // IF NOT EXISTS, matching the `if_not_exists => TRUE` every other builder in this package already
+  // sets (create_hypertable, add_retention_policy, add_columnstore_policy,
+  // add_continuous_aggregate_policy). This was the ONE statement without an idempotence escape, and
+  // `generate` is a DESIRED-STATE emitter — it writes a CREATE for every declared aggregate, not
+  // only the missing ones. So adding a second aggregate to a project that already has one produced
+  // a migration whose first statement died with `relation "…" already exists`, leaving the drift
+  // `check` reported permanently unfixable through the migration workflow (#189).
+  //
+  // Verified on TimescaleDB 2.18.0-pg16 and latest-pg17: accepted alongside
+  // `WITH (timescaledb.continuous)`, and a repeat run reports
+  // `NOTICE: continuous aggregate "…" already exists, skipping`.
+  //
+  // Tradeoff, deliberate and shared with the other builders: this SKIPS rather than errors when a
+  // view of the same name exists with a DIFFERENT definition. Detecting that is the diff engine's
+  // job (it compares presence and reports an existing aggregate as not-compared), not this
+  // builder's — a migration that must be replay-safe cannot also be the thing that refuses on
+  // conflict.
   const up = [
-    `CREATE MATERIALIZED VIEW ${view.ident} ` +
+    `CREATE MATERIALIZED VIEW IF NOT EXISTS ${view.ident} ` +
       `WITH (timescaledb.continuous, timescaledb.materialized_only = ${materializedOnly ? 'TRUE' : 'FALSE'}) AS ` +
       `${body} WITH NO DATA;`,
   ];

@@ -13,6 +13,7 @@ import {
   HypertablePrimaryKey,
   TimeColumn,
   compileDesiredState,
+  generateTimescaleMigration,
   introspect,
   pushSchema,
 } from '../src/index.js';
@@ -352,6 +353,45 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
     expect(sql).toContain('reading_hourly');
     expect(sql).toMatch(/add_continuous_aggregate_policy/i);
   }, 120_000);
+
+  it('replays a generated migration against a DB that already has the CAGG (#189)', async () => {
+    // The incremental-adoption path, which is what #189 actually broke. `generate` is a
+    // DESIRED-STATE emitter: it writes a CREATE for EVERY declared aggregate, not just the missing
+    // ones. So the second aggregate you add produces a migration whose FIRST statement recreates
+    // one that already exists — and without IF NOT EXISTS that died with `relation already exists`,
+    // leaving the drift `check` reported permanently unfixable through the migration workflow.
+    //
+    // A string assertion cannot prove this; only replaying against a live database that already
+    // holds the aggregate can. `reading_hourly` exists by now, so this is exactly that situation.
+    //
+    // Replay `migration.up` directly rather than the rendered .sql file: that file also carries the
+    // DOWN section, and naively splitting it on `;` executes the DROP too (which is how the first
+    // version of this test deleted the very view it was asserting on).
+    const migration = generateTimescaleMigration(ds, {
+      name: 'Replay',
+      timestamp: 1_700_000_000_000,
+      continuousAggregates: [ReadingHourly],
+    });
+    const createStatements = migration.up.filter((x) => /CREATE MATERIALIZED VIEW/i.test(x));
+    expect(createStatements.length).toBeGreaterThan(0);
+    expect(createStatements.every((x) => /IF NOT EXISTS/i.test(x))).toBe(true);
+
+    const before = await introspect(ds);
+    expect(before.continuousAggregates.some((c) => c.viewName === 'public.reading_hourly')).toBe(
+      true,
+    );
+
+    // Replay the whole UP. Before the fix this threw on the CREATE.
+    for (const statement of migration.up) {
+      await ds.query(statement);
+    }
+
+    // Still exactly ONE aggregate — not duplicated, not clobbered.
+    const after = await introspect(ds);
+    expect(
+      after.continuousAggregates.filter((c) => c.viewName === 'public.reading_hourly'),
+    ).toHaveLength(1);
+  }, 300_000);
 
   it("compiles a desired IR whose CAGG names match introspect()'s exactly", async () => {
     // The defect the unit suite caught, re-verified against the real catalog rather than against my
