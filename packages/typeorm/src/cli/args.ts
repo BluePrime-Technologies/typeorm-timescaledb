@@ -1,3 +1,12 @@
+import type { TimescaleConfig } from './config.js';
+
+/**
+ * The config file name. Declared HERE, not in `config.ts`, so the value dependency runs one way
+ * only: `config.ts` imports this and `CliError` from `args.ts`, while `args.ts` imports just the
+ * TYPE back — and a type import is erased at runtime, so the two modules never form a cycle.
+ */
+export const CONFIG_FILENAME = 'timescaledb.config.json';
+
 /** The CLI subcommands. */
 export const COMMANDS = ['generate', 'run', 'revert', 'status', 'check', 'push', 'pull'] as const;
 export type Command = (typeof COMMANDS)[number];
@@ -52,7 +61,10 @@ Commands:
   pull       Reproduce the live DB's TimescaleDB layer as a migration (read-only, brownfield adopt)
 
 Options:
-  -d, --dataSource <path>   Module exporting a DataSource, default or named (required)
+  -d, --dataSource <path>   Module exporting a DataSource, default or named
+                            (required unless set in timescaledb.config.json)
+      --config <path>       Config file to use (default: nearest timescaledb.config.json,
+                            searched upward from the current directory)
   -o, --outDir <dir>        Output dir for 'generate'/'pull' (default: migrations)
   -n, --name <name>         Migration class-name prefix for 'generate'/'pull'
       --output <ts|sql>     Emit format for 'generate'/'pull' (default: ts)
@@ -62,8 +74,12 @@ Options:
                             (--allowDrops / --allowRefused are accepted too)
   -h, --help                Show this help`;
 
-const FLAG_ALIASES: Record<string, 'dataSource' | 'outDir' | 'name' | 'output'> = {
+const FLAG_ALIASES: Record<string, 'dataSource' | 'outDir' | 'name' | 'output' | 'config'> = {
   '-d': 'dataSource',
+  // Recognised so it is not "Unknown option". Its VALUE is consumed earlier by `resolveConfig`
+  // (the config has to be loaded before this parse, since it supplies defaults to it), so the
+  // value captured here is deliberately unused.
+  '--config': 'config',
   '--dataSource': 'dataSource',
   '-o': 'outDir',
   '--outDir': 'outDir',
@@ -94,7 +110,7 @@ function isCommand(value: string): value is Command {
  * Parse CLI argv (excluding `node` and the script path). Throws {@link CliError}
  * with a usage message on anything malformed.
  */
-export function parseArgs(argv: readonly string[]): ParsedArgs {
+export function parseArgs(argv: readonly string[], config: TimescaleConfig = {}): ParsedArgs {
   if (argv.length === 0) {
     throw new CliError(`No command given.\n\n${USAGE}`);
   }
@@ -104,7 +120,13 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     throw new CliError(`Unknown command: ${String(command)}\n\n${USAGE}`);
   }
 
-  const values: { dataSource?: string; outDir?: string; name?: string; output?: string } = {};
+  const values: {
+    dataSource?: string;
+    outDir?: string;
+    name?: string;
+    output?: string;
+    config?: string;
+  } = {};
   const flags = { apply: false, allowDrops: false, allowRefused: false };
 
   for (let i = 0; i < rest.length; i++) {
@@ -141,13 +163,21 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     values[key] = value;
   }
 
-  if (values.dataSource === undefined) {
-    throw new CliError(`Missing required option: -d, --dataSource\n\n${USAGE}`);
+  // Precedence, applied identically for every key: CLI flag > config file > built-in default.
+  const dataSource = values.dataSource ?? config.dataSource;
+  if (dataSource === undefined) {
+    throw new CliError(
+      `Missing required option: -d, --dataSource\n\n` +
+        `Set it once in a ${CONFIG_FILENAME} instead: { "dataSource": "src/data-source.ts" }\n\n${USAGE}`,
+    );
   }
 
-  if (values.output !== undefined && !isOutputFormat(values.output)) {
+  // Validate the EFFECTIVE value, not just the flag: a bad `output` in the config file must fail
+  // the same way a bad --output does, rather than silently falling through to the default.
+  const output = values.output ?? config.output;
+  if (output !== undefined && !isOutputFormat(output)) {
     throw new CliError(
-      `Invalid --output: ${values.output} (expected one of: ${OUTPUT_FORMATS.join(', ')})\n\n${USAGE}`,
+      `Invalid output format: ${output} (expected one of: ${OUTPUT_FORMATS.join(', ')})\n\n${USAGE}`,
     );
   }
 
@@ -165,12 +195,12 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 
   return {
     command,
-    dataSource: values.dataSource,
-    outDir: values.outDir ?? 'migrations',
+    dataSource,
+    outDir: values.outDir ?? config.outDir ?? 'migrations',
     apply: flags.apply,
     allowDrops: flags.allowDrops,
     allowRefused: flags.allowRefused,
     ...(values.name !== undefined && { name: values.name }),
-    output: values.output !== undefined && isOutputFormat(values.output) ? values.output : 'ts',
+    output: output !== undefined && isOutputFormat(output) ? output : 'ts',
   };
 }
