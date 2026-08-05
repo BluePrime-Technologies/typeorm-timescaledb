@@ -736,6 +736,11 @@ function diffContinuousAggregates(
         view: d.viewName,
         definition: d.definition,
         materializedOnly: d.materializedOnly,
+        // This aggregate is ABSENT from the database — we are creating it, not reproducing an
+        // existing one. Without saying so it inherited `pull`'s semantics: down() refused to drop
+        // it (stranding an empty view on revert) and the plan preview told the user it was
+        // "reproducing an EXISTING continuous aggregate" while creating a new one.
+        intent: 'create',
       });
       availableViews.add(d.viewName);
       if (desiredRefresh !== undefined) {

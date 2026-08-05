@@ -765,3 +765,68 @@ describe('extractSelectBody (via renderContinuousAggregateSelect)', () => {
     expect(extractSelectBodyForTest(reformatted)).toBe('SELECT 1 AS "a"');
   });
 });
+
+// #190 — the raw builder serves two genuinely different objects, and `down()` must differ.
+// `pull` reproduces an aggregate that ALREADY EXISTS and is ALREADY MATERIALIZED elsewhere, whose
+// rows may be the only surviving copy of data retention has dropped from the source. The diff
+// CREATES one that does not exist, WITH NO DATA. Refusing to drop the second is not caution — it
+// strands an empty view the user never had, on every revert.
+describe('createContinuousAggregateRawSQL — reproduce vs create intent', () => {
+  const input = { view: 'public.v', definition: 'SELECT 1 AS x FROM t' };
+
+  it('defaults to reproduce: down() does NOT drop, so a forgotten call site fails SAFE', () => {
+    const s = createContinuousAggregateRawSQL(input);
+    expect(s.down.join('\n')).not.toMatch(/DROP/i);
+    // The default matters more than it looks: the cost of wrongly defaulting to 'create' is
+    // deleting a rollup that cannot be recomputed; the cost of this default is a stranded view.
+    expect(createContinuousAggregateRawSQL({ ...input, intent: 'reproduce' }).down).toEqual(s.down);
+  });
+
+  it('create: down() DROPs the view it just created', () => {
+    const s = createContinuousAggregateRawSQL({ ...input, intent: 'create' });
+    expect(s.down.join('\n')).toMatch(/DROP MATERIALIZED VIEW IF EXISTS "public"\."v";/);
+  });
+
+  it('up() is byte-identical either way — intent changes only down() and the reason', () => {
+    expect(createContinuousAggregateRawSQL({ ...input, intent: 'create' }).up).toEqual(
+      createContinuousAggregateRawSQL({ ...input, intent: 'reproduce' }).up,
+    );
+  });
+
+  it('the safety reason describes what the step actually does', () => {
+    // It is printed verbatim by formatPlanPreview, so telling someone creating a NEW aggregate that
+    // it is "reproducing an EXISTING" one is not a cosmetic slip — it is the sentence they use to
+    // decide whether to run the plan.
+    const created = classifyOperation({
+      kind: 'createContinuousAggregateRaw',
+      ...input,
+      intent: 'create',
+    });
+    expect(created.reason).toMatch(/created WITH NO DATA/);
+    expect(created.reason).not.toMatch(/EXISTING/);
+
+    const reproduced = classifyOperation({ kind: 'createContinuousAggregateRaw', ...input });
+    expect(reproduced.reason).toMatch(/reproducing an EXISTING/);
+    // Both remain one-way: neither is an online-safe operation.
+    expect([created.safety, reproduced.safety]).toEqual(['one-way', 'one-way']);
+  });
+
+  it('pull still never drops: stateToOperations does not opt into create', () => {
+    // The regression that matters most here — #190 must not leak drop semantics into the pull path.
+    const ir = {
+      hypertables: [],
+      continuousAggregates: [
+        {
+          viewName: 'public.h',
+          source: 'public.t',
+          hierarchical: false,
+          materializedOnly: false,
+          definition: 'SELECT 1 AS x FROM t',
+        },
+      ],
+    };
+    const { operations } = stateToOperations(ir);
+    const sql = operations.map((o) => compileOperation(o));
+    expect(sql.flatMap((s) => s.down).join('\n')).not.toMatch(/DROP MATERIALIZED VIEW/i);
+  });
+});
