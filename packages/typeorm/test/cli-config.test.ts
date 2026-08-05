@@ -112,6 +112,20 @@ describe('loadConfigFile — validation', () => {
     expect(() => loadConfigFile(path)).toThrow(/"outDir".*must be a string, got number/);
   });
 
+  it('rejects prototype-polluting keys, and does not pollute Object.prototype', () => {
+    // JSON.parse puts `__proto__` on the object as an OWN enumerable key (it does not invoke the
+    // setter), so Object.entries sees it and the unknown-key check rejects it before the
+    // plain-object accumulator is ever written to. That safety is currently a CONSEQUENCE of the
+    // check order, so pin it: a future refactor that validates after assembling would otherwise
+    // reopen the hole silently.
+    for (const key of ['__proto__', 'constructor', 'prototype']) {
+      const path = writeConfig(dir(), `{"${key}": {"polluted": true}}`);
+      expect(() => loadConfigFile(path)).toThrow(/Unknown key/);
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+
   it('accepts an empty object', () => {
     expect(loadConfigFile(writeConfig(dir(), {}))).toEqual({});
   });
@@ -154,6 +168,27 @@ describe('extractConfigPath', () => {
       /requires a value/,
     );
     expect(() => extractConfigPath(['check', '--config='])).toThrow(/requires a value/);
+  });
+
+  it('does not mistake a --config that is another flag VALUE for a real one', () => {
+    // Found by review. The pre-scan and the real parser are two readers of one grammar; without
+    // arity awareness they disagree about what a token IS. `-n --config` names a migration
+    // "--config" — the parser reads it as -n's value, and the pre-scan used to grab the NEXT token
+    // as a config path. Both now consult the same flag tables, so they cannot drift.
+    expect(extractConfigPath(['generate', '-n', '--config', '-d', 'ds.ts'])).toBeUndefined();
+    expect(extractConfigPath(['generate', '-d', '--config'])).toBeUndefined();
+    // ...while a genuine one is still found, before AND after another flag+value pair.
+    expect(extractConfigPath(['check', '-d', 'ds.ts', '--config', 'c.json'])).toBe('c.json');
+    expect(extractConfigPath(['check', '--config', 'c.json', '-d', 'ds.ts'])).toBe('c.json');
+  });
+
+  it('accepts the --config=<path> form through the REAL parser too, not just the pre-scan', () => {
+    // Two reviewers independently reported this as broken, reading the parser as
+    // `FLAG_ALIASES[token]`. It is `FLAG_ALIASES[flag]`, split on `=` first — so it always worked.
+    // Pinned so the false positive cannot become a true one later.
+    expect(extractConfigPath(['check', '--config=c.json'])).toBe('c.json');
+    expect(() => parseArgs(['check', '--config=c.json'], { dataSource: 'a.ts' })).not.toThrow();
+    expect(parseArgs(['check', '--config=c.json'], { dataSource: 'a.ts' }).dataSource).toBe('a.ts');
   });
 
   it('returns undefined when absent', () => {

@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { CliError, CONFIG_FILENAME } from './args.js';
+import { CliError, CONFIG_FILENAME, FLAG_ALIASES, BOOLEAN_FLAGS } from './args.js';
 
 // CONFIG_FILENAME is declared in args.ts and re-exported here so `config.ts` is the one import
 // site for config concerns. See the note on its declaration for why it lives there.
@@ -153,6 +153,20 @@ export function extractConfigPath(argv: readonly string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
     if (token === undefined) continue;
+
+    // Skip the VALUE of any other value-taking flag, using the same tables the real parser uses.
+    // Without this the pre-scan has no notion of arity, so `-n --config` (naming a migration
+    // "--config") made it grab the following token as a config path — two parsers disagreeing about
+    // what a token IS, which is the classic bug in this shape. Sharing the tables means they cannot
+    // drift apart rather than merely happening to agree today.
+    const eq = token.indexOf('=');
+    const flag = eq === -1 ? token : token.slice(0, eq);
+    if (flag !== '--config' && FLAG_ALIASES[flag] !== undefined && eq === -1) {
+      i++; // consume its value
+      continue;
+    }
+    if (BOOLEAN_FLAGS[flag] !== undefined) continue;
+
     if (token === '--config') {
       const value = argv[i + 1];
       if (value === undefined || value.length === 0 || value.startsWith('-')) {

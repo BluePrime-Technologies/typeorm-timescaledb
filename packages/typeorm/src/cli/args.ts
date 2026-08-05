@@ -74,23 +74,24 @@ Options:
                             (--allowDrops / --allowRefused are accepted too)
   -h, --help                Show this help`;
 
-const FLAG_ALIASES: Record<string, 'dataSource' | 'outDir' | 'name' | 'output' | 'config'> = {
-  '-d': 'dataSource',
-  // Recognised so it is not "Unknown option". Its VALUE is consumed earlier by `resolveConfig`
-  // (the config has to be loaded before this parse, since it supplies defaults to it), so the
-  // value captured here is deliberately unused.
-  '--config': 'config',
-  '--dataSource': 'dataSource',
-  '-o': 'outDir',
-  '--outDir': 'outDir',
-  '-n': 'name',
-  '--name': 'name',
-  '--output': 'output',
-};
+export const FLAG_ALIASES: Record<string, 'dataSource' | 'outDir' | 'name' | 'output' | 'config'> =
+  {
+    '-d': 'dataSource',
+    // Recognised so it is not "Unknown option". Its VALUE is consumed earlier by `resolveConfig`
+    // (the config has to be loaded before this parse, since it supplies defaults to it), so the
+    // value captured here is deliberately unused.
+    '--config': 'config',
+    '--dataSource': 'dataSource',
+    '-o': 'outDir',
+    '--outDir': 'outDir',
+    '-n': 'name',
+    '--name': 'name',
+    '--output': 'output',
+  };
 
 /** Flags that take NO value. Listing them explicitly stops the value-flag loop from consuming the
  * following token (`--apply -d ds.ts` must not read `-d` as the value of `--apply`). */
-const BOOLEAN_FLAGS: Record<string, 'apply' | 'allowDrops' | 'allowRefused'> = {
+export const BOOLEAN_FLAGS: Record<string, 'apply' | 'allowDrops' | 'allowRefused'> = {
   '--apply': 'apply',
   '--allow-drops': 'allowDrops',
   '--allowDrops': 'allowDrops',
@@ -125,7 +126,6 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
     outDir?: string;
     name?: string;
     output?: string;
-    config?: string;
   } = {};
   const flags = { apply: false, allowDrops: false, allowRefused: false };
 
@@ -160,6 +160,7 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
     if (value === undefined || value.length === 0) {
       throw new CliError(`Option ${flag} requires a value.\n\n${USAGE}`);
     }
+    if (key === 'config') continue; // consumed by resolveConfig before this parse ran
     values[key] = value;
   }
 
