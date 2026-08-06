@@ -106,3 +106,5 @@ export type {
   IntegralUnit,
   HeartbeatAccessor,
 } from './toolkit.js';
+export { compressChunkSQL, decompressChunkSQL } from './chunk.js';
+export type { ChunkInput } from './chunk.js';

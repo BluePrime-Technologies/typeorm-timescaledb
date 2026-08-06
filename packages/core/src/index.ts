@@ -167,7 +167,12 @@ export type {
   AlterColumnstoreConfigOperation,
   RemoveRetentionPolicyOperation,
   RemoveCompressionPolicyOperation,
+  DecompressChunkOperation,
+  CompressChunkOperation,
 } from './operation.js';
+// Per-chunk columnstore primitives — the recompression planner's building blocks.
+export { compressChunkSQL, decompressChunkSQL } from './sql/chunk.js';
+export type { ChunkInput } from './sql/chunk.js';
 export { diffSchemaState, isEmptyPlan, compilePlan } from './diff.js';
 export type { Plan, PlanStep, PlanAdvisory, DiffOptions, CompiledPlan } from './diff.js';
 export { classifyOperation } from './safety.js';

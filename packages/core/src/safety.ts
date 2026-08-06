@@ -99,6 +99,18 @@ export function classifyOperation(operation: Operation): OperationSafety {
             reason:
               'reproducing an EXISTING continuous aggregate is not reverted by down() — unlike a freshly created one, its materialized rows may be the only surviving copy of data whose source chunks a retention policy has already dropped, so down() raises a notice instead of dropping the view',
           };
+    case 'decompressChunk':
+      return {
+        safety: 'needs-recompress',
+        reason:
+          'decompressing a chunk rewrites its storage and temporarily expands it to rowstore size — no data is lost and down() recompresses, but it is IO-heavy and must not run as a side effect of a schema change',
+      };
+    case 'compressChunk':
+      return {
+        safety: 'needs-recompress',
+        reason:
+          'recompressing a chunk rewrites its storage using the hypertable CURRENT columnstore settings — no data is lost and down() decompresses, but it is IO-heavy',
+      };
     case 'addContinuousAggregatePolicy':
       return {
         safety: 'online-safe',
