@@ -161,6 +161,39 @@ destroying materialized rows. Every existing aggregate is therefore listed under
 threshold has changed is reported under `Not auto-converged:` and **counts as
 drift**, so `check` still exits non-zero.
 
+### Linting a plan for destructive and lock-taking changes
+
+Every plan is linted, and findings print with the preview:
+
+```
+✖ TSDB002 Rename breaks clients still using the old name — public.readings
+    public.readings becomes public.metrics. The rename takes an ACCESS EXCLUSIVE lock …
+    → Deploy the application change that uses the new name in the same window …
+```
+
+Or programmatically:
+
+```ts
+import { lintPlan, formatLintFindings, ANALYZERS } from '@blueprime/timescaledb-core';
+
+const findings = lintPlan(plan); // pure — no database, usable in CI
+console.log(formatLintFindings(findings));
+console.log(ANALYZERS.map((a) => a.code)); // exactly what IS and is not covered
+```
+
+**Findings inform; they do not block.** Even an `error` finding will not stop an apply, because it
+describes a consequence of a change you are deliberately making. Refusal stays with the safety class
+and `--allow-refused` — one decision, in one place. A linter that blocked would either make `push`
+unusable or train you to pass an override by reflex, which is worse than no linter.
+
+**What it adds over the safety classes.** Those are per-operation; the linter covers what that
+structurally cannot — plan-level interactions (a step targeting a table an earlier step renames),
+_which_ lock is taken and what it blocks, changes that apply to future data but not existing data,
+and compatibility with a running application.
+
+`ANALYZERS` is exported deliberately: an analyzer suite whose contents are opaque invites you to
+assume a check exists that does not. This is the first tranche, not a finished set.
+
 ### The programmatic API: read → diff → apply
 
 The same engine is three calls, each telling you how risky the next one is

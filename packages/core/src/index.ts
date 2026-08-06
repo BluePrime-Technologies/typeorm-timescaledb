@@ -171,6 +171,9 @@ export type {
 export { diffSchemaState, isEmptyPlan, compilePlan } from './diff.js';
 export type { Plan, PlanStep, PlanAdvisory, DiffOptions, CompiledPlan } from './diff.js';
 export { classifyOperation } from './safety.js';
+// Static linter (M4.4) — plan-level destructive + lock analysis. INFORMS; does not block.
+export { lintPlan, formatLintFindings, ANALYZERS } from './lint.js';
+export type { LintFinding, LintSeverity, Analyzer } from './lint.js';
 export type { SafetyClass, OperationSafety } from './safety.js';
 // Reproduce (M4.4b) — a live SchemaStateIR back into the operations that recreate it, for `pull`.
 export { stateToOperations } from './reproduce.js';

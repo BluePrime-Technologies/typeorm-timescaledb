@@ -551,3 +551,43 @@ describe('pushSchema / checkCommand — continuous-aggregate advisory', () => {
     expect(out).toMatch(/cannot converge automatically/);
   });
 });
+
+describe('reportPlan — lint findings reach the user', () => {
+  const fakeLogger2 = (): { logger: Logger; lines: string[] } => {
+    const lines: string[] = [];
+    return {
+      logger: { log: (m: string) => lines.push(m), error: (m: string) => lines.push(m) },
+      lines,
+    };
+  };
+
+  it('prints lint findings alongside the plan preview', () => {
+    // A linter nobody runs is worthless, so it is wired into the verb people already use rather
+    // than hidden behind a separate command they have to remember.
+    const { logger, lines } = fakeLogger2();
+    const operation = { kind: 'renameHypertable' as const, from: 'public.a', to: 'public.b' };
+    reportPlan({ steps: [{ operation, ...classifyOperation(operation) }] }, logger);
+    const out = lines.join('\n');
+    expect(out).toMatch(/TSDB002/);
+    expect(out).toMatch(/ACCESS EXCLUSIVE/);
+  });
+
+  it('stays silent on a clean plan rather than printing "no findings" every time', () => {
+    // Printing a reassurance on every clean run trains people to skip the section — so when it is
+    // NOT empty, they skip that too.
+    const { logger, lines } = fakeLogger2();
+    reportPlan({ steps: [] }, logger);
+    expect(lines.join('\n')).not.toMatch(/lint/i);
+  });
+
+  it('does not let a lint finding change the drift verdict', () => {
+    // The linter INFORMS; the safety gate BLOCKS. Making findings blocking would either make push
+    // unusable or train people to pass an override by reflex.
+    const { logger } = fakeLogger2();
+    const operation = { kind: 'renameHypertable' as const, from: 'public.a', to: 'public.b' };
+    const drift = reportPlan({ steps: [{ operation, ...classifyOperation(operation) }] }, logger);
+    expect(drift).toBe(true); // drift because there ARE steps, not because lint complained
+    const { logger: l2 } = fakeLogger2();
+    expect(reportPlan({ steps: [] }, l2)).toBe(false);
+  });
+});

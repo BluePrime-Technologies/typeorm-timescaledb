@@ -1,7 +1,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DataSource } from 'typeorm';
-import { isEmptyPlan, type Plan, type PlanAdvisory } from '@blueprime/timescaledb-core';
+import {
+  formatLintFindings,
+  isEmptyPlan,
+  lintPlan,
+  type Plan,
+  type PlanAdvisory,
+} from '@blueprime/timescaledb-core';
 import {
   generateTimescaleMigration,
   renderTimescaleMigration,
@@ -126,6 +132,11 @@ export function reportPlan(plan: Plan, logger: Logger): boolean {
 
   if (hasSteps) {
     logger.log(formatPlanPreview(plan));
+    // Lint the plan the user is about to act on. Printed only when there ARE steps: linting an
+    // empty plan produces nothing, and printing "No lint findings" on every clean check would
+    // train people to skip the section that matters when it is not empty.
+    const findings = lintPlan(plan);
+    if (findings.length > 0) logger.log(`\n${formatLintFindings(findings)}`);
   } else if (blocking.length === 0) {
     logger.log('No drift detected — schema matches the @Hypertable declarations.');
   }
