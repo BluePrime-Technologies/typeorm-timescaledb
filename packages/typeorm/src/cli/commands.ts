@@ -253,6 +253,59 @@ export async function pushCommand(
   return 'applied';
 }
 
+/** The disposition of a {@link mixCommand} run. */
+export type MixOutcome = 'clean' | 'attention' | 'applied';
+
+/**
+ * `mix` — pull, then push, in one command.
+ *
+ * Adopting this library on an existing database means answering two questions at once: what is in
+ * the DB that the entities do not describe, and what do the entities declare that the DB lacks.
+ * That is where someone converges the wrong direction, so `mix` answers both together.
+ *
+ * Deliberately ORCHESTRATION, not new logic: it calls `pullCommand` then `pushCommand` and reuses
+ * their guards, reporting and exit-code semantics wholesale. A reimplementation here would be a
+ * second place for "preview by default" to be got wrong.
+ *
+ * ORDER IS LOAD-BEARING. The pull runs FIRST, capturing the database as it is *before* any
+ * convergence. Running it after an `--apply` would describe a database the engine had just changed,
+ * which is not a record of what was there — and that record is the whole point when you are adopting
+ * against a schema nobody has modelled yet.
+ */
+export async function mixCommand(
+  dataSource: DataSource,
+  logger: Logger,
+  fileOptions: PullFileOptions,
+  pushOptions: PushOptions = {},
+): Promise<MixOutcome> {
+  logger.log('── pull: what the database has that your code does not ──');
+  const pulled = await pullCommand(dataSource, logger, fileOptions);
+
+  if (pulled === 'partial') {
+    // Said BEFORE the push plan, not after. Converging toward code that does not yet describe the
+    // database is how something gets dropped, and a caveat printed underneath the plan is a caveat
+    // read second.
+    logger.log(
+      '\n⚠  The pull above is INCOMPLETE (see the coverage report). Your code cannot yet describe ' +
+        'everything this database contains — review that before acting on the plan below.',
+    );
+  }
+
+  logger.log('\n── push: what your code declares that the database lacks ──');
+  const pushed = await pushCommand(dataSource, logger, pushOptions);
+
+  if (pushed === 'applied') return 'applied';
+  // Anything needing a human — a partial pull, drift left unapplied, or drift that cannot be
+  // converged — collapses to one non-zero outcome. Reporting "clean" because only ONE half was
+  // clean is the false-green this engine keeps having to design against.
+  return pulled === 'nothing-to-pull' && pushed === 'no-drift' ? 'clean' : 'attention';
+}
+
+/** `clean` is the only zero. See {@link mixCommand} for why a half-clean run is not clean. */
+export function exitCodeForMix(outcome: MixOutcome): number {
+  return outcome === 'clean' || outcome === 'applied' ? 0 : 2;
+}
+
 /** The disposition of a {@link pullCommand} run, so `main.ts` can pick an exit code. */
 export type PullOutcome = 'nothing-to-pull' | 'complete' | 'partial';
 

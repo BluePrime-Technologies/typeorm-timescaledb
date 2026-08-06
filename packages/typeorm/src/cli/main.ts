@@ -11,6 +11,8 @@ import {
   pushCommand,
   pullCommand,
   exitCodeForPush,
+  exitCodeForMix,
+  mixCommand,
   exitCodeForPull,
   type Logger,
 } from './commands.js';
@@ -73,6 +75,25 @@ async function main(argv: readonly string[]): Promise<void> {
           ...caggs,
         });
         process.exitCode = exitCodeForPush(outcome);
+        break;
+      }
+      case 'mix': {
+        const outcome = await mixCommand(
+          dataSource,
+          logger,
+          {
+            outDir: args.outDir,
+            ...(args.name !== undefined && { name: args.name }),
+            output: args.output,
+          },
+          {
+            apply: args.apply,
+            allowDrops: args.allowDrops,
+            allowRefused: args.allowRefused,
+            ...caggs,
+          },
+        );
+        process.exitCode = exitCodeForMix(outcome);
         break;
       }
       case 'pull': {

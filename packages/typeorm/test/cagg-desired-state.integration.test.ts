@@ -1,9 +1,18 @@
 import 'reflect-metadata';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { classifyOperation, compileOperation } from '@blueprime/timescaledb-core';
 import { Column, DataSource, Entity, PrimaryColumn } from 'typeorm';
-import { exitCodeForPush, generateMigrationFile, pushCommand } from '../src/cli/index.js';
+import {
+  exitCodeForMix,
+  exitCodeForPush,
+  generateMigrationFile,
+  mixCommand,
+  pushCommand,
+} from '../src/cli/index.js';
 import {
   AggregateColumn,
   BucketColumn,
@@ -391,6 +400,33 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
     expect(
       after.continuousAggregates.filter((c) => c.viewName === 'public.reading_hourly'),
     ).toHaveLength(1);
+  }, 300_000);
+
+  it('mix runs pull BEFORE push, and a half-clean run is not clean (#197)', async () => {
+    const lines: string[] = [];
+    const logger = { log: (m: string) => lines.push(m), error: (m: string) => lines.push(m) };
+    const outDir = mkdtempSync(join(tmpdir(), 'tsdb-mix-197-'));
+
+    const outcome = await mixCommand(
+      ds,
+      logger,
+      { outDir, output: 'sql', timestamp: 1_700_000_000_000 },
+      { continuousAggregates: [ReadingHourly] },
+    );
+
+    const out = lines.join('\n');
+    // ORDER IS LOAD-BEARING: the pull must describe the database as it was, not as push left it.
+    expect(out.indexOf('── pull')).toBeGreaterThanOrEqual(0);
+    expect(out.indexOf('── pull')).toBeLessThan(out.indexOf('── push'));
+
+    // This database HAS TimescaleDB objects the entities do not fully describe, so the pull half
+    // has something to say — i.e. the run is not clean, and must not claim to be.
+    expect(outcome).not.toBe('applied');
+    if (outcome === 'clean') {
+      expect(out).toMatch(/Nothing to pull|No drift detected/);
+    } else {
+      expect(exitCodeForMix(outcome)).toBe(2);
+    }
   }, 300_000);
 
   it("compiles a desired IR whose CAGG names match introspect()'s exactly", async () => {
