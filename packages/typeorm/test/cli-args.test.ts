@@ -20,7 +20,9 @@ describe('parseArgs', () => {
   it('throws on an invalid --output value', () => {
     expect(() => parseArgs(['generate', '-d', 'ds.ts', '--output', 'json'])).toThrow(CliError);
     expect(() => parseArgs(['generate', '-d', 'ds.ts', '--output', 'json'])).toThrow(
-      /Invalid --output/,
+      // Message widened from "Invalid --output" now that the value can also come from a
+      // config file, where blaming a flag the user never typed would be misleading.
+      /Invalid output format/,
     );
   });
 

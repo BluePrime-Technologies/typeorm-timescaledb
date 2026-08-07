@@ -120,6 +120,38 @@ declarations, prints a readable preview of any drift, and exits non-zero if
 drift is found — a schema gate for CI. It reports drift; it does not apply
 anything.
 
+### `timescaledb.config.json`: the common path in one command
+
+Set the options you repeat once, and the commands get shorter:
+
+```json
+{
+  "dataSource": "src/data-source.ts",
+  "outDir": "src/migrations",
+  "output": "sql"
+}
+```
+
+```sh
+npx typeorm-timescaledb check      # no -d needed
+```
+
+The file is found by searching **upward** from the current directory, so it works from inside a
+monorepo package. `--config <path>` picks a specific one. Precedence is **CLI flag > config file >
+built-in default**, applied per key — so a flag overrides just that setting, not the whole file.
+
+An unknown key is an **error**, not a silent no-op: a typo'd `datasource` that quietly did nothing
+is how you end up running against the wrong DataSource believing you had configured it.
+
+**`--apply`, `--allow-drops` and `--allow-refused` cannot be set here.** `push` previews by default
+so that converging a database is something you ask for _per invocation, in the shell_. A file
+committed to the repository would pre-authorise that for everyone who later types the command —
+including on a database it was never written for. Setting them in the config is rejected with an
+explanation rather than ignored.
+
+Continuous aggregates are also not configurable here — they are class references, which JSON cannot
+hold. Keep exporting them from the DataSource module, as below.
+
 ### Making `check` and `push` see your continuous aggregates
 
 Continuous aggregates **cannot be discovered automatically.** A
