@@ -176,8 +176,15 @@ If the pull is incomplete, `mix` says so **before** showing the push plan, becau
 code that does not yet describe your database is how something gets dropped.
 
 Its push half previews by default and takes the same `--apply` / `--allow-drops` /
-`--allow-refused` flags, with the same meanings. It exits non-zero unless **both** halves are
-clean — a run that is half clean is not clean.
+`--allow-refused` flags, with the same meanings.
+
+**Exit codes.** `0` when the pull described the database fully (or there was nothing to pull) _and_
+the push found no drift or applied it successfully. `2` when either half needs you — drift left
+unapplied, drift that cannot be auto-converged, or a **partial pull**.
+
+A partial pull is never a success, _even if the push applied cleanly_: it means your code does not
+yet describe everything the database contains, and converging toward code like that is how something
+gets dropped. In that case `mix` applies what you asked for, says so plainly, and still exits `2`.
 
 > **There is no `sync` verb.** `push --apply` _is_ the synchronize mode: it converges the database
 > to your code, refuses `refuse-by-default` steps unless you pass `--allow-refused`, and never drops

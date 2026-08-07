@@ -254,7 +254,34 @@ export async function pushCommand(
 }
 
 /** The disposition of a {@link mixCommand} run. */
-export type MixOutcome = 'clean' | 'attention' | 'applied';
+export type MixOutcome = 'clean' | 'attention' | 'applied' | 'applied-with-attention';
+
+/**
+ * Decide a {@link mixCommand} outcome from its two halves.
+ *
+ * Pure and exported so the whole 3x4 matrix is testable without a database. It was previously
+ * inline, and the two defects below both lived in a branch no test could reach — the integration
+ * test only ever ran preview mode, so `--apply` combinations were structurally unreachable.
+ */
+export function mixOutcome(pulled: PullOutcome, pushed: PushOutcome): MixOutcome {
+  // A PARTIAL pull is never a success, whatever the push did.
+  //
+  // This function used to start with `if (pushed === 'applied') return 'applied'`, so a partial pull
+  // followed by a successful apply exited 0. That is precisely the false green mixCommand's own
+  // warning describes twelve lines above it — "converging toward code that does not yet describe the
+  // database is how something gets dropped". The doctrine was written in prose and then not encoded.
+  if (pulled === 'partial') {
+    return pushed === 'applied' ? 'applied-with-attention' : 'attention';
+  }
+
+  if (pushed === 'applied') return 'applied';
+
+  // `complete` means the pull SUCCEEDED in reproducing what the database has — it is a good outcome,
+  // not a problem. Requiring `nothing-to-pull` for `clean` (as this once did) meant only a database
+  // with NO TimescaleDB objects could ever be clean, so `mix` exited 2 on every real database. That
+  // makes the exit code meaningless, which is the same disease as exiting 0 when it should not.
+  return pushed === 'no-drift' ? 'clean' : 'attention';
+}
 
 /**
  * `mix` — pull, then push, in one command.
@@ -294,14 +321,24 @@ export async function mixCommand(
   logger.log('\n── push: what your code declares that the database lacks ──');
   const pushed = await pushCommand(dataSource, logger, pushOptions);
 
-  if (pushed === 'applied') return 'applied';
-  // Anything needing a human — a partial pull, drift left unapplied, or drift that cannot be
-  // converged — collapses to one non-zero outcome. Reporting "clean" because only ONE half was
-  // clean is the false-green this engine keeps having to design against.
-  return pulled === 'nothing-to-pull' && pushed === 'no-drift' ? 'clean' : 'attention';
+  const outcome = mixOutcome(pulled, pushed);
+  if (outcome === 'applied-with-attention') {
+    // Say plainly that a mutation HAPPENED and the run is still not clean. Collapsing this into
+    // plain 'attention' would exit correctly while hiding that the database was changed.
+    logger.log(
+      '\n⚠  The push was applied, but the pull above was INCOMPLETE — your code still does not ' +
+        'describe everything this database contains. Exiting non-zero.',
+    );
+  }
+  return outcome;
 }
 
-/** `clean` is the only zero. See {@link mixCommand} for why a half-clean run is not clean. */
+/**
+ * `clean` and `applied` are the only zeros.
+ *
+ * `applied-with-attention` MUST be non-zero: statements ran, but the pull could not fully describe
+ * the database, so the run is not something automation should treat as success.
+ */
 export function exitCodeForMix(outcome: MixOutcome): number {
   return outcome === 'clean' || outcome === 'applied' ? 0 : 2;
 }
