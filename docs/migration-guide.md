@@ -222,6 +222,45 @@ gets dropped. In that case `mix` applies what you asked for, says so plainly, an
 > to your code, refuses `refuse-by-default` steps unless you pass `--allow-refused`, and never drops
 > without `--allow-drops`. A second verb doing the same job would be surface without behaviour.
 
+### Applying a columnstore change to chunks that are already compressed
+
+`ALTER TABLE ... SET (timescaledb.segmentby = ...)` is online, and applies to **future** chunks.
+Chunks already compressed keep the old layout — and the catalog reports the new table-level setting,
+so `check` agrees with your declaration while the stored data does not match it.
+
+`planRecompression` finds exactly which chunks are affected, and `applyRecompression` rewrites them:
+
+```ts
+import {
+  planRecompression,
+  applyRecompression,
+  formatRecompressionPlan,
+} from 'typeorm-timescaledb';
+
+const plan = await planRecompression(dataSource, 'readings');
+console.log(formatRecompressionPlan(plan));
+
+if (plan.chunks.length > 0) {
+  await applyRecompression(dataSource, plan, {
+    confirm: true, // required — this rewrites chunk storage
+    onProgress: (p) => console.log(`${p.chunk}: ${p.phase} (${p.index + 1}/${p.total})`),
+  });
+}
+```
+
+**It is deliberately not part of `push --apply`.** Rewriting chunk storage is IO-heavy and can take
+hours on a large hypertable; it must be something you schedule, not something a schema command does
+to you. Hence the explicit `confirm`.
+
+**It is resumable.** Each chunk is processed independently and both primitives are idempotent, so an
+interrupted run is _re-run_, not restarted. A chunk that fails is recorded and the run continues —
+one unrewritable chunk should not leave the rest in the old layout.
+
+**Check `plan.precision`.** `exact` means per-chunk settings were read and only genuinely stale
+chunks are listed. `unknown` means the internal catalog could not be interpreted on your version, so
+**every** compressed chunk is listed as a candidate — over-doing the work rather than reporting a
+clean database it could not actually verify.
+
 ### The programmatic API: read → diff → apply
 
 The same engine is three calls, each telling you how risky the next one is

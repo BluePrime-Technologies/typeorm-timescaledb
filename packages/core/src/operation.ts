@@ -11,6 +11,8 @@ import {
   removeCompressionPolicySQL,
   createContinuousAggregateSQL,
   createContinuousAggregateRawSQL,
+  compressChunkSQL,
+  decompressChunkSQL,
   createHypertableSQL,
   renameHypertableSQL,
   type AddCompressionPolicyInput,
@@ -22,6 +24,7 @@ import {
   type ContinuousAggregatePolicyInput,
   type CreateContinuousAggregateInput,
   type CreateContinuousAggregateRawInput,
+  type ChunkInput,
   type CreateHypertableInput,
   type MigrationStatement,
   type RenameTableInput,
@@ -91,6 +94,19 @@ export interface CreateContinuousAggregateRawOperation extends CreateContinuousA
 
 /** Add ONLY the compression policy job to a hypertable whose columnstore is already enabled
  * (closes the "columnstore enabled but no compression policy" drift; no `ALTER TABLE SET` re-assert). */
+/**
+ * Decompress ONE chunk. Emitted only by the recompression planner, never by the schema diff — the
+ * diff has no business rewriting chunk storage as a side effect of a config change.
+ */
+export interface DecompressChunkOperation extends ChunkInput {
+  readonly kind: 'decompressChunk';
+}
+
+/** Recompress ONE chunk, using the hypertable's CURRENT columnstore settings. */
+export interface CompressChunkOperation extends ChunkInput {
+  readonly kind: 'compressChunk';
+}
+
 export interface AddCompressionPolicyOperation extends AddCompressionPolicyInput {
   readonly kind: 'addCompressionPolicy';
 }
@@ -143,6 +159,8 @@ export type Operation =
   | CreateContinuousAggregateOperation
   | CreateContinuousAggregateRawOperation
   | AddContinuousAggregatePolicyOperation
+  | DecompressChunkOperation
+  | CompressChunkOperation
   | AddCompressionPolicyOperation
   | AlterCompressionPolicyOperation
   | AlterRetentionPolicyOperation
@@ -176,6 +194,10 @@ export function compileOperation(operation: Operation): MigrationStatement {
       return createContinuousAggregateRawSQL(operation);
     case 'addContinuousAggregatePolicy':
       return addContinuousAggregatePolicySQL(operation);
+    case 'decompressChunk':
+      return decompressChunkSQL(operation);
+    case 'compressChunk':
+      return compressChunkSQL(operation);
     case 'addCompressionPolicy':
       return addCompressionPolicySQL(operation);
     case 'alterCompressionPolicy':
