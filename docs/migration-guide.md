@@ -193,6 +193,35 @@ destroying materialized rows. Every existing aggregate is therefore listed under
 threshold has changed is reported under `Not auto-converged:` and **counts as
 drift**, so `check` still exits non-zero.
 
+### `mix`: both directions at once, for adopting on an existing database
+
+```sh
+npx typeorm-timescaledb mix        # preview both halves
+```
+
+Adopting this library on a database you did not model means answering two questions together:
+_what is in my database that my entities do not describe?_ and _what do my entities declare that my
+database lacks?_ `mix` answers both in one run — it **pulls first**, then shows the push plan.
+
+The pull runs first on purpose: it records the database as it _was_, not as a convergence left it.
+If the pull is incomplete, `mix` says so **before** showing the push plan, because converging toward
+code that does not yet describe your database is how something gets dropped.
+
+Its push half previews by default and takes the same `--apply` / `--allow-drops` /
+`--allow-refused` flags, with the same meanings.
+
+**Exit codes.** `0` when the pull described the database fully (or there was nothing to pull) _and_
+the push found no drift or applied it successfully. `2` when either half needs you — drift left
+unapplied, drift that cannot be auto-converged, or a **partial pull**.
+
+A partial pull is never a success, _even if the push applied cleanly_: it means your code does not
+yet describe everything the database contains, and converging toward code like that is how something
+gets dropped. In that case `mix` applies what you asked for, says so plainly, and still exits `2`.
+
+> **There is no `sync` verb.** `push --apply` _is_ the synchronize mode: it converges the database
+> to your code, refuses `refuse-by-default` steps unless you pass `--allow-refused`, and never drops
+> without `--allow-drops`. A second verb doing the same job would be surface without behaviour.
+
 ### The programmatic API: read → diff → apply
 
 The same engine is three calls, each telling you how risky the next one is

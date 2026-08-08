@@ -8,7 +8,16 @@ import type { TimescaleConfig } from './config.js';
 export const CONFIG_FILENAME = 'timescaledb.config.json';
 
 /** The CLI subcommands. */
-export const COMMANDS = ['generate', 'run', 'revert', 'status', 'check', 'push', 'pull'] as const;
+export const COMMANDS = [
+  'generate',
+  'run',
+  'revert',
+  'status',
+  'check',
+  'push',
+  'pull',
+  'mix',
+] as const;
 export type Command = (typeof COMMANDS)[number];
 
 /** Thrown on malformed CLI input; carries a user-facing message (with usage). */
@@ -58,6 +67,7 @@ Commands:
   status     Show whether migrations are pending
   check      Diff the live DB against @Hypertable declarations; exit non-zero on drift (CI gate)
   push       Converge the live DB to your entities — PREVIEWS by default, --apply to run it
+  mix        Pull what the DB has, then push what your code declares (preview by default)
   pull       Reproduce the live DB's TimescaleDB layer as a migration (read-only, brownfield adopt)
 
 Options:
@@ -189,8 +199,8 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
     ['--allow-drops', flags.allowDrops],
     ['--allow-refused', flags.allowRefused],
   ] as const) {
-    if (on && command !== 'push') {
-      throw new CliError(`Option ${flag} is only valid for 'push'.\n\n${USAGE}`);
+    if (on && command !== 'push' && command !== 'mix') {
+      throw new CliError(`Option ${flag} is only valid for 'push' or 'mix'.\n\n${USAGE}`);
     }
   }
 

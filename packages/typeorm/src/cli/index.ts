@@ -8,6 +8,9 @@ export {
   pullCommand,
   reportPlan,
   exitCodeForPush,
+  exitCodeForMix,
+  mixCommand,
+  mixOutcome,
   exitCodeForPull,
   nodeFileWriter,
 } from './commands.js';
