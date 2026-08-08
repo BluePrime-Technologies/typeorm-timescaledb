@@ -119,15 +119,18 @@ interface StaleRow {
  * the user-facing chunk AND its compressed twin, so whichever the running version uses, the row is
  * found. Chunks whose settings equal the hypertable's are excluded — those are already correct.
  */
-const STALE_CHUNKS_SQL = `
-  -- DISTINCT ON: on a version where compression_settings holds a row for BOTH the user-facing chunk
-  -- and its compressed twin, the OR below matches twice and the chunk would be rewritten twice —
-  -- double the IO and double the lock time, for nothing.
-  --
-  -- Schema and table are matched as SEPARATE parameters rather than through
-  -- format('%I.%I', ...) = $1. format() quotes only identifiers that need it, so a hypertable named
-  -- e.g. "My Table" rendered as "public"."My Table" and never equalled the plain 'public.My Table'
-  -- the caller passed — the planner then reported "no compressed chunks" for a table full of them.
+/**
+ * Modern shape (2.28, 2.29): `compression_settings` keys on the USER-FACING chunk, so the settings
+ * join needs nothing from `_timescaledb_catalog.chunk` at all.
+ *
+ * Avoiding that table is the point. Its columns have changed twice across the supported range —
+ * 2.18/2.28 expose `schema_name`/`table_name`/`compressed_chunk_id`, and **2.29 dropped all three**
+ * in favour of `relid`. Referencing `compressed_chunk_id` made the whole query throw on 2.29, which
+ * the planner caught and turned into `precision: 'unknown'`. It then listed every compressed chunk
+ * both before AND after a rewrite, so nothing ever converged — and the degraded output masked the
+ * fact that comparison was not happening at all.
+ */
+const STALE_CHUNKS_MODERN_SQL = `
   SELECT DISTINCT ON (c.chunk_schema, c.chunk_name)
     format('%I.%I', c.chunk_schema, c.chunk_name) AS chunk,
     cs.segmentby          AS chunk_segmentby,
@@ -139,15 +142,45 @@ const STALE_CHUNKS_SQL = `
     d.orderby_desc        AS desired_orderby_desc,
     d.orderby_nullsfirst  AS desired_orderby_nullsfirst
   FROM timescaledb_information.chunks c
-  LEFT JOIN _timescaledb_catalog.chunk ich
+  LEFT JOIN _timescaledb_catalog.compression_settings cs
+    ON cs.relid = to_regclass(format('%I.%I', c.chunk_schema, c.chunk_name))
+  LEFT JOIN _timescaledb_catalog.compression_settings d
+    ON d.relid = to_regclass(format('%I.%I', c.hypertable_schema, c.hypertable_name))
+  WHERE c.hypertable_schema = $1::text
+    AND c.hypertable_name = $2::text
+    AND c.is_compressed
+  ORDER BY c.chunk_schema, c.chunk_name, cs.segmentby NULLS LAST
+`;
+
+/**
+ * Legacy shape (2.18): `compression_settings` keys on the COMPRESSED twin, which has to be reached
+ * through `_timescaledb_catalog.chunk.compressed_chunk_id`. Tried only if the modern query resolves
+ * nothing, so a version lacking these columns never runs it.
+ *
+ * `to_regclass` rather than `::regclass`: the cast THROWS on a relation that no longer exists, and a
+ * catalog row can outlive its relation after a rewrite. to_regclass returns NULL instead, so one
+ * stale row cannot take down the whole probe.
+ */
+const STALE_CHUNKS_LEGACY_SQL = `
+  SELECT DISTINCT ON (c.chunk_schema, c.chunk_name)
+    format('%I.%I', c.chunk_schema, c.chunk_name) AS chunk,
+    cs.segmentby          AS chunk_segmentby,
+    cs.orderby            AS chunk_orderby,
+    cs.orderby_desc       AS chunk_orderby_desc,
+    cs.orderby_nullsfirst AS chunk_orderby_nullsfirst,
+    d.segmentby           AS desired_segmentby,
+    d.orderby             AS desired_orderby,
+    d.orderby_desc        AS desired_orderby_desc,
+    d.orderby_nullsfirst  AS desired_orderby_nullsfirst
+  FROM timescaledb_information.chunks c
+  JOIN _timescaledb_catalog.chunk ich
     ON ich.schema_name = c.chunk_schema AND ich.table_name = c.chunk_name
-  LEFT JOIN _timescaledb_catalog.chunk cch
+  JOIN _timescaledb_catalog.chunk cch
     ON cch.id = ich.compressed_chunk_id
   LEFT JOIN _timescaledb_catalog.compression_settings cs
-    ON cs.relid = format('%I.%I', c.chunk_schema, c.chunk_name)::regclass
-    OR (cch.id IS NOT NULL AND cs.relid = format('%I.%I', cch.schema_name, cch.table_name)::regclass)
+    ON cs.relid = to_regclass(format('%I.%I', cch.schema_name, cch.table_name))
   LEFT JOIN _timescaledb_catalog.compression_settings d
-    ON d.relid = format('%I.%I', c.hypertable_schema, c.hypertable_name)::regclass
+    ON d.relid = to_regclass(format('%I.%I', c.hypertable_schema, c.hypertable_name))
   WHERE c.hypertable_schema = $1::text
     AND c.hypertable_name = $2::text
     AND c.is_compressed
@@ -217,9 +250,23 @@ export async function planRecompression(
     return { table: qualified, chunks: [], precision: 'exact', compressedChunkCount: 0 };
   }
 
+  /** Resolved when a probe produced a row whose per-chunk settings actually came back. */
+  const resolved = (r: readonly StaleRow[]): boolean =>
+    r.length > 0 && r.some((x) => x.chunk_segmentby !== null);
+
   let rows: StaleRow[];
   try {
-    rows = await dataSource.query(STALE_CHUNKS_SQL, params);
+    // Modern shape first; fall back to the 2.18 twin-keyed shape only if it yields nothing. Trying
+    // in this order means a version WITHOUT the legacy columns never executes the legacy query.
+    rows = await dataSource.query(STALE_CHUNKS_MODERN_SQL, params);
+    if (!resolved(rows)) {
+      try {
+        const legacy: StaleRow[] = await dataSource.query(STALE_CHUNKS_LEGACY_SQL, params);
+        if (resolved(legacy)) rows = legacy;
+      } catch {
+        // Legacy columns absent (2.29+). Keep the modern result and let the guard below decide.
+      }
+    }
   } catch (error) {
     // The internal catalog is not a public API. If it moves under us, EVERY compressed chunk becomes
     // a candidate — never "nothing to do".
