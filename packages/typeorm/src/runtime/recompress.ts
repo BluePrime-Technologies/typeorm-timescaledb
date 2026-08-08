@@ -1,9 +1,5 @@
 import type { DataSource } from 'typeorm';
-import {
-  TimescaleError,
-  TimescaleErrorCode,
-  compileOperation,
-} from '@blueprime/timescaledb-core';
+import { TimescaleError, TimescaleErrorCode, compileOperation } from '@blueprime/timescaledb-core';
 
 /**
  * The decompress → alter → recompress planner.
