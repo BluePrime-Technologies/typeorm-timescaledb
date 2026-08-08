@@ -46,6 +46,10 @@ function describeOperation(operation: Operation): string {
       return `remove retention policy on ${operation.table}`;
     case 'removeCompressionPolicy':
       return `remove compression policy on ${operation.table}`;
+    case 'decompressChunk':
+      return `decompress chunk ${operation.chunk}`;
+    case 'compressChunk':
+      return `recompress chunk ${operation.chunk} (using the hypertable's current settings)`;
     default: {
       // Exhaustiveness: a new Operation variant without a case fails to compile here.
       const unhandled: never = operation;

@@ -120,6 +120,38 @@ declarations, prints a readable preview of any drift, and exits non-zero if
 drift is found — a schema gate for CI. It reports drift; it does not apply
 anything.
 
+### `timescaledb.config.json`: the common path in one command
+
+Set the options you repeat once, and the commands get shorter:
+
+```json
+{
+  "dataSource": "src/data-source.ts",
+  "outDir": "src/migrations",
+  "output": "sql"
+}
+```
+
+```sh
+npx typeorm-timescaledb check      # no -d needed
+```
+
+The file is found by searching **upward** from the current directory, so it works from inside a
+monorepo package. `--config <path>` picks a specific one. Precedence is **CLI flag > config file >
+built-in default**, applied per key — so a flag overrides just that setting, not the whole file.
+
+An unknown key is an **error**, not a silent no-op: a typo'd `datasource` that quietly did nothing
+is how you end up running against the wrong DataSource believing you had configured it.
+
+**`--apply`, `--allow-drops` and `--allow-refused` cannot be set here.** `push` previews by default
+so that converging a database is something you ask for _per invocation, in the shell_. A file
+committed to the repository would pre-authorise that for everyone who later types the command —
+including on a database it was never written for. Setting them in the config is rejected with an
+explanation rather than ignored.
+
+Continuous aggregates are also not configurable here — they are class references, which JSON cannot
+hold. Keep exporting them from the DataSource module, as below.
+
 ### Making `check` and `push` see your continuous aggregates
 
 Continuous aggregates **cannot be discovered automatically.** A
@@ -193,6 +225,74 @@ and compatibility with a running application.
 
 `ANALYZERS` is exported deliberately: an analyzer suite whose contents are opaque invites you to
 assume a check exists that does not. This is the first tranche, not a finished set.
+
+### `mix`: both directions at once, for adopting on an existing database
+
+```sh
+npx typeorm-timescaledb mix        # preview both halves
+```
+
+Adopting this library on a database you did not model means answering two questions together:
+_what is in my database that my entities do not describe?_ and _what do my entities declare that my
+database lacks?_ `mix` answers both in one run — it **pulls first**, then shows the push plan.
+
+The pull runs first on purpose: it records the database as it _was_, not as a convergence left it.
+If the pull is incomplete, `mix` says so **before** showing the push plan, because converging toward
+code that does not yet describe your database is how something gets dropped.
+
+Its push half previews by default and takes the same `--apply` / `--allow-drops` /
+`--allow-refused` flags, with the same meanings.
+
+**Exit codes.** `0` when the pull described the database fully (or there was nothing to pull) _and_
+the push found no drift or applied it successfully. `2` when either half needs you — drift left
+unapplied, drift that cannot be auto-converged, or a **partial pull**.
+
+A partial pull is never a success, _even if the push applied cleanly_: it means your code does not
+yet describe everything the database contains, and converging toward code like that is how something
+gets dropped. In that case `mix` applies what you asked for, says so plainly, and still exits `2`.
+
+> **There is no `sync` verb.** `push --apply` _is_ the synchronize mode: it converges the database
+> to your code, refuses `refuse-by-default` steps unless you pass `--allow-refused`, and never drops
+> without `--allow-drops`. A second verb doing the same job would be surface without behaviour.
+
+### Applying a columnstore change to chunks that are already compressed
+
+`ALTER TABLE ... SET (timescaledb.segmentby = ...)` is online, and applies to **future** chunks.
+Chunks already compressed keep the old layout — and the catalog reports the new table-level setting,
+so `check` agrees with your declaration while the stored data does not match it.
+
+`planRecompression` finds exactly which chunks are affected, and `applyRecompression` rewrites them:
+
+```ts
+import {
+  planRecompression,
+  applyRecompression,
+  formatRecompressionPlan,
+} from 'typeorm-timescaledb';
+
+const plan = await planRecompression(dataSource, 'readings');
+console.log(formatRecompressionPlan(plan));
+
+if (plan.chunks.length > 0) {
+  await applyRecompression(dataSource, plan, {
+    confirm: true, // required — this rewrites chunk storage
+    onProgress: (p) => console.log(`${p.chunk}: ${p.phase} (${p.index + 1}/${p.total})`),
+  });
+}
+```
+
+**It is deliberately not part of `push --apply`.** Rewriting chunk storage is IO-heavy and can take
+hours on a large hypertable; it must be something you schedule, not something a schema command does
+to you. Hence the explicit `confirm`.
+
+**It is resumable.** Each chunk is processed independently and both primitives are idempotent, so an
+interrupted run is _re-run_, not restarted. A chunk that fails is recorded and the run continues —
+one unrewritable chunk should not leave the rest in the old layout.
+
+**Check `plan.precision`.** `exact` means per-chunk settings were read and only genuinely stale
+chunks are listed. `unknown` means the internal catalog could not be interpreted on your version, so
+**every** compressed chunk is listed as a candidate — over-doing the work rather than reporting a
+clean database it could not actually verify.
 
 ### The programmatic API: read → diff → apply
 

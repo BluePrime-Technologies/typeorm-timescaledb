@@ -115,6 +115,21 @@ export { pushSchema } from './runtime/push.js';
 export type { PushOptions, PushResult } from './runtime/push.js';
 // The `pull` verb (M4.4b) — reproduce a live database's TimescaleDB layer as a migration. Read-only.
 export { pullSchema, formatPullCoverage, PULL_BASE_DDL_CAVEAT } from './runtime/pull.js';
+// Recompression planner (M4.4) — applies a changed columnstore layout to ALREADY-compressed chunks,
+// which an ALTER alone does not touch. Guarded and resumable.
+export {
+  planRecompression,
+  applyRecompression,
+  formatRecompressionPlan,
+} from './runtime/recompress.js';
+export type {
+  RecompressionPlan,
+  RecompressionResult,
+  RecompressionPrecision,
+  RecompressionProgress,
+  ApplyRecompressionOptions,
+  StaleChunk,
+} from './runtime/recompress.js';
 export type { PullOptions, PullResult, PullCoverage } from './runtime/pull.js';
 export type { ApplyDirection, ApplyDirectOptions, ApplyDirectResult } from './runtime/apply.js';
 

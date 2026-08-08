@@ -274,6 +274,96 @@ export async function pushCommand(
   return 'applied';
 }
 
+/** The disposition of a {@link mixCommand} run. */
+export type MixOutcome = 'clean' | 'attention' | 'applied' | 'applied-with-attention';
+
+/**
+ * Decide a {@link mixCommand} outcome from its two halves.
+ *
+ * Pure and exported so the whole 3x4 matrix is testable without a database. It was previously
+ * inline, and the two defects below both lived in a branch no test could reach — the integration
+ * test only ever ran preview mode, so `--apply` combinations were structurally unreachable.
+ */
+export function mixOutcome(pulled: PullOutcome, pushed: PushOutcome): MixOutcome {
+  // A PARTIAL pull is never a success, whatever the push did.
+  //
+  // This function used to start with `if (pushed === 'applied') return 'applied'`, so a partial pull
+  // followed by a successful apply exited 0. That is precisely the false green mixCommand's own
+  // warning describes twelve lines above it — "converging toward code that does not yet describe the
+  // database is how something gets dropped". The doctrine was written in prose and then not encoded.
+  if (pulled === 'partial') {
+    return pushed === 'applied' ? 'applied-with-attention' : 'attention';
+  }
+
+  if (pushed === 'applied') return 'applied';
+
+  // `complete` means the pull SUCCEEDED in reproducing what the database has — it is a good outcome,
+  // not a problem. Requiring `nothing-to-pull` for `clean` (as this once did) meant only a database
+  // with NO TimescaleDB objects could ever be clean, so `mix` exited 2 on every real database. That
+  // makes the exit code meaningless, which is the same disease as exiting 0 when it should not.
+  return pushed === 'no-drift' ? 'clean' : 'attention';
+}
+
+/**
+ * `mix` — pull, then push, in one command.
+ *
+ * Adopting this library on an existing database means answering two questions at once: what is in
+ * the DB that the entities do not describe, and what do the entities declare that the DB lacks.
+ * That is where someone converges the wrong direction, so `mix` answers both together.
+ *
+ * Deliberately ORCHESTRATION, not new logic: it calls `pullCommand` then `pushCommand` and reuses
+ * their guards, reporting and exit-code semantics wholesale. A reimplementation here would be a
+ * second place for "preview by default" to be got wrong.
+ *
+ * ORDER IS LOAD-BEARING. The pull runs FIRST, capturing the database as it is *before* any
+ * convergence. Running it after an `--apply` would describe a database the engine had just changed,
+ * which is not a record of what was there — and that record is the whole point when you are adopting
+ * against a schema nobody has modelled yet.
+ */
+export async function mixCommand(
+  dataSource: DataSource,
+  logger: Logger,
+  fileOptions: PullFileOptions,
+  pushOptions: PushOptions = {},
+): Promise<MixOutcome> {
+  logger.log('── pull: what the database has that your code does not ──');
+  const pulled = await pullCommand(dataSource, logger, fileOptions);
+
+  if (pulled === 'partial') {
+    // Said BEFORE the push plan, not after. Converging toward code that does not yet describe the
+    // database is how something gets dropped, and a caveat printed underneath the plan is a caveat
+    // read second.
+    logger.log(
+      '\n⚠  The pull above is INCOMPLETE (see the coverage report). Your code cannot yet describe ' +
+        'everything this database contains — review that before acting on the plan below.',
+    );
+  }
+
+  logger.log('\n── push: what your code declares that the database lacks ──');
+  const pushed = await pushCommand(dataSource, logger, pushOptions);
+
+  const outcome = mixOutcome(pulled, pushed);
+  if (outcome === 'applied-with-attention') {
+    // Say plainly that a mutation HAPPENED and the run is still not clean. Collapsing this into
+    // plain 'attention' would exit correctly while hiding that the database was changed.
+    logger.log(
+      '\n⚠  The push was applied, but the pull above was INCOMPLETE — your code still does not ' +
+        'describe everything this database contains. Exiting non-zero.',
+    );
+  }
+  return outcome;
+}
+
+/**
+ * `clean` and `applied` are the only zeros.
+ *
+ * `applied-with-attention` MUST be non-zero: statements ran, but the pull could not fully describe
+ * the database, so the run is not something automation should treat as success.
+ */
+export function exitCodeForMix(outcome: MixOutcome): number {
+  return outcome === 'clean' || outcome === 'applied' ? 0 : 2;
+}
+
 /** The disposition of a {@link pullCommand} run, so `main.ts` can pick an exit code. */
 export type PullOutcome = 'nothing-to-pull' | 'complete' | 'partial';
 

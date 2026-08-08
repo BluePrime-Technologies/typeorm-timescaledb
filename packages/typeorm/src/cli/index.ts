@@ -8,6 +8,9 @@ export {
   pullCommand,
   reportPlan,
   exitCodeForPush,
+  exitCodeForMix,
+  mixCommand,
+  mixOutcome,
   exitCodeForPull,
   nodeFileWriter,
 } from './commands.js';
@@ -30,3 +33,11 @@ export {
   classifyLoadError,
 } from './load.js';
 export type { LoadedDataSourceModule } from './load.js';
+export {
+  resolveConfig,
+  loadConfigFile,
+  findConfigFile,
+  extractConfigPath,
+  CONFIG_FILENAME,
+} from './config.js';
+export type { TimescaleConfig } from './config.js';

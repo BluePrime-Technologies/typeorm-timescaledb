@@ -11,11 +11,14 @@ import {
   pushCommand,
   pullCommand,
   exitCodeForPush,
+  exitCodeForMix,
+  mixCommand,
   exitCodeForPull,
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
 import { initializeForCli, loadDataSourceModule } from './load.js';
+import { resolveConfig } from './config.js';
 
 async function main(argv: readonly string[]): Promise<void> {
   // Only treat help as help when it LEADS the command line. Matching it anywhere let a value
@@ -27,7 +30,9 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   const logger: Logger = console;
-  const args = parseArgs(argv);
+  // Load the config BEFORE parsing: it supplies defaults to that parse (a config-provided
+  // `dataSource` has to satisfy the required-option check), so the order is not interchangeable.
+  const args = parseArgs(argv, resolveConfig(argv, process.cwd()));
   // The module may also export `continuousAggregates` — the only way `check`/`push` can see CAGGs,
   // which are not discoverable from a DataSource. Kept as `undefined` when absent (as opposed to
   // `[]`) so those verbs can tell "none declared" from "never looked".
@@ -73,6 +78,25 @@ async function main(argv: readonly string[]): Promise<void> {
           ...caggs,
         });
         process.exitCode = exitCodeForPush(outcome);
+        break;
+      }
+      case 'mix': {
+        const outcome = await mixCommand(
+          dataSource,
+          logger,
+          {
+            outDir: args.outDir,
+            ...(args.name !== undefined && { name: args.name }),
+            output: args.output,
+          },
+          {
+            apply: args.apply,
+            allowDrops: args.allowDrops,
+            allowRefused: args.allowRefused,
+            ...caggs,
+          },
+        );
+        process.exitCode = exitCodeForMix(outcome);
         break;
       }
       case 'pull': {
