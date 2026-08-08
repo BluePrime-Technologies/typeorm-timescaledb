@@ -107,6 +107,64 @@ describe('lintPlan — analyzer set', () => {
     expect(all.every((c) => /^TSDB\d{3}$/.test(c))).toBe(true);
   });
 
+  it('TSDB009 sees a rename even when the two steps spell the table differently', () => {
+    // Raw string equality made `public.old` and `old` different tables to the linter — the quietest
+    // possible way for a rule to fail, since it simply reports nothing.
+    const found = lintPlan(
+      plan(
+        { kind: 'renameHypertable', from: 'public.old', to: 'public.new' },
+        { kind: 'addRetentionPolicy', table: 'old', dropAfter: '30 days' },
+      ),
+    );
+    expect(found.map((f) => f.code)).toContain('TSDB009');
+  });
+
+  it('names the table on a rename finding, rather than leaving object undefined', () => {
+    // objectOf had no case for renameHypertable (it has from/to, no `table`), so every plan-level
+    // rule skipped renames and the finding itself carried no object.
+    const f = lintPlan(plan({ kind: 'renameHypertable', from: 'public.a', to: 'public.b' })).find(
+      (x) => x.code === 'TSDB002',
+    );
+    expect(f?.object).toBe('public.a');
+  });
+
+  it('TSDB006 fires on removing a retention policy', () => {
+    const f = lintPlan(
+      plan({ kind: 'removeRetentionPolicy', table: 'public.m', restoreAfter: '30 days' }),
+    ).find((x) => x.code === 'TSDB006');
+    expect(f?.severity).toBe('warning');
+    expect(f?.detail).toMatch(/grows without bound/);
+  });
+
+  it('TSDB007 fires on removing a compression policy', () => {
+    const f = lintPlan(
+      plan({ kind: 'removeCompressionPolicy', table: 'public.m', restoreAfter: '7 days' }),
+    ).find((x) => x.code === 'TSDB007');
+    expect(f?.severity).toBe('warning');
+    expect(f?.detail).toMatch(/new ones will not be/);
+  });
+
+  it('TSDB008 fires when enabling a columnstore with a threshold', () => {
+    const f = lintPlan(
+      plan({ kind: 'addColumnstorePolicy', table: 'public.m', after: '7 days' }),
+    ).find((x) => x.code === 'TSDB008');
+    expect(f?.severity).toBe('info');
+    expect(f?.detail).toMatch(/one-off IO burst/);
+  });
+
+  it('TSDB001 fires on a refuse-by-default step', () => {
+    // Shortening a retention threshold is the reachable refuse-by-default operation.
+    const found = lintPlan(
+      plan({
+        kind: 'alterRetentionPolicy',
+        table: 'public.m',
+        from: '90 days',
+        to: '30 days',
+      }),
+    );
+    expect(found.map((f) => f.code)).toContain('TSDB001');
+  });
+
   it('does not fire on a plain, unremarkable plan', () => {
     // A linter that flags everything gets ignored, which is the same as not having one.
     const quiet = plan({

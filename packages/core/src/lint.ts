@@ -32,7 +32,8 @@ import { classifyOperation } from './safety.js';
  * ## Scope, stated honestly
  *
  * This is the FIRST tranche, not a finished analyzer suite. The M4 plan benchmarks the eventual set
- * against Atlas's 50+; there are ten here, each grounded in an operation this engine actually emits.
+ * against Atlas's 50+; there are NINE here (TSDB005 is reserved, see below), each grounded in an operation this
+ * engine actually emits.
  * The framework is the deliverable as much as the rules — new analyzers are a table entry, and
  * {@link ANALYZERS} is exported so the covered set is inspectable rather than guessed at.
  */
@@ -63,13 +64,32 @@ export interface Analyzer {
   readonly check: (operation: Operation, index: number, plan: Plan) => LintFinding[] | null;
 }
 
-/** The object an operation acts on, whatever the variant calls it. */
+/**
+ * The object an operation acts on, whatever the variant calls it.
+ *
+ * `renameHypertable` has `from`/`to` and NO `table`, so this returned undefined for it — and the
+ * plan-level rules (which bail on an undefined target) were therefore blind to the single operation
+ * the linter cares most about. It returns `from`, the name the step acts ON; the resulting name is
+ * what every later step must use, and that relationship is what TSDB009 exists to check.
+ */
 function objectOf(operation: Operation): string | undefined {
+  if (operation.kind === 'renameHypertable') return operation.from;
   const o = operation as { table?: unknown; view?: unknown; chunk?: unknown };
   for (const v of [o.table, o.view, o.chunk]) {
     if (typeof v === 'string') return v;
   }
   return undefined;
+}
+
+/**
+ * Compare two object names as RELATIONS, not strings. A plan can legitimately mix `public.metric`
+ * and `metric` for one table — matching raw text made TSDB009 miss a rename whenever the two steps
+ * happened to spell it differently, which is the quietest possible way for a lint rule to fail.
+ */
+function sameObject(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined) return false;
+  const q = (n: string): string => (n.includes('.') ? n : `public.${n}`);
+  return q(a) === q(b);
 }
 
 function finding(
@@ -232,7 +252,7 @@ export const ANALYZERS: readonly Analyzer[] = [
       const renamedAway = plan.steps
         .slice(0, index)
         .map((s) => s.operation)
-        .find((o) => o.kind === 'renameHypertable' && o.from === target);
+        .find((o) => o.kind === 'renameHypertable' && sameObject(o.from, target));
       return renamedAway === undefined
         ? null
         : [
@@ -254,9 +274,9 @@ export const ANALYZERS: readonly Analyzer[] = [
       const target = objectOf(operation);
       if (target === undefined) return null;
       // Report once, on the FIRST step for that object, rather than N times.
-      const firstIndex = plan.steps.findIndex((s) => objectOf(s.operation) === target);
+      const firstIndex = plan.steps.findIndex((s) => sameObject(objectOf(s.operation), target));
       if (firstIndex !== index) return null;
-      const count = plan.steps.filter((s) => objectOf(s.operation) === target).length;
+      const count = plan.steps.filter((s) => sameObject(objectOf(s.operation), target)).length;
       return count < 2
         ? null
         : [
