@@ -176,6 +176,138 @@ describe.skipIf(!IMAGE)('recompression planner — live chunks', () => {
     expect(result.failed).toEqual([]);
   }, 120_000);
 
+  it('rolls back a chunk whose recompress fails, never stranding it in rowstore (#199)', async () => {
+    // THE TEST THAT WOULD HAVE CAUGHT THE CRITICAL. Two reviewers found, independently, that a crash
+    // between the decompress and the compress left the chunk uncompressed — and since the planner
+    // only looks at chunks WHERE is_compressed, it would never be seen again. "Re-run it" (the
+    // documented recovery) could not help, because the planner could no longer see the chunk.
+    //
+    // The old resumability test only re-ran after a SUCCESSFUL pass, so it could never observe this.
+    // Here the failure is injected between the two phases, against a real database, and the
+    // assertion is on what SURVIVES.
+    // Self-contained: its own hypertable, so it cannot depend on what earlier tests left behind.
+    // (The first version reused `m` and silently found nothing stale, because a previous test had
+    // already converged it — the coupling makes a real failure here look like a bug in rollback.)
+    await ds.query(`CREATE TABLE fault(ts TIMESTAMPTZ NOT NULL, dev TEXT, v DOUBLE PRECISION)`);
+    await ds.query(
+      `SELECT create_hypertable('fault','ts', chunk_time_interval => INTERVAL '1 day')`,
+    );
+    await ds.query(
+      `INSERT INTO fault SELECT now()-(i||' hours')::interval, 'd'||(i%3), i FROM generate_series(1,80) i`,
+    );
+    await ds.query(
+      `ALTER TABLE fault SET (timescaledb.enable_columnstore = true, timescaledb.segmentby = 'dev')`,
+    );
+    await ds.query(`SELECT compress_chunk(c) FROM show_chunks('fault') c`);
+    await ds.query(`ALTER TABLE fault SET (timescaledb.segmentby = 'v')`);
+
+    const faultCompressed = async (): Promise<number> => {
+      const r: { n: string }[] = await ds.query(
+        `SELECT count(*) AS n FROM timescaledb_information.chunks
+         WHERE hypertable_name = 'fault' AND is_compressed`,
+      );
+      return Number(r[0]?.n ?? 0);
+    };
+
+    const plan = await planRecompression(ds, 'fault');
+    expect(plan.chunks.length).toBeGreaterThan(0);
+
+    const target = plan.chunks[0] as { chunk: string };
+    const compressedBefore = await faultCompressed();
+
+    // Wrap the real DataSource: everything runs for real EXCEPT the compress, which throws — i.e.
+    // exactly the moment a process would die mid-rewrite.
+    const faulty = {
+      isInitialized: true,
+      createQueryRunner: () => {
+        const runner = ds.createQueryRunner();
+        return new Proxy(runner, {
+          get(t, prop, recv) {
+            if (prop !== 'query') return Reflect.get(t, prop, recv) as unknown;
+            return async (sql: string, params?: unknown[]) => {
+              if (/SELECT compress_chunk\(/.test(sql)) throw new Error('injected: process died');
+              return (t.query as (s: string, p?: unknown[]) => Promise<unknown>)(sql, params);
+            };
+          },
+        });
+      },
+    } as unknown as DataSource;
+
+    const result = await applyRecompression(
+      faulty,
+      { ...plan, chunks: [target] },
+      { confirm: true },
+    );
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.error).toMatch(/injected/);
+    expect(result.processed).toEqual([]);
+
+    // THE ASSERTION THAT MATTERS: the chunk is STILL COMPRESSED. Before the per-chunk transaction it
+    // was left in rowstore and became permanently invisible to the planner.
+    expect(await faultCompressed()).toBe(compressedBefore);
+    const after = await planRecompression(ds, 'fault');
+    expect(after.chunks.map((c) => c.chunk)).toContain(target.chunk);
+
+    // ...and a normal re-run then completes it, which is what "resumable" is supposed to mean.
+    const finished = await applyRecompression(ds, after, { confirm: true });
+    expect(finished.failed).toEqual([]);
+    expect((await planRecompression(ds, 'fault')).chunks).toEqual([]);
+
+    await ds.query('DROP TABLE fault CASCADE');
+  }, 300_000);
+
+  it('detects an ORDERBY-only change, not just segmentby (#199 CRITICAL)', async () => {
+    // Red-team found the planner compared segmentby ONLY, so an orderby-only change reported
+    // "already match" while every chunk on disk was stale — the exact false-green this planner
+    // exists to remove, inside the planner that removes it. compression_settings has carried
+    // `orderby` all along; it simply was not read.
+    await ds.query(`CREATE TABLE ob(ts TIMESTAMPTZ NOT NULL, dev TEXT, v DOUBLE PRECISION)`);
+    await ds.query(`SELECT create_hypertable('ob','ts', chunk_time_interval => INTERVAL '1 day')`);
+    await ds.query(
+      `INSERT INTO ob SELECT now()-(i||' hours')::interval, 'd'||(i%3), i FROM generate_series(1,60) i`,
+    );
+    await ds.query(
+      `ALTER TABLE ob SET (timescaledb.enable_columnstore = true,
+         timescaledb.segmentby = 'dev', timescaledb.orderby = 'ts DESC')`,
+    );
+    await ds.query(`SELECT compress_chunk(c) FROM show_chunks('ob') c`);
+    expect((await planRecompression(ds, 'ob')).chunks).toEqual([]);
+
+    // Change ONLY the orderby. segmentby is untouched.
+    await ds.query(`ALTER TABLE ob SET (timescaledb.orderby = 'ts ASC')`);
+
+    const plan = await planRecompression(ds, 'ob');
+    expect(plan.chunks.length).toBeGreaterThan(0);
+    expect(formatRecompressionPlan(plan)).toMatch(/orderby/);
+
+    // ...and the rewrite converges it, so this is a real fix rather than a louder report.
+    await applyRecompression(ds, plan, { confirm: true });
+    expect((await planRecompression(ds, 'ob')).chunks).toEqual([]);
+
+    await ds.query('DROP TABLE ob CASCADE');
+  }, 300_000);
+
+  it('finds chunks for a hypertable whose name needs identifier quoting (#199 HIGH)', async () => {
+    // The name was matched via format('%I.%I', …) = $1, and format() quotes only identifiers that
+    // need it — so "My Table" rendered as "public"."My Table" and never equalled the plain
+    // 'public.My Table' the caller passed. The planner reported "no compressed chunks" for a table
+    // full of them: a silent all-clear on an unexamined table.
+    await ds.query(`CREATE TABLE "My Table"(ts TIMESTAMPTZ NOT NULL, v DOUBLE PRECISION)`);
+    await ds.query(
+      `SELECT create_hypertable('"My Table"','ts', chunk_time_interval => INTERVAL '1 day')`,
+    );
+    await ds.query(
+      `INSERT INTO "My Table" SELECT now()-(i||' hours')::interval, i FROM generate_series(1,50) i`,
+    );
+    await ds.query(`ALTER TABLE "My Table" SET (timescaledb.enable_columnstore = true)`);
+    await ds.query(`SELECT compress_chunk(c) FROM show_chunks('"My Table"') c`);
+
+    const plan = await planRecompression(ds, 'public.My Table');
+    expect(plan.compressedChunkCount).toBeGreaterThan(0);
+
+    await ds.query('DROP TABLE "My Table" CASCADE');
+  }, 300_000);
+
   it('reports a hypertable with no compressed chunks as nothing to do', async () => {
     await ds.query(`CREATE TABLE bare(ts TIMESTAMPTZ NOT NULL, v DOUBLE PRECISION)`);
     await ds.query(`SELECT create_hypertable('bare','ts')`);

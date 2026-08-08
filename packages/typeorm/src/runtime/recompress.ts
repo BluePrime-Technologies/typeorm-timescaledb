@@ -3,7 +3,6 @@ import {
   TimescaleError,
   TimescaleErrorCode,
   compileOperation,
-  type Operation,
 } from '@blueprime/timescaledb-core';
 
 /**
@@ -46,6 +45,14 @@ export interface StaleChunk {
   readonly chunkSegmentBy?: readonly string[];
   /** The segmentby the hypertable now declares. */
   readonly desiredSegmentBy?: readonly string[];
+  /** The orderby the chunk was compressed with. */
+  readonly chunkOrderBy?: readonly string[];
+  /** The orderby the hypertable now declares. */
+  readonly desiredOrderBy?: readonly string[];
+  /** Per-column DESC flags the chunk was compressed with. */
+  readonly chunkOrderByDesc?: readonly boolean[];
+  /** Per-column DESC flags the hypertable now declares. */
+  readonly desiredOrderByDesc?: readonly boolean[];
 }
 
 /**
@@ -100,6 +107,15 @@ interface StaleRow {
   chunk: string;
   chunk_segmentby: string[] | null;
   desired_segmentby: string[] | null;
+  chunk_orderby: string[] | null;
+  desired_orderby: string[] | null;
+  // Direction lives in its OWN columns: `orderby` stores only the column names, so `ts DESC` and
+  // `ts ASC` are BOTH `{ts}` there. Comparing `orderby` alone would have missed every direction
+  // flip — the same blindness as ignoring orderby entirely, one level down.
+  chunk_orderby_desc: boolean[] | null;
+  desired_orderby_desc: boolean[] | null;
+  chunk_orderby_nullsfirst: boolean[] | null;
+  desired_orderby_nullsfirst: boolean[] | null;
 }
 
 /**
@@ -108,17 +124,24 @@ interface StaleRow {
  * found. Chunks whose settings equal the hypertable's are excluded — those are already correct.
  */
 const STALE_CHUNKS_SQL = `
-  SELECT
+  -- DISTINCT ON: on a version where compression_settings holds a row for BOTH the user-facing chunk
+  -- and its compressed twin, the OR below matches twice and the chunk would be rewritten twice —
+  -- double the IO and double the lock time, for nothing.
+  --
+  -- Schema and table are matched as SEPARATE parameters rather than through
+  -- format('%I.%I', ...) = $1. format() quotes only identifiers that need it, so a hypertable named
+  -- e.g. "My Table" rendered as "public"."My Table" and never equalled the plain 'public.My Table'
+  -- the caller passed — the planner then reported "no compressed chunks" for a table full of them.
+  SELECT DISTINCT ON (c.chunk_schema, c.chunk_name)
     format('%I.%I', c.chunk_schema, c.chunk_name) AS chunk,
-    cs.segmentby AS chunk_segmentby,
-    (
-      -- ($1::text)::regclass, not $1::regclass: a parameter gets ONE inferred type across the whole
-      -- statement, so an unadorned $1::regclass here made the text comparison below resolve as
-      -- text = regclass, which has no operator. The query threw and the planner fell back to
-      -- 'unknown' — safe, but it silently gave up the precision this whole query exists for.
-      SELECT d.segmentby FROM _timescaledb_catalog.compression_settings d
-      WHERE d.relid = ($1::text)::regclass
-    ) AS desired_segmentby
+    cs.segmentby          AS chunk_segmentby,
+    cs.orderby            AS chunk_orderby,
+    cs.orderby_desc       AS chunk_orderby_desc,
+    cs.orderby_nullsfirst AS chunk_orderby_nullsfirst,
+    d.segmentby           AS desired_segmentby,
+    d.orderby             AS desired_orderby,
+    d.orderby_desc        AS desired_orderby_desc,
+    d.orderby_nullsfirst  AS desired_orderby_nullsfirst
   FROM timescaledb_information.chunks c
   LEFT JOIN _timescaledb_catalog.chunk ich
     ON ich.schema_name = c.chunk_schema AND ich.table_name = c.chunk_name
@@ -127,18 +150,50 @@ const STALE_CHUNKS_SQL = `
   LEFT JOIN _timescaledb_catalog.compression_settings cs
     ON cs.relid = format('%I.%I', c.chunk_schema, c.chunk_name)::regclass
     OR (cch.id IS NOT NULL AND cs.relid = format('%I.%I', cch.schema_name, cch.table_name)::regclass)
-  WHERE format('%I.%I', c.hypertable_schema, c.hypertable_name) = $1::text
+  LEFT JOIN _timescaledb_catalog.compression_settings d
+    ON d.relid = format('%I.%I', c.hypertable_schema, c.hypertable_name)::regclass
+  WHERE c.hypertable_schema = $1::text
+    AND c.hypertable_name = $2::text
     AND c.is_compressed
+  ORDER BY c.chunk_schema, c.chunk_name, cs.segmentby NULLS LAST
 `;
 
 const COMPRESSED_COUNT_SQL = `
   SELECT count(*)::int AS n
   FROM timescaledb_information.chunks
-  WHERE format('%I.%I', hypertable_schema, hypertable_name) = $1 AND is_compressed
+  WHERE hypertable_schema = $1::text AND hypertable_name = $2::text AND is_compressed
 `;
 
-const sameArray = (a: readonly string[] | null, b: readonly string[] | null): boolean =>
-  a !== null && b !== null && a.length === b.length && a.every((x, i) => x === b[i]);
+/**
+ * Facet equality. `null === null` is EQUAL: a hypertable may legitimately declare no orderby, and
+ * treating "both absent" as a difference would report every such chunk as permanently stale.
+ * `null` vs a value is NOT equal — that is a real difference, or an unreadable side, and both
+ * deserve to be surfaced rather than assumed away.
+ */
+const sameArray = (a: readonly unknown[] | null, b: readonly unknown[] | null): boolean => {
+  if (a === null || b === null) return a === b;
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+};
+
+/**
+ * Every facet the catalog records about a columnstore layout. Missing one is a silent false-green —
+ * comparing only `segmentby` made an orderby change invisible, and comparing only `orderby` (which
+ * stores column NAMES) would have missed every ASC/DESC flip, since direction lives in
+ * `orderby_desc`.
+ *
+ * A facet whose DESIRED side is NULL is SKIPPED, not treated as a difference. The hypertable row
+ * records only what was explicitly declared, while each chunk records the EFFECTIVE settings the
+ * engine expanded them into — verified on 2.28, where a table declaring just `segmentby` has NULL
+ * orderby while its chunks carry the auto-filled `{ts}/{t}/{t}`. Comparing those directly reported
+ * every chunk as stale forever. "Undeclared" means "accept the engine's choice", which is the same
+ * rule the hypertable diff applies via TIMESCALE_DEFAULTS.
+ */
+const FACETS = [
+  ['chunk_segmentby', 'desired_segmentby'],
+  ['chunk_orderby', 'desired_orderby'],
+  ['chunk_orderby_desc', 'desired_orderby_desc'],
+  ['chunk_orderby_nullsfirst', 'desired_orderby_nullsfirst'],
+] as const;
 
 /**
  * Work out which chunks of `table` were compressed under settings the hypertable no longer declares.
@@ -157,8 +212,10 @@ export async function planRecompression(
     );
   }
   const qualified = table.includes('.') ? table : `public.${table}`;
+  const dot = qualified.indexOf('.');
+  const params = [qualified.slice(0, dot), qualified.slice(dot + 1)];
 
-  const countRows: { n: number }[] = await dataSource.query(COMPRESSED_COUNT_SQL, [qualified]);
+  const countRows: { n: number }[] = await dataSource.query(COMPRESSED_COUNT_SQL, params);
   const compressedChunkCount = countRows[0]?.n ?? 0;
   if (compressedChunkCount === 0) {
     return { table: qualified, chunks: [], precision: 'exact', compressedChunkCount: 0 };
@@ -166,7 +223,7 @@ export async function planRecompression(
 
   let rows: StaleRow[];
   try {
-    rows = await dataSource.query(STALE_CHUNKS_SQL, [qualified]);
+    rows = await dataSource.query(STALE_CHUNKS_SQL, params);
   } catch (error) {
     // The internal catalog is not a public API. If it moves under us, EVERY compressed chunk becomes
     // a candidate — never "nothing to do".
@@ -181,9 +238,19 @@ export async function planRecompression(
     };
   }
 
-  // The probe ran but told us nothing about any chunk — an unrecognised shape, not an empty result.
-  // Same rule: assume nothing is known rather than that nothing is stale.
-  if (rows.length === 0 || rows.every((r) => r.chunk_segmentby === null)) {
+  // The probe ran but could not resolve BOTH sides of the comparison. Either half being unreadable
+  // makes the verdict meaningless, and the failure modes differ:
+  //   - chunk_segmentby unresolved   -> a chunk is compared against nothing;
+  //   - desired_segmentby unresolved -> EVERY chunk compares unequal, so all are reported stale at
+  //     precision 'exact'. That is the dangerous one: it never converges, so every run confidently
+  //     rewrites the whole hypertable again, forever.
+  // A PARTIAL resolution is not trustworthy either, so any unresolved row degrades the whole plan
+  // rather than silently mixing verified and unverified verdicts.
+  const unresolved =
+    rows.length === 0 ||
+    rows.some((r) => r.chunk_segmentby === null) ||
+    rows.some((r) => r.desired_segmentby === null);
+  if (unresolved) {
     return {
       table: qualified,
       chunks: await allCompressedChunks(dataSource, qualified),
@@ -194,13 +261,27 @@ export async function planRecompression(
     };
   }
 
+  // BOTH facets. Comparing only segmentby made an orderby-only change completely invisible: the
+  // planner reported "already match" while every chunk on disk was stale — the precise false-green
+  // this planner exists to remove, inside the planner that removes it. `compression_settings` has
+  // carried `orderby` all along; it simply was not read.
   const chunks = rows
-    .filter((r) => !sameArray(r.chunk_segmentby, r.desired_segmentby))
+    .filter((r) =>
+      FACETS.some(([c, d]) => {
+        const desired = r[d] ?? null;
+        if (desired === null) return false; // undeclared -> the engine's default is accepted
+        return !sameArray(r[c] ?? null, desired);
+      }),
+    )
     .map(
       (r): StaleChunk => ({
         chunk: r.chunk,
         ...(r.chunk_segmentby !== null && { chunkSegmentBy: r.chunk_segmentby }),
         ...(r.desired_segmentby !== null && { desiredSegmentBy: r.desired_segmentby }),
+        ...(r.chunk_orderby !== null && { chunkOrderBy: r.chunk_orderby }),
+        ...(r.desired_orderby !== null && { desiredOrderBy: r.desired_orderby }),
+        ...(r.chunk_orderby_desc !== null && { chunkOrderByDesc: r.chunk_orderby_desc }),
+        ...(r.desired_orderby_desc !== null && { desiredOrderByDesc: r.desired_orderby_desc }),
       }),
     );
 
@@ -252,19 +333,40 @@ export async function applyRecompression(
   const failed: { chunk: string; error: string }[] = [];
 
   for (const [index, { chunk }] of plan.chunks.entries()) {
-    const step = async (
-      operation: Operation,
-      phase: RecompressionProgress['phase'],
-    ): Promise<void> => {
-      for (const sql of compileOperation(operation).up) await dataSource.query(sql);
-      options.onProgress?.({ chunk, index, total: plan.chunks.length, phase });
-    };
+    // ONE TRANSACTION PER CHUNK — the difference between resumable and data-stranding.
+    //
+    // Without it, a crash between the decompress and the compress left the chunk in rowstore. And
+    // because the planner only looks at chunks WHERE is_compressed, it would never be seen again:
+    // the chunk stayed uncompressed permanently, silently bloating the table, and re-running (the
+    // documented recovery) did not help because the planner could no longer see it. Calling that
+    // pass "resumable" was wrong for precisely the failure resumability exists to cover.
+    //
+    // Verified on 2.18 and 2.28: decompress_chunk and compress_chunk both run inside a transaction,
+    // and ROLLBACK genuinely restores the compressed state (chunk count unchanged after an aborted
+    // decompress). A killed process now leaves the chunk exactly as it was.
+    //
+    // Per CHUNK, not one transaction for the run: a multi-hour rewrite in a single transaction would
+    // hold locks and bloat WAL throughout, and lose all progress on any failure.
+    const runner = dataSource.createQueryRunner();
     try {
-      await step({ kind: 'decompressChunk', chunk }, 'decompressed');
-      await step({ kind: 'compressChunk', chunk }, 'recompressed');
+      await runner.connect();
+      await runner.startTransaction();
+      const steps = [
+        { operation: { kind: 'decompressChunk' as const, chunk }, phase: 'decompressed' as const },
+        { operation: { kind: 'compressChunk' as const, chunk }, phase: 'recompressed' as const },
+      ];
+      for (const { operation, phase } of steps) {
+        for (const sql of compileOperation(operation).up) await runner.query(sql);
+        options.onProgress?.({ chunk, index, total: plan.chunks.length, phase });
+      }
+      await runner.commitTransaction();
       processed.push(chunk);
     } catch (error) {
+      // Roll back so the chunk returns to its pre-run state rather than being stranded in rowstore.
+      if (runner.isTransactionActive) await runner.rollbackTransaction();
       failed.push({ chunk, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      await runner.release();
     }
   }
 
@@ -290,9 +392,25 @@ export function formatRecompressionPlan(plan: RecompressionPlan): string {
     );
   }
   for (const c of plan.chunks.slice(0, 10)) {
-    const from = c.chunkSegmentBy ? `[${c.chunkSegmentBy.join(', ')}]` : '?';
-    const to = c.desiredSegmentBy ? `[${c.desiredSegmentBy.join(', ')}]` : '?';
-    lines.push(`  - ${c.chunk}: segmentby ${from} → ${to}`);
+    const fmt = (v: readonly string[] | undefined): string => (v ? `[${v.join(', ')}]` : '?');
+    const facets: string[] = [];
+    if (c.desiredSegmentBy && !sameArray(c.chunkSegmentBy ?? null, c.desiredSegmentBy)) {
+      facets.push(`segmentby ${fmt(c.chunkSegmentBy)} → ${fmt(c.desiredSegmentBy)}`);
+    }
+    const withDir = (
+      cols: readonly string[] | undefined,
+      desc: readonly boolean[] | undefined,
+    ): string =>
+      cols ? `[${cols.map((n, i) => `${n} ${desc?.[i] ? 'DESC' : 'ASC'}`).join(', ')}]` : '?';
+    if (
+      (c.desiredOrderBy && !sameArray(c.chunkOrderBy ?? null, c.desiredOrderBy)) ||
+      (c.desiredOrderByDesc && !sameArray(c.chunkOrderByDesc ?? null, c.desiredOrderByDesc))
+    ) {
+      facets.push(
+        `orderby ${withDir(c.chunkOrderBy, c.chunkOrderByDesc)} → ${withDir(c.desiredOrderBy, c.desiredOrderByDesc)}`,
+      );
+    }
+    lines.push(`  - ${c.chunk}: ${facets.length > 0 ? facets.join('; ') : 'stale'}`);
   }
   if (plan.chunks.length > 10) {
     lines.push(`  … and ${String(plan.chunks.length - 10)} more`);

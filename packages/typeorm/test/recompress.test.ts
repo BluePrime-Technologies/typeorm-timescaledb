@@ -23,9 +23,26 @@ function stubDs(handler: (sql: string) => unknown[]): DataSource {
 }
 
 const COMPRESSED = [{ n: 3 }];
+/** Every facet column the query selects — a stub missing one would read as a spurious difference. */
+const facets = (
+  chunkSeg: string[] | null,
+  desiredSeg: string[] | null,
+  over: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  chunk_segmentby: chunkSeg,
+  desired_segmentby: desiredSeg,
+  chunk_orderby: null,
+  desired_orderby: null,
+  chunk_orderby_desc: null,
+  desired_orderby_desc: null,
+  chunk_orderby_nullsfirst: null,
+  desired_orderby_nullsfirst: null,
+  ...over,
+});
+
 const CHUNK_ROWS = [
-  { chunk: 'a', chunk_segmentby: ['dev'], desired_segmentby: ['v'] },
-  { chunk: 'b', chunk_segmentby: ['v'], desired_segmentby: ['v'] },
+  { chunk: 'a', ...facets(['dev'], ['v']) },
+  { chunk: 'b', ...facets(['v'], ['v']) },
 ];
 
 describe('planRecompression — degrading safely when the catalog cannot be read', () => {
@@ -46,8 +63,7 @@ describe('planRecompression — degrading safely when the catalog cannot be read
     // catalog shape looks like. Treating that as "no chunk is stale" is the false green.
     const ds = stubDs((sql) => {
       if (sql.includes('count(*)')) return COMPRESSED;
-      if (sql.includes('compression_settings'))
-        return [{ chunk: 'a', chunk_segmentby: null, desired_segmentby: null }];
+      if (sql.includes('compression_settings')) return [{ chunk: 'a', ...facets(null, null) }];
       return [{ chunk: 'a' }, { chunk: 'b' }, { chunk: 'c' }];
     });
     const plan = await planRecompression(ds, 'm');
@@ -68,6 +84,38 @@ describe('planRecompression — degrading safely when the catalog cannot be read
     expect(text).toMatch(/catalog moved/);
     // ...and it is honest that over-doing the work is the safe direction.
     expect(text).toMatch(/wasteful but not harmful/);
+  });
+
+  it('reports UNKNOWN when the DESIRED side is unresolved, not confident-stale', async () => {
+    // Found by review, and the mutation pass showed it was unpinned. If the hypertable's own
+    // settings row cannot be read while the per-chunk rows CAN, every chunk compares unequal — so
+    // the planner would report all of them stale at precision 'exact'. That never converges: each
+    // run confidently rewrites the entire hypertable, forever.
+    const ds = stubDs((sql) => {
+      if (sql.includes('count(*)')) return COMPRESSED;
+      if (sql.includes('compression_settings')) return [{ chunk: 'a', ...facets(['dev'], null) }];
+      return [{ chunk: 'a' }, { chunk: 'b' }, { chunk: 'c' }];
+    });
+    const plan = await planRecompression(ds, 'm');
+    expect(plan.precision).toBe('unknown');
+    expect(plan.chunks).toHaveLength(3);
+  });
+
+  it('reports UNKNOWN on a PARTIAL resolution rather than mixing verified and unverified', async () => {
+    // Some rows resolve, some do not. Trusting the resolved ones and silently accepting the rest
+    // would produce a verdict that is part measurement and part guess, labelled 'exact'.
+    const ds = stubDs((sql) => {
+      if (sql.includes('count(*)')) return COMPRESSED;
+      if (sql.includes('compression_settings'))
+        return [
+          { chunk: 'a', ...facets(['dev'], ['v']) },
+          { chunk: 'b', ...facets(null, ['v']) },
+        ];
+      return [{ chunk: 'a' }, { chunk: 'b' }, { chunk: 'c' }];
+    });
+    const plan = await planRecompression(ds, 'm');
+    expect(plan.precision).toBe('unknown');
+    expect(plan.chunks).toHaveLength(3);
   });
 
   it('still compares exactly when the probe DOES resolve', async () => {
@@ -100,16 +148,33 @@ describe('planRecompression — degrading safely when the catalog cannot be read
     await expect(planRecompression(ds, 'm')).rejects.toThrow(/must be initialized/);
   });
 
-  it('qualifies a bare table name with public, matching how chunks are reported', async () => {
-    let seen = '';
+  it('splits a bare table name into (public, name) rather than formatting a qualified string', () => {
+    // Passed as two parameters on purpose: matching via format('%I.%I', …) = $1 quoted only names
+    // that needed it, so a table called "My Table" never matched and reported zero chunks.
+    let seen: unknown[] = [];
     const ds = {
       isInitialized: true,
       query: async (sql: string, params: unknown[]) => {
-        seen = String(params[0]);
+        seen = params;
         return sql.includes('count(*)') ? [{ n: 0 }] : [];
       },
     } as unknown as DataSource;
-    await planRecompression(ds, 'm');
-    expect(seen).toBe('public.m');
+    return planRecompression(ds, 'm').then(() => {
+      expect(seen).toEqual(['public', 'm']);
+    });
+  });
+
+  it('splits a name that itself contains characters needing quoting', () => {
+    let seen: unknown[] = [];
+    const ds = {
+      isInitialized: true,
+      query: async (sql: string, params: unknown[]) => {
+        seen = params;
+        return sql.includes('count(*)') ? [{ n: 0 }] : [];
+      },
+    } as unknown as DataSource;
+    return planRecompression(ds, 'public.My Table').then(() => {
+      expect(seen).toEqual(['public', 'My Table']);
+    });
   });
 });
