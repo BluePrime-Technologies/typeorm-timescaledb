@@ -715,26 +715,6 @@ function diffContinuousAggregates(
 ): PlanAdvisory[] {
   const advisories: PlanAdvisory[] = [];
 
-  if (desired.continuousAggregates.length === 0) {
-    // Nothing desired. If the DATABASE has aggregates, say so: either the caller genuinely declares
-    // none (in which case naming the undeclared live ones is useful — they will never be managed),
-    // or the caller forgot to pass the list, which is the false-green this whole pass exists to
-    // close. The diff cannot tell those apart, but it does not need to: the advisory is correct and
-    // worth printing either way, and it covers callers who compose introspect -> compileDesiredState
-    // -> diffSchemaState by hand and so never reach `pushSchema`'s absent-list check.
-    for (const c of current.continuousAggregates) {
-      advisories.push({
-        kind: 'not-compared',
-        object: c.viewName,
-        detail:
-          'exists in the database but is not declared, so it is NOT managed or compared. If you ' +
-          'do declare it, pass it via `continuousAggregates` — aggregates cannot be discovered ' +
-          'from a DataSource. It will never be dropped.',
-      });
-    }
-    return advisories;
-  }
-
   const currentByView = new Map(current.continuousAggregates.map((c) => [c.viewName, c]));
   // Views that will EXIST once this plan has run: already in the database, plus the ones created
   // earlier in this same pass.
@@ -837,6 +817,31 @@ function diffContinuousAggregates(
           'add_continuous_aggregate_policy), or align the decorator with the database.',
       });
     }
+  }
+
+  // Every aggregate that exists in the database but is NOT declared, whatever else was declared.
+  //
+  // This sweep used to live behind an early return taken only when the desired list was COMPLETELY
+  // empty, so declaring a single aggregate silenced it for all the others. That is the configuration
+  // nearly every real project is in — some aggregates declared, not zero — and the result was the
+  // exact false-green this pass exists to close: declare `[HourlyRollup]` while `daily_rollup` also
+  // lives in the database and `check` printed "No drift detected" and exited 0 without ever naming
+  // it. `pushSchema`'s own guard did not help; it keys on the list being `undefined`, and declaring
+  // some aggregates makes it defined.
+  //
+  // Whether the caller genuinely declares only a subset or simply forgot one, the diff cannot tell
+  // and does not need to: naming a live aggregate that nothing manages is correct either way.
+  const declaredViews = new Set(desired.continuousAggregates.map((d) => d.viewName));
+  for (const c of current.continuousAggregates) {
+    if (declaredViews.has(c.viewName)) continue;
+    advisories.push({
+      kind: 'not-compared',
+      object: c.viewName,
+      detail:
+        'exists in the database but is not declared, so it is NOT managed or compared. If you ' +
+        'do declare it, pass it via `continuousAggregates` — aggregates cannot be discovered ' +
+        'from a DataSource. It will never be dropped.',
+    });
   }
 
   return advisories;

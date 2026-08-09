@@ -912,6 +912,35 @@ describe('diffSchemaState — continuous aggregates (additive only)', () => {
     continuousAggregates: caggs,
   });
 
+  describe('an undeclared aggregate is named even when OTHER aggregates are declared', () => {
+    // Regression: the current-only sweep sat behind an early return taken only when the desired
+    // list was COMPLETELY empty, so declaring one aggregate silenced the advisory for every other
+    // one in the database — the configuration nearly every real project is in. `check` then printed
+    // "No drift detected" and exited 0 without ever naming the undeclared view.
+    const declared = cagg({ viewName: 'public.declared' });
+    const forgotten = cagg({ viewName: 'public.forgotten' });
+
+    it('names the undeclared aggregate when a DIFFERENT one is declared', () => {
+      const plan = diffSchemaState(withCaggs(declared, forgotten), withCaggs(declared));
+      const named = (plan.advisories ?? []).map((a) => a.object);
+      expect(named).toContain('public.forgotten');
+    });
+
+    it('still names every aggregate when NONE is declared', () => {
+      const plan = diffSchemaState(withCaggs(declared, forgotten), withCaggs());
+      const named = (plan.advisories ?? []).map((a) => a.object);
+      expect(named).toEqual(expect.arrayContaining(['public.declared', 'public.forgotten']));
+    });
+
+    it('does not report a declared aggregate as undeclared', () => {
+      const plan = diffSchemaState(withCaggs(declared), withCaggs(declared));
+      const undeclaredNotices = (plan.advisories ?? []).filter((a) =>
+        a.detail.includes('is not declared'),
+      );
+      expect(undeclaredNotices).toEqual([]);
+    });
+  });
+
   const refresh = {
     kind: 'refresh' as const,
     startOffset: '1 month',
