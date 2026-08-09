@@ -1,24 +1,6 @@
 import type { Operation } from './operation.js';
-import { canonicalizeInterval } from './normalize.js';
+import { isShortening } from './normalize.js';
 
-/**
- * `true` when a retention/compression threshold is being SHORTENED — the change that has a real data
- * effect. Comparable only when both sides canonicalize to a duration (a `raw:` quarantine or an
- * integer-time value returns `undefined`, in which case we cannot prove it is safe).
- */
-function isShortening(from: string, to: string): boolean | undefined {
-  const a = canonicalizeInterval(from);
-  const b = canonicalizeInterval(to);
-  if (a.startsWith('raw:') || b.startsWith('raw:')) return undefined;
-  const us = (v: string): number | undefined => {
-    const m = /^us:(-?\d+)$/.exec(v);
-    return m ? Number(m[1]) : undefined;
-  };
-  const x = us(a);
-  const y = us(b);
-  if (x === undefined || y === undefined) return undefined;
-  return y < x;
-}
 
 /**
  * The safety classification of a migration {@link Operation} (M4.2, H4 research). It tells the diff/plan
@@ -145,10 +127,26 @@ export function classifyOperation(operation: Operation): OperationSafety {
             'opt in explicitly to accept the data loss',
         };
       }
+      // LENGTHENING is safe to APPLY but its rollback is not, and the two must not be conflated.
+      // `down()` restores `from`, i.e. the SHORTER threshold — so rolling back a 30d → 365d change
+      // re-installs 30d on a hypertable that has since been retaining a year, and the next retention
+      // run drops ~11 months of chunks. Classifying that `online-safe` meant neither the apply gate
+      // nor the linter said a word about it. The builder now emits a non-destructive notice for
+      // `down()` instead of restoring the shorter threshold; `one-way` is what tells the user that.
+      //
+      // An UNPROVABLE comparison (raw: quarantine, integer-time) lands here too, deliberately: a
+      // comparison we cannot prove must not be reported as reversible when the cost of being wrong
+      // is deleted data.
       return {
-        safety: 'online-safe',
+        safety: 'one-way',
         reason:
-          're-schedules future chunk drops (remove-then-add of a background job) — deletes no data at apply; down() restores the prior threshold. The threshold is not shortened, so no previously-retained chunk becomes eligible for dropping',
+          shortening === false
+            ? `lengthens drop_after (${operation.from} → ${operation.to}) — safe to apply and deletes no data, but ` +
+              `it is NOT reversible: restoring the shorter ${operation.from} threshold would make every chunk ` +
+              `retained since eligible for dropping, so down() emits a notice instead of reverting`
+            : `changes drop_after (${operation.from} → ${operation.to}) — safe to apply, but the two thresholds ` +
+              `cannot be compared (integer-time or unparseable), so reversibility cannot be proven and down() ` +
+              `emits a notice instead of reverting`,
       };
     }
     case 'renameHypertable':

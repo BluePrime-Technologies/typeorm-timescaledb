@@ -187,7 +187,11 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     expect(plan.steps).toHaveLength(1);
     const step = plan.steps[0]!;
     expect(step.operation.kind).toBe('alterRetentionPolicy');
-    expect(step.safety).toBe('online-safe');
+    // 30 days -> 90 days is a LENGTHENING, so it is safe to apply but NOT reversible: down() would
+    // restore the 30-day threshold and the next retention run would drop the 60 days of chunks in
+    // between. This assertion used to read 'online-safe', which is how the defect survived — this
+    // very test is a real instance of it, converging drift by lengthening retention.
+    expect(step.safety).toBe('one-way');
     const op = step.operation as { table: string; from: string; to: string };
     expect(op.table).toBe('public.metric');
     // Compare via the normalizers — introspect() may render the interval in a different text form.

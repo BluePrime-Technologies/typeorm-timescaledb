@@ -494,6 +494,43 @@ export function diffSchemaState(
     // means "accept whatever the engine chose" — so skip the comparison entirely rather than
     // measuring a number against the interval-time default and then throwing on the unrepresentable
     // value, which would abort the whole run for every other entity too.
+    // The time dimension's COLUMN must be compared before its interval, and a mismatch must refuse
+    // rather than fall through. Previously only `chunkInterval` was compared, so moving
+    // `@TimeColumn()` from one column to another produced an EMPTY plan with no advisory: `check`
+    // exited clean and CI went green while the hypertable was still range-partitioned on the old
+    // column. Everything downstream then reasons about the wrong column — chunk exclusion, the
+    // implied columnstore `orderby` (which resolves against the DESIRED time column, i.e. one the
+    // database does not partition on), and every CAGG bucket built over it.
+    //
+    // Refusing matches the space-dimension precedent below: re-partitioning an existing hypertable
+    // is not expressible as an ALTER, so the honest answer is to stop and say so. A silent empty
+    // plan is the one outcome a drift gate must never produce.
+    if (currentTime !== undefined && desiredTime !== undefined &&
+        currentTime.column !== desiredTime.column) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `hypertable ${d.table}: the time dimension is "${currentTime.column}" in the database but ` +
+          `"${desiredTime.column}" is declared. Changing a hypertable's time dimension is not ` +
+          `expressible as an alteration — it requires recreating the hypertable and moving the data. ` +
+          `Align the decorator with the database, or perform the move with a hand-written migration.`,
+        { table: d.table },
+      );
+    }
+
+    // Fail closed rather than skip: an existing hypertable whose desired state declares no time
+    // dimension at all cannot be compared, and silently comparing nothing is how a false-clean
+    // happens. `compileDesiredState` always emits one for an `@Hypertable`, so in practice this
+    // only fires for a hand-built IR passed straight to `diffSchemaState`.
+    if (currentTime !== undefined && desiredTime === undefined) {
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `hypertable ${d.table}: the database is partitioned on time column "${currentTime.column}" ` +
+          `but the desired state declares no time dimension, so the two cannot be compared. Declare ` +
+          `the time dimension to proceed.`,
+        { table: d.table },
+      );
+    }
+
     const currentIsIntegerTime = typeof currentTime?.chunkInterval === 'number';
     const skipChunkCompare = currentIsIntegerTime && desiredTime?.chunkInterval === undefined;
     if (currentTime !== undefined && desiredTime !== undefined && !skipChunkCompare) {

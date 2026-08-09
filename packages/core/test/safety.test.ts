@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  alterRetentionPolicySQL,
   classifyOperation,
   type Operation,
   type OperationKind,
@@ -50,7 +51,9 @@ const CASES: ReadonlyArray<{ operation: Operation; safety: SafetyClass }> = [
   },
   {
     operation: { kind: 'alterRetentionPolicy', table: 'public.m', from: '90 days', to: '365 days' },
-    safety: 'online-safe', // re-schedules future drops, deletes no data at apply, reversible
+    // LENGTHENING: safe to apply, but down() would restore the shorter 90d and drop everything
+    // retained since — so it is one-way, not reversible. The comment here used to say "reversible".
+    safety: 'one-way',
   },
   {
     operation: { kind: 'renameHypertable', from: 'public.old_m', to: 'public.m' },
@@ -127,25 +130,53 @@ describe('classifyOperation — retention direction (audit)', () => {
     expect(result.reason).toMatch(/shortens drop_after/);
   });
 
-  it('keeps a LENGTHENING alterRetentionPolicy online-safe', () => {
-    expect(
-      classifyOperation({
-        kind: 'alterRetentionPolicy',
-        table: 'public.m',
-        from: '30 days',
-        to: '365 days',
-      }).safety,
-    ).toBe('online-safe');
+  it('classifies a LENGTHENING alterRetentionPolicy one-way — its down() would shorten', () => {
+    // Previously asserted 'online-safe', and the assertion is part of why it stayed wrong: down()
+    // restored `from`, the SHORTER threshold, so rolling back 30d -> 365d re-installed 30d on a
+    // hypertable that had been retaining a year and the next retention run dropped ~11 months of
+    // chunks. Safe to APPLY but not reversible — which is what 'one-way' means.
+    const result = classifyOperation({
+      kind: 'alterRetentionPolicy',
+      table: 'public.m',
+      from: '30 days',
+      to: '365 days',
+    });
+    expect(result.safety).toBe('one-way');
+    expect(result.reason).toMatch(/lengthens drop_after/);
+    expect(result.reason).toMatch(/NOT reversible/);
   });
 
-  it('does not claim safety it cannot prove (unparseable threshold stays online-safe)', () => {
-    expect(
-      classifyOperation({
-        kind: 'alterRetentionPolicy',
-        table: 'public.m',
-        from: 'not-an-interval',
-        to: '30 days',
-      }).safety,
-    ).toBe('online-safe');
+  it('does not claim safety it cannot prove — an unparseable threshold is one-way, not online-safe', () => {
+    // The old version of this test carried exactly this name and then asserted 'online-safe' for
+    // the very case it could not prove. Where the cost of being wrong is deleted data, an
+    // unprovable comparison fails closed.
+    const result = classifyOperation({
+      kind: 'alterRetentionPolicy',
+      table: 'public.m',
+      from: 'not-an-interval',
+      to: '30 days',
+    });
+    expect(result.safety).toBe('one-way');
+    expect(result.reason).toMatch(/cannot be compared/);
+  });
+
+  it('down() restores the previous threshold when that LENGTHENS (the safe direction)', () => {
+    // Mirror of the bug: shortening 365d -> 30d has a destructive UP (gated refuse-by-default),
+    // but its down() lengthens back to 365d and loses nothing, so it must still restore.
+    const down = alterRetentionPolicySQL({ table: 'public.m', from: '365 days', to: '30 days' }).down.join(' ');
+    expect(down).toMatch(/add_retention_policy/);
+    expect(down).toMatch(/365 days/);
+  });
+
+  it('down() emits a non-destructive notice instead of reverting when it would SHORTEN', () => {
+    const down = alterRetentionPolicySQL({ table: 'public.m', from: '30 days', to: '365 days' }).down.join(' ');
+    expect(down).not.toMatch(/add_retention_policy/);
+    expect(down).toMatch(/RAISE NOTICE/);
+    expect(down).toMatch(/not reverting the retention threshold/);
+  });
+
+  it('down() also declines when the two thresholds cannot be compared', () => {
+    const down = alterRetentionPolicySQL({ table: 'public.m', from: '30 days', to: '90 days' }).down.join(' ');
+    expect(down).toMatch(/RAISE NOTICE/);
   });
 });

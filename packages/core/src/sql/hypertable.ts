@@ -1,6 +1,6 @@
 import { assertSafeIdentifier, quoteIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
-import { assertParsableInterval } from '../normalize.js';
+import { assertParsableInterval, isShortening } from '../normalize.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /**
@@ -637,15 +637,25 @@ export function alterRetentionPolicySQL(input: AlterPolicyInput): MigrationState
     `WHERE proc_name = 'policy_retention' AND hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`;
   // Assert fresh (`if_not_exists => FALSE`) after the remove — a duplicate means the remove failed;
   // fail loudly rather than silently leave the old threshold. remove precedes add → block idempotent.
+  // `down()` may only restore the previous threshold when doing so LENGTHENS retention. Restoring a
+  // SHORTER threshold is a data-loss event on the next scheduler tick — rolling back a 30d → 365d
+  // change would re-install 30d on a hypertable that has been retaining a year, and ~11 months of
+  // chunks become eligible for dropping. `down()` never destroys data, so it declines instead.
+  //
+  // isShortening(from, to) describes the UP direction. down goes to → from, so:
+  //   true      up shortened   → down lengthens  → safe to restore
+  //   false     up lengthened  → down shortens   → refuse, emit a notice
+  //   undefined not comparable → cannot prove it is safe → refuse, emit a notice (fail closed)
+  const upShortens = isShortening(from, to);
+  const downIsSafe = upShortens === true;
   return {
     up: [
       removeRetentionPolicyCall(t),
       addRetentionPolicyCall(t, to, false, input.scheduleInterval),
     ],
-    down: [
-      removeRetentionPolicyCall(t),
-      addRetentionPolicyCall(t, from, false, input.scheduleInterval),
-    ],
+    down: downIsSafe
+      ? [removeRetentionPolicyCall(t), addRetentionPolicyCall(t, from, false, input.scheduleInterval)]
+      : [nonDestructiveNotice(`the retention threshold (${from} → ${to})`, t.ident)],
     inspect,
   };
 }
