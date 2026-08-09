@@ -551,3 +551,98 @@ describe('pushSchema / checkCommand — continuous-aggregate advisory', () => {
     expect(out).toMatch(/cannot converge automatically/);
   });
 });
+
+describe('reportPlan — lint findings reach the user', () => {
+  const fakeLogger2 = (): { logger: Logger; lines: string[] } => {
+    const lines: string[] = [];
+    return {
+      logger: { log: (m: string) => lines.push(m), error: (m: string) => lines.push(m) },
+      lines,
+    };
+  };
+
+  it('prints lint findings alongside the plan preview', () => {
+    // A linter nobody runs is worthless, so it is wired into the verb people already use rather
+    // than hidden behind a separate command they have to remember.
+    const { logger, lines } = fakeLogger2();
+    const operation = { kind: 'renameHypertable' as const, from: 'public.a', to: 'public.b' };
+    reportPlan({ steps: [{ operation, ...classifyOperation(operation) }] }, logger);
+    const out = lines.join('\n');
+    expect(out).toMatch(/TSDB002/);
+    expect(out).toMatch(/ACCESS EXCLUSIVE/);
+  });
+
+  it('stays silent on a clean plan rather than printing "no findings" every time', () => {
+    // Printing a reassurance on every clean run trains people to skip the section — so when it is
+    // NOT empty, they skip that too.
+    const { logger, lines } = fakeLogger2();
+    reportPlan({ steps: [] }, logger);
+    expect(lines.join('\n')).not.toMatch(/lint/i);
+  });
+
+  it('does not let a lint finding change the drift verdict', () => {
+    // The linter INFORMS; the safety gate BLOCKS. Making findings blocking would either make push
+    // unusable or train people to pass an override by reflex.
+    const { logger } = fakeLogger2();
+    const operation = { kind: 'renameHypertable' as const, from: 'public.a', to: 'public.b' };
+    const drift = reportPlan({ steps: [{ operation, ...classifyOperation(operation) }] }, logger);
+    expect(drift).toBe(true); // drift because there ARE steps, not because lint complained
+    const { logger: l2 } = fakeLogger2();
+    expect(reportPlan({ steps: [] }, l2)).toBe(false);
+  });
+});
+
+describe('lint reaches BOTH verbs, not just check', () => {
+  const lg = (): { logger: Logger; lines: string[] } => {
+    const lines: string[] = [];
+    return {
+      logger: { log: (m: string) => lines.push(m), error: (m: string) => lines.push(m) },
+      lines,
+    };
+  };
+
+  it('check prints lint findings with the plan', () => {
+    const { logger, lines } = lg();
+    const operation = { kind: 'renameHypertable' as const, from: 'public.a', to: 'public.b' };
+    reportPlan({ steps: [{ operation, ...classifyOperation(operation) }] }, logger);
+    const out = lines.join('\n');
+    expect(out).toMatch(/TSDB002/);
+    expect(out).toMatch(/ACCESS EXCLUSIVE/);
+  });
+
+  it('push prints them too — it was the verb that CHANGES the database and linted nothing', async () => {
+    // Red-team CRITICAL. The lint lived inside reportPlan, which only `check` calls; `push` has its
+    // own formatPlanPreview path, so the DESTRUCTIVE verb ran no analysis at all — exactly
+    // backwards, and the PR claimed the opposite. Both verbs now share one lint-aware formatter, so
+    // a third call site cannot quietly skip it either.
+    class LintMetric {}
+    Hypertable({ chunkInterval: '1 day', retention: { dropAfter: '30 days' } })(LintMetric);
+    TimeColumn()(LintMetric.prototype, 'ts');
+    HypertablePrimaryKey()(LintMetric.prototype, 'ts');
+
+    const runner = {
+      connect: async () => {},
+      startTransaction: async () => {},
+      commitTransaction: async () => {},
+      rollbackTransaction: async () => {},
+      release: async () => {},
+      get isTransactionActive() {
+        return false;
+      },
+      query: async (sql: string) =>
+        sql.includes('pg_extension') ? [{ extversion: '2.18.0' }] : [],
+    };
+    const ds = {
+      isInitialized: true,
+      options: {},
+      entityMetadatas: [{ target: LintMetric, tableName: 'lint_metric', columns: [] }],
+      createQueryRunner: () => runner,
+    } as unknown as DataSource;
+
+    const { logger, lines } = lg();
+    await pushCommand(ds, logger, { continuousAggregates: [] });
+    // Two steps target the same table (create + retention), so TSDB010 fires — proving the lint ran
+    // on the push path, not merely that some text was printed.
+    expect(lines.join('\n')).toMatch(/TSDB010/);
+  });
+});

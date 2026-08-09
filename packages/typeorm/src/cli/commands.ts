@@ -1,7 +1,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DataSource } from 'typeorm';
-import { isEmptyPlan, type Plan, type PlanAdvisory } from '@blueprime/timescaledb-core';
+import {
+  formatLintFindings,
+  isEmptyPlan,
+  lintPlan,
+  type Plan,
+  type PlanAdvisory,
+} from '@blueprime/timescaledb-core';
 import {
   generateTimescaleMigration,
   renderTimescaleMigration,
@@ -125,7 +131,7 @@ export function reportPlan(plan: Plan, logger: Logger): boolean {
   const hasSteps = !isEmptyPlan(plan);
 
   if (hasSteps) {
-    logger.log(formatPlanPreview(plan));
+    logger.log(formatPlanWithLint(plan));
   } else if (blocking.length === 0) {
     logger.log('No drift detected — schema matches the @Hypertable declarations.');
   }
@@ -139,6 +145,21 @@ export function reportPlan(plan: Plan, logger: Logger): boolean {
     );
   }
   return hasSteps || blocking.length > 0;
+}
+
+/**
+ * Render a plan preview WITH its lint findings.
+ *
+ * Exists because the lint was originally inside `reportPlan`, which only `check` calls — `push` has
+ * its own `formatPlanPreview` path, so the verb that actually CHANGES the database was the one
+ * running no analysis at all. Exactly backwards, and the PR claimed otherwise. Both verbs now go
+ * through here, so a third caller cannot quietly skip it either.
+ */
+function formatPlanWithLint(plan: Plan): string {
+  const findings = lintPlan(plan);
+  return findings.length > 0
+    ? `${formatPlanPreview(plan)}\n\n${formatLintFindings(findings)}`
+    : formatPlanPreview(plan);
 }
 
 /** Render advisories, loudest first, so a clean-looking run still shows what was NOT verified. */
@@ -196,7 +217,7 @@ export async function pushCommand(
     result = await pushSchema(dataSource, options);
   } catch (err) {
     const { plan } = await pushSchema(dataSource, { ...options, apply: false });
-    if (!isEmptyPlan(plan)) logger.log(formatPlanPreview(plan));
+    if (!isEmptyPlan(plan)) logger.log(formatPlanWithLint(plan));
     throw err;
   }
   const { plan, applied, statements } = result;
@@ -223,7 +244,7 @@ export async function pushCommand(
     return 'previewed';
   }
 
-  logger.log(formatPlanPreview(plan));
+  logger.log(formatPlanWithLint(plan));
   if (advisories.length > 0) logger.log(formatAdvisories(advisories));
 
   if (!applied) {
