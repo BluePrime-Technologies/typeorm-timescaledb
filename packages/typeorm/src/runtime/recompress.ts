@@ -421,6 +421,20 @@ export function formatRecompressionPlan(plan: RecompressionPlan): string {
   if (plan.compressedChunkCount === 0) {
     return `${plan.table}: no compressed chunks — nothing to recompress.`;
   }
+  // Precision is checked BEFORE the empty-chunk shortcut, not after. Reversed, a degraded plan
+  // ({ chunks: [], precision: 'unknown', compressedChunkCount: 4 }) printed the fully-clean
+  // "already match the declared columnstore settings" — the one output this module's contract says
+  // must never happen, because an unrecognised catalog shape must NEVER be read as nothing to do.
+  // The ⚠ warning was only reachable from the chunks.length > 0 branch, so exactly the case where
+  // we know least produced the most confident message.
+  if (plan.precision === 'unknown' && plan.chunks.length === 0) {
+    return (
+      `${plan.table}: could NOT determine whether any of the ${String(plan.compressedChunkCount)} ` +
+      `compressed chunk(s) match the declared columnstore settings.\n` +
+      `   Reason: ${plan.imprecisionReason ?? 'unknown'}\n` +
+      `   This is NOT a clean result — treat the stored layout as unverified.`
+    );
+  }
   if (plan.chunks.length === 0) {
     return `${plan.table}: all ${String(plan.compressedChunkCount)} compressed chunk(s) already match the declared columnstore settings.`;
   }

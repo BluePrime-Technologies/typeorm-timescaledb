@@ -268,6 +268,32 @@ export async function pushCommand(
     return 'applied-with-drift';
   }
 
+  // A `needs-recompress` step changes the CATALOG only. Existing compressed chunks keep the old
+  // segmentby/orderby layout until they are rewritten, and the catalog reports the new setting
+  // either way — so a later `check` looks clean while the stored data does not match.
+  //
+  // Without this branch `push --apply` printed the linter's own TSDB003 warning saying exactly that,
+  // and then asserted on the very next line that "the database now matches your entities", exiting
+  // 0 for CI. Two contradictory claims in one run, and the confident one was wrong.
+  const needsRecompress = plan.steps.filter((s) => s.safety === 'needs-recompress');
+  if (needsRecompress.length > 0) {
+    const tables = [
+      ...new Set(
+        needsRecompress.map((s) =>
+          'table' in s.operation ? String(s.operation.table) : 'unknown table',
+        ),
+      ),
+    ];
+    logger.log(
+      `\nApplied ${statements.length} statement(s). The CATALOG now matches your entities, but ` +
+        `${needsRecompress.length} change(s) do not touch data already written: existing compressed ` +
+        `chunks on ${tables.join(', ')} still carry the previous columnstore layout.\n` +
+        `Rewrite them with planRecompression()/applyRecompression() — a later drift check will look ` +
+        `clean before you do, because the catalog already reports the new setting.`,
+    );
+    return 'applied-with-drift';
+  }
+
   logger.log(
     `\nApplied ${statements.length} statement(s) — the database now matches your entities.`,
   );

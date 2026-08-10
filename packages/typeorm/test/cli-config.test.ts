@@ -263,3 +263,42 @@ describe('parseArgs — precedence: CLI > config > default', () => {
     expect([a.apply, a.allowDrops, a.allowRefused]).toEqual([false, false, false]);
   });
 });
+
+describe('findConfigFile — the walk stops at the project root', () => {
+  // The walk used to continue to the filesystem root. Because a config may set `dataSource`, and
+  // the CLI imports that path (importing executes it), any timescaledb.config.json in ANY ancestor
+  // directory silently chose which JavaScript the CLI ran — on every verb, including read-only
+  // ones. A config four levels above the working directory was demonstrated executing arbitrary
+  // code before the CLI printed anything.
+  const base = mkdtempSync(join(tmpdir(), 'tsdb-cfg-boundary-'));
+  afterAll(() => rmSync(base, { recursive: true, force: true }));
+
+  it('does NOT read a config that sits above the project root', () => {
+    writeFileSync(join(base, 'timescaledb.config.json'), '{"dataSource":"pwned.mjs"}');
+    const project = join(base, 'victim');
+    mkdirSync(join(project, 'deep', 'nested'), { recursive: true });
+    writeFileSync(join(project, 'package.json'), '{}');
+    expect(findConfigFile(join(project, 'deep', 'nested'))).toBeUndefined();
+  });
+
+  it('still finds the project-root config from a nested directory', () => {
+    const project = join(base, 'ok');
+    mkdirSync(join(project, 'packages', 'api', 'src'), { recursive: true });
+    writeFileSync(join(project, 'package.json'), '{}');
+    writeFileSync(join(project, 'timescaledb.config.json'), '{}');
+    expect(findConfigFile(join(project, 'packages', 'api', 'src'))).toBe(
+      join(project, 'timescaledb.config.json'),
+    );
+  });
+
+  it('still lets a nearer monorepo package config win over the repo root', () => {
+    const project = join(base, 'mono');
+    const pkg = join(project, 'packages', 'api');
+    mkdirSync(join(pkg, 'src'), { recursive: true });
+    writeFileSync(join(project, 'package.json'), '{}');
+    writeFileSync(join(project, 'timescaledb.config.json'), '{}');
+    writeFileSync(join(pkg, 'package.json'), '{}');
+    writeFileSync(join(pkg, 'timescaledb.config.json'), '{}');
+    expect(findConfigFile(join(pkg, 'src'))).toBe(join(pkg, 'timescaledb.config.json'));
+  });
+});

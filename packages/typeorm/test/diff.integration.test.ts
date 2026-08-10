@@ -16,7 +16,7 @@ import {
   createTimescaleMigration,
   introspect,
 } from '../src/index.js';
-import { checkCommand, type Logger } from '../src/cli/index.js';
+import { checkCommand, exitCodeForPush, pushCommand, type Logger } from '../src/cli/index.js';
 import {
   compileOperations,
   diffSchemaState,
@@ -373,6 +373,30 @@ describe.skipIf(!IMAGE)('M4.2 diffSchemaState — live-DB additive diff + conver
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.segmentby).toEqual(['symbol']);
+  });
+
+  it('push --apply does NOT claim convergence for a needs-recompress change (existing chunks keep the old layout)', async () => {
+    // A columnstore config alter changes the CATALOG only; chunks already compressed keep the old
+    // segmentby until they are rewritten, and the catalog reports the new setting either way.
+    // `push --apply` used to print the linter's own TSDB003 warning saying exactly that, then assert
+    // on the next line that "the database now matches your entities", and exit 0 for CI.
+    await runAll(ds, [
+      `ALTER TABLE public.metric SET (timescaledb.segmentby = '"symbol", "price"');`,
+    ]);
+
+    const lines: string[] = [];
+    const logger: Logger = { log: (m: string) => lines.push(m) };
+    const outcome = await pushCommand(ds, logger, { apply: true });
+
+    expect(outcome).toBe('applied-with-drift');
+    expect(exitCodeForPush(outcome)).toBe(2);
+    const text = lines.join('\n');
+    expect(text).not.toMatch(/the database now matches your entities/);
+    expect(text).toMatch(/existing compressed chunks/i);
+    expect(text).toMatch(/public\.metric/);
+
+    // The catalog did converge even though the stored layout did not — that is the whole point.
+    expect(isEmptyPlan(diffSchemaState(await introspect(ds), compileDesiredState(ds)))).toBe(true);
   });
 
   it('detects a CHANGED columnstore orderby direction as alterColumnstoreConfig and converges (AS3b)', async () => {

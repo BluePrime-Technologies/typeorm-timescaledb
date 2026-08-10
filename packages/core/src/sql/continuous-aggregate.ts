@@ -440,6 +440,36 @@ export function classifyDefinitionBody(body: string): DefinitionVerdict {
       if (!closed) return 'unterminated';
       continue;
     }
+    // Double-quoted IDENTIFIERS must be skipped as their own state, exactly like string literals.
+    // Without this the scanner desynchronised on a perfectly legal identifier containing a single
+    // quote: in `SELECT "a'b" FROM t; DROP TABLE victim; SELECT "c'd" FROM u` it entered
+    // "string literal" at the ' inside "a'b", stayed there past the real statement separators, and
+    // left at the ' inside "c'd" — so the body was classified 'usable' and the DROP TABLE was
+    // emitted verbatim into the generated migration.
+    //
+    // This is reachable: `pull` against a brownfield database feeds catalog text straight back in,
+    // and `pg_get_viewdef` will happily emit "a'b" for a column this library's own
+    // assertSafeIdentifier would refuse to create. The same desync also FALSELY rejected legal
+    // aggregates whose identifiers contain a quote.
+    if (ch === '"') {
+      i++;
+      let closed = false;
+      while (i < body.length) {
+        if (body[i] === '"') {
+          if (body[i + 1] === '"') {
+            i += 2; // "" is an escaped double quote inside the identifier
+            continue;
+          }
+          i++;
+          closed = true;
+          break;
+        }
+        i++;
+      }
+      // An unterminated identifier hides whatever follows it, same as an unterminated literal.
+      if (!closed) return 'unterminated';
+      continue;
+    }
     if (ch === '-' && body[i + 1] === '-') {
       const nl = body.indexOf('\n', i);
       if (nl === -1) return 'usable'; // comment to end-of-input; the \n we append clears it

@@ -86,6 +86,34 @@ describe('planRecompression — degrading safely when the catalog cannot be read
     expect(text).toMatch(/wasteful but not harmful/);
   });
 
+  it('does NOT print the all-clear when precision is unknown and the chunk list is empty', () => {
+    // The degraded path can legitimately produce { chunks: [], precision: 'unknown' }, and the
+    // empty-list shortcut used to be checked FIRST — so the case where the planner knows least
+    // produced the most confident message: "all 4 compressed chunk(s) already match". The module's
+    // contract is that an unrecognised catalog shape must NEVER be read as nothing to do.
+    const text = formatRecompressionPlan({
+      table: 'public.m',
+      chunks: [],
+      precision: 'unknown',
+      compressedChunkCount: 4,
+      imprecisionReason: 'catalog moved',
+    });
+    expect(text).not.toMatch(/already match/);
+    expect(text).toMatch(/could NOT determine/i);
+    expect(text).toMatch(/catalog moved/);
+    expect(text).toMatch(/NOT a clean result/);
+  });
+
+  it('still prints the all-clear when precision is EXACT and nothing is stale', () => {
+    const text = formatRecompressionPlan({
+      table: 'public.m',
+      chunks: [],
+      precision: 'exact',
+      compressedChunkCount: 4,
+    });
+    expect(text).toMatch(/all 4 compressed chunk\(s\) already match/);
+  });
+
   it('reports UNKNOWN when the DESIRED side is unresolved, not confident-stale', async () => {
     // Found by review, and the mutation pass showed it was unpinned. If the hypertable's own
     // settings row cannot be read while the per-chunk rows CAN, every chunk compares unequal — so

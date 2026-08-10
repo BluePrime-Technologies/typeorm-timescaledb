@@ -43,20 +43,38 @@ const CONFIG_KEYS = ['dataSource', 'outDir', 'output'] as const;
 const SAFETY_KEYS = ['apply', 'allowDrops', 'allowRefused'] as const;
 
 /**
- * Find the nearest {@link CONFIG_FILENAME}, walking UP from `startDir` to the filesystem root.
+ * Find the nearest {@link CONFIG_FILENAME}, walking UP from `startDir` — but never past the
+ * PROJECT ROOT.
  *
  * Walking up (rather than checking only cwd) is what makes it work from inside a monorepo package
  * directory, which is where these commands are usually run. First hit wins — nothing is merged
  * across levels, because a silent merge of two files someone did not know both existed is harder to
  * reason about than one file that plainly wins.
+ *
+ * The walk used to continue to the filesystem root, and that was a remote-code-execution hole. A
+ * config file may set `dataSource`, which the CLI passes to `loadDataSourceModule` — and importing
+ * a module executes it. So a `timescaledb.config.json` in ANY ancestor directory (a shared parent,
+ * $HOME, /tmp, /) silently chose which JavaScript the CLI ran, on every verb including the
+ * read-only ones. Demonstrated: a config four levels above the working directory executed an
+ * arbitrary script before the CLI printed anything about what it had loaded.
+ *
+ * The boundary is the first directory containing a `package.json` or a `.git` — i.e. the project
+ * you are actually in. A monorepo package still finds the repo-root config, because the walk stops
+ * AT the marker directory inclusive, and both the package and the repo root carry a marker. What it
+ * will no longer do is read a file belonging to nobody's project.
  */
+const PROJECT_ROOT_MARKERS = ['package.json', '.git'] as const;
+
 export function findConfigFile(startDir: string): string | undefined {
   let dir = resolve(startDir);
   for (;;) {
     const candidate = join(dir, CONFIG_FILENAME);
     if (existsSync(candidate)) return candidate;
+    // Stop AFTER checking a project-root directory, so the root's own config still wins, but
+    // nothing above the project is ever consulted.
+    if (PROJECT_ROOT_MARKERS.some((marker) => existsSync(join(dir, marker)))) return undefined;
     const parent = dirname(dir);
-    if (parent === dir) return undefined; // reached the root
+    if (parent === dir) return undefined; // reached the filesystem root
     dir = parent;
   }
 }
