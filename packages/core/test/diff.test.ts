@@ -281,7 +281,9 @@ describe('diffSchemaState — a changed time dimension is refused, never silentl
   });
 
   it('throws when the declared time column differs from the database', () => {
-    expect(() => diffSchemaState(ir(onTime('ts')), ir(onTime('created_at')))).toThrow(TimescaleError);
+    expect(() => diffSchemaState(ir(onTime('ts')), ir(onTime('created_at')))).toThrow(
+      TimescaleError,
+    );
   });
 
   it('names both columns and the remedy, so the error is actionable', () => {

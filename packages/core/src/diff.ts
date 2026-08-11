@@ -505,8 +505,11 @@ export function diffSchemaState(
     // Refusing matches the space-dimension precedent below: re-partitioning an existing hypertable
     // is not expressible as an ALTER, so the honest answer is to stop and say so. A silent empty
     // plan is the one outcome a drift gate must never produce.
-    if (currentTime !== undefined && desiredTime !== undefined &&
-        currentTime.column !== desiredTime.column) {
+    if (
+      currentTime !== undefined &&
+      desiredTime !== undefined &&
+      currentTime.column !== desiredTime.column
+    ) {
       throw new TimescaleError(
         TimescaleErrorCode.INVALID_ARGUMENT,
         `hypertable ${d.table}: the time dimension is "${currentTime.column}" in the database but ` +

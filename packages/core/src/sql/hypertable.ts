@@ -654,7 +654,10 @@ export function alterRetentionPolicySQL(input: AlterPolicyInput): MigrationState
       addRetentionPolicyCall(t, to, false, input.scheduleInterval),
     ],
     down: downIsSafe
-      ? [removeRetentionPolicyCall(t), addRetentionPolicyCall(t, from, false, input.scheduleInterval)]
+      ? [
+          removeRetentionPolicyCall(t),
+          addRetentionPolicyCall(t, from, false, input.scheduleInterval),
+        ]
       : [nonDestructiveNotice(`the retention threshold (${from} → ${to})`, t.ident)],
     inspect,
   };

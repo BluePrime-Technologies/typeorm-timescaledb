@@ -163,20 +163,32 @@ describe('classifyOperation — retention direction (audit)', () => {
   it('down() restores the previous threshold when that LENGTHENS (the safe direction)', () => {
     // Mirror of the bug: shortening 365d -> 30d has a destructive UP (gated refuse-by-default),
     // but its down() lengthens back to 365d and loses nothing, so it must still restore.
-    const down = alterRetentionPolicySQL({ table: 'public.m', from: '365 days', to: '30 days' }).down.join(' ');
+    const down = alterRetentionPolicySQL({
+      table: 'public.m',
+      from: '365 days',
+      to: '30 days',
+    }).down.join(' ');
     expect(down).toMatch(/add_retention_policy/);
     expect(down).toMatch(/365 days/);
   });
 
   it('down() emits a non-destructive notice instead of reverting when it would SHORTEN', () => {
-    const down = alterRetentionPolicySQL({ table: 'public.m', from: '30 days', to: '365 days' }).down.join(' ');
+    const down = alterRetentionPolicySQL({
+      table: 'public.m',
+      from: '30 days',
+      to: '365 days',
+    }).down.join(' ');
     expect(down).not.toMatch(/add_retention_policy/);
     expect(down).toMatch(/RAISE NOTICE/);
     expect(down).toMatch(/not reverting the retention threshold/);
   });
 
   it('down() also declines when the two thresholds cannot be compared', () => {
-    const down = alterRetentionPolicySQL({ table: 'public.m', from: '30 days', to: '90 days' }).down.join(' ');
+    const down = alterRetentionPolicySQL({
+      table: 'public.m',
+      from: '30 days',
+      to: '90 days',
+    }).down.join(' ');
     expect(down).toMatch(/RAISE NOTICE/);
   });
 });

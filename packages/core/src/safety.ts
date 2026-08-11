@@ -1,7 +1,6 @@
 import type { Operation } from './operation.js';
 import { isShortening } from './normalize.js';
 
-
 /**
  * The safety classification of a migration {@link Operation} (M4.2, H4 research). It tells the diff/plan
  * consumer (the `check`/`generate` verbs) how risky an operation is to apply, so a plan can be emitted,
