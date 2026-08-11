@@ -67,7 +67,15 @@ async function main(argv: readonly string[]): Promise<void> {
         break;
       case 'check': {
         const drift = await checkCommand(dataSource, logger, caggs);
-        if (drift) process.exitCode = 1;
+        // 2, not 1. `push`/`pull`/`mix` already use 2 for "there is drift" precisely so that 1 can
+        // keep meaning "the command itself failed" — which is also what the top-level catch sets on
+        // ANY error. `check` is the verb documented as the CI drift gate, and it was the one verb
+        // where a script could not tell "your schema drifted" from "the DataSource module failed to
+        // import". Those need different responses, so they need different codes.
+        //
+        // BREAKING for anyone matching `check`'s exit 1: it is now 2. Non-zero either way, so a
+        // plain `if ! check` gate is unaffected.
+        if (drift) process.exitCode = 2;
         break;
       }
       case 'push': {

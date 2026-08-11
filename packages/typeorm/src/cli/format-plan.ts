@@ -1,3 +1,4 @@
+import { classifyOperation } from '@blueprime/timescaledb-core';
 import type { Operation, Plan } from '@blueprime/timescaledb-core';
 
 /**
@@ -66,7 +67,7 @@ function describeOperation(operation: Operation): string {
 export function formatPlanPreview(plan: Plan): string {
   const lines = plan.steps.map((step, i) => {
     const n = `${i + 1}`.padStart(2, ' ');
-    return `  ${n}. [${step.safety}] ${describeOperation(step.operation)}\n      ${step.reason}`;
+    return `  ${n}. [${classifyOperation(step.operation).safety}] ${describeOperation(step.operation)}\n      ${step.reason}`;
   });
   return (
     `Drift detected — ${plan.steps.length} operation(s) needed to converge to the desired schema:\n\n` +

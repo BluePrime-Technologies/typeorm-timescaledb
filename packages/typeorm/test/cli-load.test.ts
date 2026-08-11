@@ -233,3 +233,28 @@ describe('loadDataSourceModule — the continuousAggregates convention', () => {
     expect(loaded.continuousAggregates).toHaveLength(1);
   });
 });
+
+describe('loadDataSourceModule — an unrelated exported promise cannot hijack the CLI', () => {
+  // `await candidate` ran over every export in declaration order, so a module with
+  // `export const ready = somePromiseThatRejects` declared BEFORE the DataSource made every verb
+  // fail with that unrelated rejection — and awaited (and consumed the rejection of) any exported
+  // promise purely as a side effect of running a schema command.
+  it('finds the DataSource even when an earlier export is a rejecting promise', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tsdb-load-reject-'));
+    const file = join(dir, 'ds.mjs');
+    writeFileSync(
+      file,
+      [
+        "import { DataSource } from 'typeorm';",
+        // Declared FIRST, and already rejected by the time the loader looks at it.
+        'export const ready = Promise.reject(new Error("unrelated failure"));',
+        'ready.catch(() => undefined);',
+        "export default new DataSource({ type: 'postgres', entities: [] });",
+      ].join('\n'),
+      'utf8',
+    );
+    const loaded = await loadDataSourceModule(file);
+    expect(loaded.dataSource).toBeDefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

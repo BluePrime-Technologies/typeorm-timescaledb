@@ -406,7 +406,18 @@ export async function applyRecompression(
       processed.push(chunk);
     } catch (error) {
       // Roll back so the chunk returns to its pre-run state rather than being stranded in rowstore.
-      if (runner.isTransactionActive) await runner.rollbackTransaction();
+      // The rollback is itself guarded. A dead connection is exactly when a chunk fails AND exactly
+      // when rollbackTransaction() rejects, so an unguarded call turned "one chunk failed, carry on"
+      // into "the whole run aborts and every result so far is discarded" — the opposite of the
+      // per-chunk contract this loop exists to provide.
+      if (runner.isTransactionActive) {
+        try {
+          await runner.rollbackTransaction();
+        } catch {
+          // Nothing useful to do: the chunk is already being recorded as failed below, and the
+          // connection is gone. Losing the rest of the run would be strictly worse.
+        }
+      }
       failed.push({ chunk, error: error instanceof Error ? error.message : String(error) });
     } finally {
       await runner.release();

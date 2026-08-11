@@ -93,7 +93,21 @@ describe('mixOutcome — the full 3x4 matrix', () => {
   it('is clean only when neither half needs a human', () => {
     expect(mixOutcome('nothing-to-pull', 'no-drift')).toBe('clean');
     expect(mixOutcome('complete', 'previewed')).toBe('attention'); // drift left unapplied
-    expect(mixOutcome('complete', 'applied-with-drift')).toBe('attention');
+  });
+
+  it('distinguishes a run that CHANGED the database from a pure preview', () => {
+    // Previously asserted 'attention' for 'applied-with-drift' — the identical value a
+    // preview-only run produces. The exit code was 2 either way so the gate was right, but
+    // mixCommand's "the push was applied, but…" warning is gated on 'applied-with-attention', so it
+    // never printed and the report hid that statements had run. The operator reads the report to
+    // decide what to do next, and "nothing happened" and "something happened and more is needed"
+    // call for different next steps.
+    expect(mixOutcome('complete', 'applied-with-drift')).toBe('applied-with-attention');
+    expect(mixOutcome('complete', 'previewed')).not.toBe(
+      mixOutcome('complete', 'applied-with-drift'),
+    );
+    // Still non-zero: this is a reporting fix, not a gate change.
+    expect(exitCodeForMix(mixOutcome('complete', 'applied-with-drift'))).toBe(2);
   });
 
   it('reports a successful apply as success when the pull was not partial', () => {

@@ -216,8 +216,16 @@ export async function pushCommand(
   try {
     result = await pushSchema(dataSource, options);
   } catch (err) {
-    const { plan } = await pushSchema(dataSource, { ...options, apply: false });
-    if (!isEmptyPlan(plan)) logger.log(formatPlanWithLint(plan));
+    // Best-effort diagnostic, and it must stay best-effort. This recovery call was unguarded, so
+    // whenever the original failure had also broken the connection — the common case, since it is
+    // usually a database error — the re-introspect threw and THAT error propagated instead of the
+    // real one. The user was shown a second, unrelated failure and the actual cause was lost.
+    try {
+      const { plan } = await pushSchema(dataSource, { ...options, apply: false });
+      if (!isEmptyPlan(plan)) logger.log(formatPlanWithLint(plan));
+    } catch {
+      // Deliberately swallowed: the original error is the one worth reporting.
+    }
     throw err;
   }
   const { plan, applied, statements } = result;
@@ -322,6 +330,13 @@ export function mixOutcome(pulled: PullOutcome, pushed: PushOutcome): MixOutcome
   }
 
   if (pushed === 'applied') return 'applied';
+
+  // A push that RAN statements and still left unconvergeable drift used to collapse to plain
+  // 'attention' — the identical value a preview-only run produces — so the "the push was applied,
+  // but…" warning never printed and the report hid that the database had been changed. The exit
+  // code was 2 either way, so the gate was right and only the report was wrong; that is still worth
+  // fixing, because the operator reads the report to decide what to do next.
+  if (pushed === 'applied-with-drift') return 'applied-with-attention';
 
   // `complete` means the pull SUCCEEDED in reproducing what the database has — it is a good outcome,
   // not a problem. Requiring `nothing-to-pull` for `clean` (as this once did) meant only a database

@@ -67,3 +67,28 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['generate', '--name='])).toThrow(/requires a value/);
   });
 });
+
+describe('parseArgs — file-output flags are refused on verbs that write no file', () => {
+  // The safety flags already refused to be silently ignored, with the rationale that "silently
+  // ignoring them would let someone believe they had authorized something they had not". The same
+  // reasoning covers where output GOES: `check -o build/migrations` was accepted and dropped,
+  // leaving the user believing they had configured an output location.
+  it.each([
+    ['-o', 'build/migrations'],
+    ['--outDir', 'build/migrations'],
+    ['-n', 'MyName'],
+    ['--output', 'sql'],
+  ])('rejects %s on check', (flag, value) => {
+    expect(() => parseArgs(['check', '-d', 'ds.ts', flag, value])).toThrow(CliError);
+  });
+
+  it.each(['generate', 'pull', 'mix'])('still accepts them on %s', (verb) => {
+    expect(() => parseArgs([verb, '-d', 'ds.ts', '-o', 'out', '-n', 'N'])).not.toThrow();
+  });
+
+  it('does NOT reject a value that came from the config file rather than the command line', () => {
+    // A project config legitimately sets outDir for `generate`; erroring because the user then ran
+    // `check` in that project would be obnoxious. The guard is about what was typed just now.
+    expect(() => parseArgs(['check', '-d', 'ds.ts'], { outDir: 'migrations' })).not.toThrow();
+  });
+});

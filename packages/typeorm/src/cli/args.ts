@@ -204,6 +204,27 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
     }
   }
 
+  // Same rule, same reason, for the flags that choose where output GOES. `check -o build/migrations`
+  // used to be accepted and dropped, leaving the user believing they had configured an output
+  // location. The safety flags already refused to be ignored; these are only less dangerous, not
+  // different in kind.
+  // Only what was typed on the COMMAND LINE (`values`), never what a config file supplied. A project
+  // config legitimately sets `outDir` for `generate`, and erroring because the user then ran `check`
+  // in that project would be obnoxious — the point is to catch a flag the user believes they just
+  // gave this invocation.
+  const FILE_VERBS = new Set<Command>(['generate', 'pull', 'mix']);
+  for (const [flag, provided] of [
+    ['-o, --outDir', values.outDir !== undefined],
+    ['-n, --name', values.name !== undefined],
+    ['--output', values.output !== undefined],
+  ] as const) {
+    if (provided && !FILE_VERBS.has(command)) {
+      throw new CliError(
+        `Option ${flag} is only valid for 'generate', 'pull' or 'mix'.\n\n${USAGE}`,
+      );
+    }
+  }
+
   return {
     command,
     dataSource,
