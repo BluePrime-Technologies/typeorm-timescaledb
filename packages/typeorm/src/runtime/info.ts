@@ -188,14 +188,31 @@ export async function listJobs(
   let where = '';
   if (options.hypertable !== undefined) {
     const { schema, name } = resolveFilterSchema(dataSource, options.hypertable);
-    where = ` WHERE hypertable_name = $${params.push(name)}`;
-    where += ` AND hypertable_schema = $${params.push(schema)}`;
+    const nameParam = params.push(name);
+    const schemaParam = params.push(schema);
+    // Version-robust match, and the reason it has to be: `jobs.hypertable_name` is the USER-FACING
+    // view on newer servers but the INTERNAL materialization hypertable on 2.18. Filtering on the
+    // user name alone therefore returned an EMPTY array for a continuous aggregate on 2.18 and the
+    // refresh job on 2.28/2.29 — no error, no warning, just a different answer per server. A user
+    // asking "does my CAGG have a refresh policy?" got "no" on 2.18 and could add a duplicate, or
+    // conclude the aggregate was unmanaged. Matching the internal name instead is not an option for
+    // a caller: `_timescaledb_internal._materialized_hypertable_N` is not a name this API exposes.
+    //
+    // The codebase already guards this exact divergence in assertSchema.ts and in core's
+    // continuous-aggregate builder; `listJobs` is the one PUBLIC read that missed it, and it is the
+    // one users call directly. Same dual predicate as those two, so all three agree.
+    where =
+      ` WHERE (j.hypertable_schema = $${schemaParam} AND j.hypertable_name = $${nameParam})` +
+      ` OR EXISTS (SELECT 1 FROM timescaledb_information.continuous_aggregates c` +
+      ` WHERE c.view_schema = $${schemaParam} AND c.view_name = $${nameParam}` +
+      ` AND c.materialization_hypertable_schema = j.hypertable_schema` +
+      ` AND c.materialization_hypertable_name = j.hypertable_name)`;
   }
   const rows: Array<Record<string, unknown>> = await dataSource.query(
-    `SELECT job_id, application_name, schedule_interval::text AS schedule_interval,
-            proc_schema, proc_name, hypertable_schema, hypertable_name, scheduled, config
-       FROM timescaledb_information.jobs${where}
-       ORDER BY job_id`,
+    `SELECT j.job_id, j.application_name, j.schedule_interval::text AS schedule_interval,
+            j.proc_schema, j.proc_name, j.hypertable_schema, j.hypertable_name, j.scheduled, j.config
+       FROM timescaledb_information.jobs j${where}
+       ORDER BY j.job_id`,
     params,
   );
   return rows.map((r) => ({
