@@ -140,4 +140,39 @@ describe.skipIf(!IMAGE)('M4.4b pull — live round-trip', () => {
     await pullSchema(source);
     expect(await introspect(source)).toEqual(before);
   }, 120_000);
+
+  it('reports a policy attached to a CONTINUOUS AGGREGATE instead of claiming a complete copy', async () => {
+    // `introspect()` keys compression/retention policies by the hypertable a job names and reads
+    // those maps only while mapping USER hypertables, so a CAGG's own policies never reach the IR.
+    // `skipped` therefore could not contain them, and `complete` — defined as skipped.length === 0 —
+    // reported a faithful copy of a database this reproduction demonstrably had not copied.
+    const qr = source.createQueryRunner();
+    try {
+      await qr.query(
+        `CREATE MATERIALIZED VIEW IF NOT EXISTS pull_cagg WITH (timescaledb.continuous) AS
+           SELECT time_bucket(INTERVAL '1 hour', "ts") AS bucket, count(*) AS n
+             FROM metrics GROUP BY 1 WITH NO DATA`,
+      );
+      await qr.query(`SELECT add_retention_policy('pull_cagg', drop_after => INTERVAL '30 days')`);
+    } finally {
+      await qr.release();
+    }
+
+    const result = await pullSchema(source);
+
+    const caggPolicySkips = result.coverage.skipped.filter(
+      (s) => s.reason === 'cagg-attached-policy',
+    );
+    expect(caggPolicySkips.length).toBeGreaterThan(0);
+    expect(caggPolicySkips[0]?.object).toContain('pull_cagg');
+    expect(result.coverage.complete).toBe(false);
+
+    const qr2 = source.createQueryRunner();
+    try {
+      await qr2.query(`SELECT remove_retention_policy('pull_cagg', if_exists => TRUE)`);
+      await qr2.query(`DROP MATERIALIZED VIEW IF EXISTS pull_cagg`);
+    } finally {
+      await qr2.release();
+    }
+  });
 });

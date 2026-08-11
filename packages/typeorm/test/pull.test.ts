@@ -40,7 +40,11 @@ const PARTIAL_IR: SchemaStateIR = {
   continuousAggregates: [],
 };
 
-const fakeDataSource = {} as DataSource;
+// `pullSchema` reads through introspect() (mocked above) AND runs one direct probe for policies
+// attached to a continuous aggregate — the objects that never reach the IR, and whose absence used
+// to let coverage report a complete copy of a database it had not copied. The fake answers that
+// probe with "none", which is the shape these IR-driven cases mean to describe.
+const fakeDataSource = { query: async () => [] } as unknown as DataSource;
 
 function collectLogger(): {
   logger: { log: (m: string) => void; error: (m: string) => void };

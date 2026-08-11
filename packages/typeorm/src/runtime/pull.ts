@@ -83,7 +83,64 @@ export async function pullSchema(
   options: PullOptions = {},
 ): Promise<PullResult> {
   const ir = await introspect(dataSource);
-  const { operations, skipped } = stateToOperations(ir);
+  const { operations, skipped: irSkipped } = stateToOperations(ir);
+
+  // Compression/retention policies attached to a CONTINUOUS AGGREGATE are invisible to the IR:
+  // `introspect()` keys them by the hypertable a job names and reads those maps only while mapping
+  // USER hypertables, so a CAGG's own policies never arrive. `skipped` can therefore never contain
+  // them, and `complete` — defined as `skipped.length === 0` — reported a faithful copy of a
+  // database this reproduction demonstrably did not copy.
+  //
+  // Detecting them needs no internal catalog: the public jobs and continuous_aggregates views are
+  // enough, matched on BOTH identities because `jobs.hypertable_*` is the materialization
+  // hypertable on 2.18 and the user view on 2.28+.
+  // The probe is guarded. If it cannot run — an old server, restricted permissions, a caller that
+  // supplied a narrower DataSource — losing the whole `pull` would be a poor trade for a coverage
+  // detail. But "could not check" is not "nothing found", so the failure is recorded as a skip
+  // rather than swallowed, which keeps `complete` honest in both directions.
+  let caggPolicyRows: Array<{ proc_name: string; view_schema: string; view_name: string }> = [];
+  let caggProbeFailed: string | undefined;
+  try {
+    caggPolicyRows = await dataSource.query(
+      `SELECT j.proc_name, c.view_schema, c.view_name
+         FROM timescaledb_information.jobs j
+         JOIN timescaledb_information.continuous_aggregates c
+           ON (j.hypertable_schema = c.materialization_hypertable_schema
+               AND j.hypertable_name = c.materialization_hypertable_name)
+            OR (j.hypertable_schema = c.view_schema AND j.hypertable_name = c.view_name)
+        WHERE j.proc_name IN ('policy_compression', 'policy_retention')`,
+    );
+  } catch (error) {
+    caggProbeFailed = error instanceof Error ? error.message : String(error);
+  }
+
+  const caggSkips: SkippedObject[] = caggPolicyRows.map((r) => ({
+    object: `${r.view_schema}.${r.view_name}`,
+    facet: r.proc_name === 'policy_compression' ? 'compressionPolicy' : 'retentionPolicy',
+    reason: 'cagg-attached-policy',
+    detail:
+      `a ${r.proc_name === 'policy_compression' ? 'compression' : 'retention'} policy is attached ` +
+      `to this continuous aggregate. It is NOT reproduced by this migration — reproduce it by hand ` +
+      `with add_columnstore_policy/add_retention_policy on the aggregate.`,
+  }));
+
+  const skipped: SkippedObject[] = [
+    ...irSkipped,
+    ...caggSkips,
+    ...(caggProbeFailed === undefined
+      ? []
+      : [
+          {
+            object: '(continuous aggregates)',
+            facet: 'compressionPolicy' as const,
+            reason: 'cagg-attached-policy' as const,
+            detail:
+              `could not determine whether any continuous aggregate carries its own ` +
+              `compression/retention policy (${caggProbeFailed}). Such policies are NOT reproduced ` +
+              `by this migration; check by hand before trusting this as a complete copy.`,
+          },
+        ]),
+  ];
 
   // Classify authoritatively from the operation itself, exactly as `applyDirect` does — never from
   // caller-supplied metadata, so a safety class can't be misreported by construction.

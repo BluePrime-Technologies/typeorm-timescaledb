@@ -58,6 +58,14 @@ export type SkipReason =
   | 'created-before-threshold'
   /** A custom `add_job` whose config this engine does not interpret. */
   | 'unmanaged-policy'
+  /**
+   * A compression/retention policy attached to a CONTINUOUS AGGREGATE rather than to a user
+   * hypertable. `introspect()` keys those policies by the hypertable they name and reads them only
+   * while mapping user hypertables, so they never reach the IR — which means `stateToOperations`
+   * cannot see them either, and a reproduction that omits them would otherwise report itself
+   * complete. Detected separately by `pullSchema` and recorded here so coverage stays honest.
+   */
+  | 'cagg-attached-policy'
   /** A space dimension that `create_hypertable`/`add_dimension` cannot reproduce as given. */
   | 'space-dimension-incomplete'
   /** The hypertable has no time dimension — nothing to create it from. */
