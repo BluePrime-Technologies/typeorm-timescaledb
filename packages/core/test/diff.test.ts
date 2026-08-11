@@ -308,6 +308,23 @@ describe('diffSchemaState — a changed time dimension is refused, never silentl
     expect(diffSchemaState(ir(onTime('ts')), ir(onTime('ts'))).steps).toEqual([]);
   });
 
+  it('does NOT touch a chunk interval the desired state never declared', () => {
+    // Regression: an undeclared chunkInterval fell back to TIMESCALE_DEFAULTS, so a hypertable at a
+    // DBA-tuned 30 days, described by a decorator that says nothing about chunk sizing, produced
+    // `setChunkInterval 30 days -> 7 days`. No data loss (future chunks only), but the sizing
+    // silently regressed and the plan looked deliberate. Unset means unmanaged here, as it already
+    // did for segmentBy/orderBy and scheduleInterval.
+    const tuned: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '30 days' }],
+    };
+    const undeclared: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time' }],
+    };
+    expect(diffSchemaState(ir(tuned), ir(undeclared)).steps).toEqual([]);
+  });
+
   it('still detects a chunk-interval change on the same column', () => {
     const wider: HypertableState = {
       table: 'public.metric',

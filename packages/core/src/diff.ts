@@ -12,7 +12,7 @@ import type { ColumnstoreConfig } from './sql/index.js';
 import { compileOperations } from './operation.js';
 import type { AddColumnstorePolicyOperation, Operation } from './operation.js';
 import { classifyOperation, type OperationSafety } from './safety.js';
-import { intervalsEqual, TIMESCALE_DEFAULTS } from './normalize.js';
+import { intervalsEqual } from './normalize.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
 
 /**
@@ -34,10 +34,12 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  *   - on an EXISTING hypertable: a columnstore or a retention policy present in `desired` but absent in
  *     `current` → that add; a compression policy present in `desired` but missing on an already-enabled
  *     columnstore → an `addCompressionPolicy` (policy-only, closes the former gap); a compression or
- *     retention **threshold that changed** → an `alter{Compression,Retention}Policy` (remove-then-add,
- *     `down()` restores the prior threshold); a **time-dimension chunk interval that changed** →
- *     `setChunkInterval` (affects future chunks only; reconciled against `TIMESCALE_DEFAULTS.chunkInterval`
- *     when desired omits it, so a bare hypertable at the engine default is not false drift).
+ *     retention **threshold that changed** → an `alter{Compression,Retention}Policy` (remove-then-add;
+ *     `down()` restores the prior threshold ONLY when doing so lengthens it — see
+ *     `alterRetentionPolicySQL`); a **declared time-dimension chunk interval that changed** →
+ *     `setChunkInterval` (affects future chunks only). An UNDECLARED `chunkInterval` means unmanaged
+ *     and is not compared at all, so a DBA-tuned interval is never reverted by a decorator that
+ *     never mentioned chunk sizing.
  *
  * Policy threshold comparison uses the M4.0 normalizers and IGNORES `scheduleInterval` — the desired
  * side never sets it and the engine fills a default the introspected current always carries, so
@@ -72,9 +74,10 @@ import { TimescaleError, TimescaleErrorCode } from './errors.js';
  *
  * **Integer-time / `created_before` POLICY thresholds THROW** (never silent under-convergence): they
  * can't be expressed by the string-only builders, so the diff raises `INVALID_ARGUMENT` rather than a
- * wrong op or a false "converged". (The decorator path only produces string `after` thresholds.) An
- * integer-time **chunk interval** is different: when desired declares none, that means "accept the
- * engine's", so the comparison is skipped rather than throwing.
+ * wrong op or a false "converged". (The decorator path only produces string `after` thresholds.) A
+ * **chunk interval** is different: an undeclared one means "accept whatever the database has", so the
+ * comparison is skipped rather than throwing — which also covers the integer-time case, since there
+ * is no substituted default left to measure a number against.
  *
  * **Space dimensions THROW on divergence.** `add_dimension` is one-way and re-partitioning is not
  * expressible, so a declared space partition the database lacks (or a changed partition count) raises
@@ -534,10 +537,22 @@ export function diffSchemaState(
       );
     }
 
-    const currentIsIntegerTime = typeof currentTime?.chunkInterval === 'number';
-    const skipChunkCompare = currentIsIntegerTime && desiredTime?.chunkInterval === undefined;
+    // An UNDECLARED chunkInterval means "unmanaged", not "7 days".
+    //
+    // It used to fall back to TIMESCALE_DEFAULTS.chunkInterval, so a hypertable at a DBA-tuned or
+    // create_hypertable-inherited 30 days, described by a decorator that says nothing about chunk
+    // sizing, produced `setChunkInterval 30 days -> 7 days`. No data is lost (it affects future
+    // chunks only) but the sizing silently regressed and the plan looked deliberate.
+    //
+    // Every other unset value in this file already means unmanaged: an empty segmentBy/orderBy
+    // accepts the engine default, and an undeclared scheduleInterval is not compared at all.
+    // chunkInterval was the lone exception; now it is not. Declaring an interval still converges it.
+    // Undeclared subsumes the former integer-time special case: that existed only because an
+    // integer current interval could not be compared against the string default we used to
+    // substitute. With no substitution there is nothing to compare either way.
+    const skipChunkCompare = desiredTime?.chunkInterval === undefined;
     if (currentTime !== undefined && desiredTime !== undefined && !skipChunkCompare) {
-      const desiredInterval = desiredTime.chunkInterval ?? TIMESCALE_DEFAULTS.chunkInterval;
+      const desiredInterval = desiredTime.chunkInterval;
       if (!intervalsEqual(currentTime.chunkInterval, desiredInterval)) {
         operations.push({
           kind: 'setChunkInterval',

@@ -202,7 +202,10 @@ export const ANALYZERS: readonly Analyzer[] = [
               operation,
               index,
               `Nothing is deleted by this step, and it is reversible — but from now on ${operation.table} grows without bound. On a high-ingest hypertable that becomes a disk-space incident rather than a schema one.`,
-              'Confirm this is intended, and that disk headroom is monitored.',
+              'Confirm this is intended, and that disk headroom is monitored. Note the REVERT too: ' +
+                'down() re-adds the policy at its prior threshold, so the next scheduler run drops ' +
+                'every chunk accumulated while it was gone — asynchronously, after the migration ' +
+                'has already reported success.',
             ),
           ]
         : null,

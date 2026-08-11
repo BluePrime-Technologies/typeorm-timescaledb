@@ -170,7 +170,11 @@ export function classifyOperation(operation: Operation): OperationSafety {
       return {
         safety: 'online-safe',
         reason:
-          'removes a retention background job — deletes no data (it stops FUTURE chunk drops, keeping more data); down() re-adds the policy at its prior threshold',
+          'removes a retention background job — the APPLY deletes no data (it stops future chunk ' +
+          'drops, keeping more). Note the revert: down() re-adds the policy at its prior threshold, ' +
+          'and the next scheduler tick then drops every chunk accumulated while the policy was gone. ' +
+          'That is faithful restoration of the prior state, not a defect, but it is asynchronous ' +
+          'deletion an operator reverting a migration would not otherwise expect',
       };
     case 'removeCompressionPolicy':
       return {

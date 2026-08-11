@@ -377,10 +377,20 @@ const addCompressionPolicyCall = (
   `CALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(after)}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'}${scheduleArg(scheduleInterval)});`;
 const removeRetentionPolicyCall = (t: ParsedTable): string =>
   `SELECT remove_retention_policy(${t.regclass}, if_exists => TRUE);`;
+/**
+ * Render the optional `schedule_interval` argument.
+ *
+ * Validated like every other interval in this module. It used to go through `quoteLiteral` alone —
+ * not an injection (the escaping holds), but a garbage value sailed through codegen and then failed
+ * at APPLY time, inside a migration, with a Postgres syntax error pointing at generated SQL the
+ * author never wrote. Failing at build time names the bad input instead.
+ */
 const scheduleArg = (scheduleInterval: string | undefined): string =>
   scheduleInterval === undefined
     ? ''
-    : `, schedule_interval => INTERVAL ${quoteLiteral(scheduleInterval)}`;
+    : `, schedule_interval => INTERVAL ${quoteLiteral(
+        assertParsableInterval(scheduleInterval, 'scheduleInterval', { positive: true }),
+      )}`;
 
 const addRetentionPolicyCall = (
   t: ParsedTable,

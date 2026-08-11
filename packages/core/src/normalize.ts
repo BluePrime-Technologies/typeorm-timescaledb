@@ -339,9 +339,13 @@ export function isShortening(from: string, to: string): boolean | undefined {
   const a = canonicalizeInterval(from);
   const b = canonicalizeInterval(to);
   if (a.startsWith('raw:') || b.startsWith('raw:')) return undefined;
-  const us = (v: string): number | undefined => {
-    const m = /^us:(-?\d+)$/.exec(v);
-    return m ? Number(m[1]) : undefined;
+  // BigInt, not Number. `canonicalizeInterval` computes the microsecond total in BigInt; narrowing
+  // it here lost precision past Number.MAX_SAFE_INTEGER (~285 years in µs), where two distinct
+  // thresholds could compare EQUAL and a shortening would be classified reversible. Unreachable for
+  // realistic retention windows, but the producer already uses BigInt so matching it costs nothing.
+  const us = (v: string): bigint | undefined => {
+    const digits = /^us:(-?\d+)$/.exec(v)?.[1];
+    return digits === undefined ? undefined : BigInt(digits);
   };
   const x = us(a);
   const y = us(b);
