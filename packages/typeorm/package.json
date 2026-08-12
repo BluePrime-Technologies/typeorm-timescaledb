@@ -89,7 +89,7 @@
     "@nestjs/common": "^11.1.26",
     "@nestjs/core": "^11.1.26",
     "@nestjs/testing": "^11.1.26",
-    "pg": "^8.21.0",
+    "pg": "^8.23.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "testcontainers": "^12.0.1",
