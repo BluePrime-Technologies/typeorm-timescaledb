@@ -18,6 +18,8 @@ import {
   HypertablePrimaryKey,
   ContinuousAggregate,
   BucketColumn,
+  TimescaleError,
+  TimescaleErrorCode,
   AggregateColumn,
 } from '../src/index.js';
 import { classifyOperation } from '@blueprime/timescaledb-core';
@@ -147,6 +149,57 @@ describe('pushSchema — preview vs apply', () => {
     expect(result.applied).toBe(false);
     expect(result.statements).toEqual([]);
     expect(queries.slice(before).some((q) => /create_hypertable/i.test(q))).toBe(false);
+  });
+});
+
+// ── Fail fast on a missing timescaledb extension ──────────────────────────────────────────────
+// checkCommand -> pushSchema -> introspect() is the actual path a `check` CLI run takes. Before
+// introspect()'s fix, this surfaced whatever raw error the first catalog query happened to throw;
+// proving it here (not just at the introspect() unit level) pins the behavior a `check` user
+// actually sees.
+describe('pushSchema / checkCommand — missing timescaledb extension', () => {
+  class MissingExt {}
+  Hypertable({ chunkInterval: '1 day' })(MissingExt);
+  TimeColumn()(MissingExt.prototype, 'ts');
+  HypertablePrimaryKey()(MissingExt.prototype, 'ts');
+
+  function dsWithoutExtension(): DataSource {
+    const runner = {
+      connect: async () => {},
+      startTransaction: async () => {},
+      rollbackTransaction: async () => {},
+      release: async () => {},
+      get isTransactionActive() {
+        return true;
+      },
+      query: async (sql: string) => (sql.includes('pg_extension') ? [] : []),
+    };
+    return {
+      isInitialized: true,
+      options: {},
+      entityMetadatas: [{ target: MissingExt, tableName: 'missing_ext', columns: [] }],
+      createQueryRunner: () => runner,
+    } as unknown as DataSource;
+  }
+
+  it('pushSchema rejects with TimescaleError(TIMESCALEDB_MISSING), not a raw DB error', async () => {
+    const ds = dsWithoutExtension();
+    try {
+      await pushSchema(ds);
+      throw new Error('expected TIMESCALEDB_MISSING');
+    } catch (e) {
+      expect((e as InstanceType<typeof TimescaleError>).code).toBe(
+        TimescaleErrorCode.TIMESCALEDB_MISSING,
+      );
+      expect((e as Error).message).toContain('CREATE EXTENSION timescaledb');
+    }
+  });
+
+  it('checkCommand propagates the same typed error rather than swallowing it', async () => {
+    const logger: Logger = { log: () => {}, error: () => {} };
+    await expect(checkCommand(dsWithoutExtension(), logger)).rejects.toMatchObject({
+      code: TimescaleErrorCode.TIMESCALEDB_MISSING,
+    });
   });
 });
 
