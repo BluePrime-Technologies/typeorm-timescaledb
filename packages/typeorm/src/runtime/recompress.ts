@@ -263,8 +263,20 @@ export async function planRecompression(
       try {
         const legacy: StaleRow[] = await dataSource.query(STALE_CHUNKS_LEGACY_SQL, params);
         if (resolved(legacy)) rows = legacy;
-      } catch {
-        // Legacy columns absent (2.29+). Keep the modern result and let the guard below decide.
+      } catch (legacyError) {
+        // Swallow ONLY "the legacy columns are not there", which is the expected 2.29+ outcome.
+        //
+        // A bare catch here also hid genuine 2.18 failures — a revoked grant on
+        // `_timescaledb_catalog`, a lock timeout, a dead connection — and on 2.18 the legacy branch
+        // is the one that actually produces the answer. The plan then degraded to "every compressed
+        // chunk is a candidate" while looking like a normal version fallback, so the operator was
+        // told to rewrite the whole hypertable and never told why.
+        //
+        // 42703 = undefined_column, 42P01 = undefined_table: the two SQLSTATEs a removed column or
+        // relation produces. Anything else is a real problem and is re-thrown to the outer handler,
+        // which degrades honestly WITH a reason attached.
+        const code = (legacyError as { code?: unknown }).code;
+        if (code !== '42703' && code !== '42P01') throw legacyError;
       }
     }
   } catch (error) {

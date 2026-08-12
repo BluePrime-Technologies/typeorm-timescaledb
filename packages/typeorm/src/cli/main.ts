@@ -96,6 +96,12 @@ async function main(argv: readonly string[]): Promise<void> {
             outDir: args.outDir,
             ...(args.name !== undefined && { name: args.name }),
             output: args.output,
+            // Write the reproduced migration only when this is not a preview. A bare `mix` is a
+            // read-only look at both directions, and it used to drop a timestamped file into
+            // `outDir` every time — so a CI drift check accumulated near-identical migrations in
+            // the working tree. `--apply` is the run that is changing things anyway, and the one
+            // where having the artifact on disk is worth something.
+            write: args.apply,
           },
           {
             apply: args.apply,

@@ -368,7 +368,14 @@ export async function mixCommand(
   pushOptions: PushOptions = {},
 ): Promise<MixOutcome> {
   logger.log('── pull: what the database has that your code does not ──');
-  const pulled = await pullCommand(dataSource, logger, fileOptions);
+  // Only write the migration when the caller explicitly asked for the artifact. `mix` is
+  // preview-by-default for the DATABASE, but it used to write a file on EVERY run — including a
+  // read-only CI drift check — so repeated runs accumulated near-identical migrations in the working
+  // tree. Previewing should not leave litter behind.
+  const pulled = await pullCommand(dataSource, logger, {
+    ...fileOptions,
+    write: fileOptions.write ?? false,
+  });
 
   if (pulled === 'partial') {
     // Said BEFORE the push plan, not after. Converging toward code that does not yet describe the
@@ -417,6 +424,15 @@ export interface PullFileOptions {
   readonly output?: OutputFormat;
   /** Override the timestamp (for reproducible output / tests). */
   readonly timestamp?: number;
+  /**
+   * Write the migration file. Default `true`.
+   *
+   * `mix` passes `false` unless the artifact was asked for. `mix` is preview-by-default for the
+   * DATABASE, but every invocation — including a read-only CI drift check — used to drop a
+   * timestamped file into `outDir`, so repeated CI runs accumulated near-identical migrations in the
+   * working tree. Previewing should not leave litter behind.
+   */
+  readonly write?: boolean;
 }
 
 /**
@@ -456,10 +472,16 @@ export async function pullCommand(
   const content =
     output === 'sql' ? renderTimescaleMigrationSql(migration) : renderTimescaleMigration(migration);
   const path = join(options.outDir, `${migration.timestamp}-${base}.${output}`);
-  writer.mkdirp(options.outDir);
-  writer.write(path, content);
-
-  logger.log(`Reproduced migration: ${path}`);
+  if (options.write ?? true) {
+    writer.mkdirp(options.outDir);
+    writer.write(path, content);
+    logger.log(`Reproduced migration: ${path}`);
+  } else {
+    logger.log(
+      `Reproduced ${migration.up.length} statement(s) — no file written (preview). ` +
+        `Run \`pull\` to write the migration.`,
+    );
+  }
   logger.log(formatPullCoverage(coverage));
 
   if (!coverage.complete) {

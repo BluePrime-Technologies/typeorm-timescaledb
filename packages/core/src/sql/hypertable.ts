@@ -28,7 +28,11 @@ function orderByDirection(direction: string | undefined): 'ASC' | 'DESC' {
  *
  * Target: TimescaleDB **≥ 2.18** (the columnstore DDL — `enable_columnstore`,
  * `add_columnstore_policy`; 2.17 and earlier had only the legacy compression
- * syntax). Verified against the latest stable line (2.27).
+ * syntax). CI exercises pinned 2.18.0, 2.19.0, 2.26.0 and 2.29.1 across PostgreSQL
+ * 16/17/18 — see `docs/compatibility.md`. This line used to say "verified against
+ * the latest stable line (2.27)", which had quietly become false; a version claim
+ * in a comment goes stale the moment the matrix moves, so it now points at the one
+ * place that is kept in step with CI.
  *
  * Safety: every table/column flows through {@link assertSafeIdentifier}; values in
  * identifier position are quoted with {@link quoteIdent}, values in string-literal

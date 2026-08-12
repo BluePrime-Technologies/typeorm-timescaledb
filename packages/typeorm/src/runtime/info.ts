@@ -92,9 +92,19 @@ export interface ChunkInfo {
   readonly hypertableName: string;
   readonly chunkSchema: string;
   readonly chunkName: string;
-  /** Chunk range start/end (null for an open range or integer-time hypertables). */
+  /**
+   * Chunk range start/end for a TIME-partitioned hypertable. `null` for an open range, and null for
+   * an integer-time hypertable — whose bounds are in {@link rangeStartInteger} instead.
+   */
   readonly rangeStart: Date | null;
   readonly rangeEnd: Date | null;
+  /**
+   * Chunk range for an INTEGER-time hypertable, where the catalog leaves the timestamp columns null.
+   * Previously not selected at all, so every chunk of such a hypertable reported no range whatsoever.
+   * `null` on a time-partitioned hypertable. Exactly one of the two pairs is populated.
+   */
+  readonly rangeStartInteger: number | null;
+  readonly rangeEndInteger: number | null;
   readonly isCompressed: boolean;
 }
 
@@ -115,10 +125,14 @@ export async function listChunks(
     where += ` AND hypertable_schema = $${params.push(schema)}`;
   }
   const rows: Array<Record<string, unknown>> = await dataSource.query(
+    // The INTEGER range columns are selected too. An integer-time hypertable leaves
+    // range_start/range_end NULL and puts the bounds in range_start_integer/range_end_integer —
+    // present in every supported version, 2.18 through 2.29.1 — so selecting only the timestamp
+    // pair reported every chunk of such a hypertable as having no range at all.
     `SELECT hypertable_schema, hypertable_name, chunk_schema, chunk_name,
-            range_start, range_end, is_compressed
+            range_start, range_end, range_start_integer, range_end_integer, is_compressed
        FROM timescaledb_information.chunks${where}
-       ORDER BY hypertable_schema, hypertable_name, range_start`,
+       ORDER BY hypertable_schema, hypertable_name, range_start NULLS LAST, range_start_integer`,
     params,
   );
   return rows.map((r) => ({
@@ -128,6 +142,8 @@ export async function listChunks(
     chunkName: String(r.chunk_name),
     rangeStart: toDateOrNull(r.range_start),
     rangeEnd: toDateOrNull(r.range_end),
+    rangeStartInteger: r.range_start_integer == null ? null : Number(r.range_start_integer),
+    rangeEndInteger: r.range_end_integer == null ? null : Number(r.range_end_integer),
     isCompressed: toBool(r.is_compressed),
   }));
 }
@@ -242,7 +258,15 @@ export interface JobStats {
   readonly nextStart: Date | null;
 }
 
-/** Read one job's execution stats, or `null` if the job id is unknown. */
+/** Read one job's execution stats, or `null` if the job id is unknown.
+ *
+ * NOTE on `hypertableSchema`/`hypertableName`: for a CONTINUOUS AGGREGATE's refresh job these are
+ * version-divergent, returned as the catalog reports them. On 2.18 they name the internal
+ * materialization hypertable (`_timescaledb_internal._materialized_hypertable_N`); on 2.28+ they
+ * name the user-facing view. The values are not wrong, but the field means different things on
+ * different servers, so do not compare them against a view name you hold. `listJobs({ hypertable })`
+ * resolves both identities for you and is the right call if you want to filter.
+ */
 export async function getJobStats(dataSource: DataSource, jobId: number): Promise<JobStats | null> {
   assertJobId(jobId);
   const rows: Array<Record<string, unknown>> = await dataSource.query(

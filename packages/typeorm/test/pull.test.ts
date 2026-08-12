@@ -336,3 +336,43 @@ describe('pullSchema — one unreproducible identifier does not abort the whole 
     expect(result.migration.up.join('\n')).not.toContain('mesüres');
   });
 });
+
+describe('pullCommand — write is opt-out, so a preview leaves no file behind', () => {
+  // `mix` calls pullCommand and is preview-by-default for the DATABASE, but a file landed in outDir
+  // on EVERY invocation — including a read-only CI drift check — so repeated runs accumulated
+  // near-identical migrations in the working tree.
+  function collectWriter(): { writer: FileWriter; written: string[] } {
+    const written: string[] = [];
+    return {
+      written,
+      writer: { mkdirp: () => undefined, write: (path: string) => written.push(path) },
+    };
+  }
+
+  it('writes nothing when write is false, even with objects to reproduce', async () => {
+    introspectMock.mockResolvedValue(FULL_IR);
+    const { writer, written } = collectWriter();
+    const { logger, out } = collectLogger();
+    await pullCommand(
+      fakeDataSource,
+      logger,
+      { outDir: 'migrations', write: false, timestamp: 1_760_000_000_000 },
+      writer,
+    );
+    expect(written).toEqual([]);
+    expect(out.join('\n')).toMatch(/no file written \(preview\)/);
+  });
+
+  it('still writes by default — pull itself is not a preview', async () => {
+    introspectMock.mockResolvedValue(FULL_IR);
+    const { writer, written } = collectWriter();
+    const { logger } = collectLogger();
+    await pullCommand(
+      fakeDataSource,
+      logger,
+      { outDir: 'migrations', timestamp: 1_760_000_000_000 },
+      writer,
+    );
+    expect(written).toHaveLength(1);
+  });
+});
