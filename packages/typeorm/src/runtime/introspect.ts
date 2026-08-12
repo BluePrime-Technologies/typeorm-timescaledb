@@ -299,6 +299,23 @@ export async function introspect(
       const versionRows: Array<{ extversion: unknown }> = await runner.query(
         "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'",
       );
+      // Fail fast with a typed, actionable error instead of letting the four catalog queries below
+      // hit a plain-PostgreSQL (or not-yet-`CREATE EXTENSION`'d) database and surface a raw
+      // `relation "timescaledb_information.hypertables" does not exist` straight from pg. Mirrors
+      // assertSchema()'s TIMESCALEDB_MISSING guard, but reuses this query (already run to record
+      // the version) instead of a second round-trip against pg_extension.
+      //
+      // This gates on PRESENCE only. The "recorded, not gated on" note in the module docs above is
+      // about the VERSION: there is deliberately no range check, because robustness across the
+      // supported range comes from query design. Absent is a different case from unexpected — with
+      // no extension there is no catalog to read at all.
+      if (versionRows.length === 0) {
+        throw new TimescaleError(
+          TimescaleErrorCode.TIMESCALEDB_MISSING,
+          'timescaledb is not installed on this database — run `CREATE EXTENSION timescaledb;` ' +
+            '(or connect to a TimescaleDB-enabled database) before introspecting',
+        );
+      }
       const timescaledbVersion =
         versionRows[0]?.extversion != null ? String(versionRows[0].extversion) : undefined;
 
