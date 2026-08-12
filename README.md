@@ -264,7 +264,7 @@ percentiles, counters, time-weight, state tracking, MCV/top-N, heartbeat/livenes
 ## Packages
 
 | Package                       | Description                                                                                            |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | `typeorm-timescaledb`         | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module.                       |
 | `@blueprime/timescaledb-core` | ORM-agnostic SQL/DDL generation, the operation IR, the diff/plan engine, identifier safety.            |
 | `@blueprime/cross-store`      | Validated cross-**database** `@Resolve` references (separate opt-in package, versioned independently). |
