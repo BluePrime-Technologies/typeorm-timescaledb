@@ -161,6 +161,7 @@ import { TimescaleModule, InjectTimescaleRepository } from 'typeorm-timescaledb/
 
 @Module({
   imports: [
+    // `dataSource` must already be initialized (await dataSource.initialize()) — forRoot() does not do this for you
     TimescaleModule.forRoot({ dataSource, assert: 'assert' }), // boot-time drift check
     TimescaleModule.forFeature([Reading]),
   ],
@@ -263,7 +264,7 @@ percentiles, counters, time-weight, state tracking, MCV/top-N, heartbeat/livenes
 ## Packages
 
 | Package                       | Description                                                                                            |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | `typeorm-timescaledb`         | The TypeORM integration: decorators, repository, migrations, CLI, NestJS module.                       |
 | `@blueprime/timescaledb-core` | ORM-agnostic SQL/DDL generation, the operation IR, the diff/plan engine, identifier safety.            |
 | `@blueprime/cross-store`      | Validated cross-**database** `@Resolve` references (separate opt-in package, versioned independently). |
