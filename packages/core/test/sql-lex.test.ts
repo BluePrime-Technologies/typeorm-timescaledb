@@ -145,6 +145,43 @@ describe('findUnquotedToken', () => {
     expect(findUnquotedToken("E'abc\\\\'", [';'])).toEqual({ kind: 'clean' });
   });
 
+  it('treats a non-ASCII identifier character as part of the identifier', () => {
+    // Measured on PostgreSQL 17: `SELECT 1 AS α$t$ ; $t$` gives the same "unterminated
+    // dollar-quoted string" error against the SECOND $t$ as its ASCII twin, so α is an identifier
+    // character and the `;` is a real separator. An ASCII-only check opened a block and hid it.
+    expect(findUnquotedToken('α$t$ ; $t$', [';'])).toMatchObject({ kind: 'found', token: ';' });
+    expect(findUnquotedToken('SELECT 1 AS α$t$ ; DROP TABLE victim; $t$', [';'])).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+    // Same for the E-prefix: `βE'…'` is the identifier `βE` followed by a PLAIN literal, in which a
+    // backslash is ordinary — so the literal ends at the next quote and the `;` after it is real.
+    expect(findUnquotedToken("βE'foo\\'; DROP TABLE victim", [';'])).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+    // A tag after punctuation still opens a block.
+    expect(findUnquotedToken('α, $t$ ; $t$', [';'])).toEqual({ kind: 'clean' });
+  });
+
+  it('ends a line comment at a bare carriage return, as PostgreSQL does', () => {
+    // Measured: `SELECT 'first' -- comment\r; SELECT 'SECOND_RAN'` runs BOTH statements, so the CR
+    // ends the comment. Searching only for \n treated the rest as commented and hid the separator.
+    expect(findUnquotedToken('avg(v) -- comment\r; DROP TABLE victim', [';'])).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+    // CRLF was always fine (it contains a \n) and must stay fine.
+    expect(findUnquotedToken('avg(v) -- comment\r\n; DROP TABLE victim', [';'])).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+    // A `;` genuinely inside the comment is still inert.
+    expect(findUnquotedToken('avg(v) -- comment ; still comment\n, sum(v)', [';'])).toEqual({
+      kind: 'clean',
+    });
+  });
+
   it('reports unterminated states, but treats a line comment to end-of-input as clean', () => {
     expect(findUnquotedToken("f('unclosed", [';'])).toEqual({ kind: 'unterminated' });
     expect(findUnquotedToken('f("unclosed', [';'])).toEqual({ kind: 'unterminated' });

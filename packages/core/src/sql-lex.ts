@@ -54,6 +54,21 @@ function isEscapeStringPrefix(text: string, quoteIndex: number): boolean {
 }
 
 /**
+ * Index of the first line-feed or carriage-return at or after `from`, or `-1`.
+ *
+ * Both, because PostgreSQL ends a `--` comment at either — see the note at the line-comment state.
+ * Landing on the `\r` of a CRLF pair is harmless: the scan resumes on the `\n`, which is ordinary
+ * whitespace at top level.
+ */
+function indexOfLineEnd(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\n' || ch === '\r') return i;
+  }
+  return -1;
+}
+
+/**
  * True if `ch` can appear inside a PostgreSQL identifier. `$` is included: it is legal in an
  * identifier everywhere except the first position, which is exactly why a `$` following one does not
  * open a dollar-quoted string.
@@ -62,7 +77,18 @@ function isEscapeStringPrefix(text: string, quoteIndex: number): boolean {
  * treated as opening one.
  */
 function isIdentifierChar(ch: string | undefined): boolean {
-  return ch !== undefined && /[A-Za-z0-9_$]/.test(ch);
+  if (ch === undefined) return false;
+  // Non-ASCII counts. PostgreSQL allows non-ASCII letters in an UNQUOTED identifier, and an
+  // ASCII-only test was a bypass: `SELECT 1 AS α$t$ ; $t$` produces the same "unterminated
+  // dollar-quoted string" error against the SECOND `$t$` as its ASCII twin (measured on 17), so `α`
+  // is an identifier character and the `;` is a real separator — but the scan saw `α` as a
+  // non-identifier, opened a `$t$…$t$` block, and swallowed the separator.
+  //
+  // Treating every byte >= 0x80 as an identifier character is the CONSERVATIVE side of the
+  // remaining ambiguity: it can only make the scan open FEWER dollar quotes and classify FEWER
+  // E-strings, i.e. stay at top level more often, which refuses valid SQL rather than hiding a
+  // separator. Getting the exact set right would mean encoding-aware character classification.
+  return /[A-Za-z0-9_$]/.test(ch) || (ch.codePointAt(0) ?? 0) >= 0x80;
 }
 
 export function findUnquotedToken(text: string, tokens: readonly string[]): LexResult {
@@ -139,9 +165,16 @@ export function findUnquotedToken(text: string, tokens: readonly string[]): LexR
       continue;
     }
 
-    // Line comment. Running to end-of-input is clean, not unterminated — see {@link LexResult}.
+    // Line comment. Ends at a CARRIAGE RETURN as well as a line feed: measured on 17,
+    // `SELECT 'first' -- comment\r; SELECT 'SECOND_RAN'` runs BOTH statements, so a bare CR
+    // terminates the comment and the `;` after it is a real separator. Searching only for `\n`
+    // treated the rest of the input as commented out and hid that separator — the same bypass
+    // shape as the dollar-tag case, one lexer state over. (CRLF was always fine; it contains a
+    // `\n`. It is the classic-Mac lone CR that was not.)
+    //
+    // Running to end-of-input is clean, not unterminated — see {@link LexResult}.
     if (ch === '-' && text[i + 1] === '-') {
-      const nl = text.indexOf('\n', i);
+      const nl = indexOfLineEnd(text, i);
       if (nl === -1) return { kind: 'clean' };
       i = nl + 1;
       continue;
