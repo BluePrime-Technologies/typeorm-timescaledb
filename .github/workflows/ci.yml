@@ -66,24 +66,24 @@ jobs:
         # `latest` still gets tested, in the scheduled early-warning job at the bottom of this file,
         # where an upstream change breaks a nightly instead of an unrelated PR.
         timescaledb: ['2.18.0-pg16', '2.29.1-pg17']
-      include:
-        # Version-axis legs. One node/typeorm cell each — the full cross is already covered above —
-        # pinned to the releases where the catalog actually MOVED, plus the second PG major.
-        # Every tag here was confirmed to resolve on Docker Hub before being added.
-        - node: 22
-          typeorm: '1.0.0'
-          # compression_settings.relid re-keys from the compressed twin to the user-facing chunk:
-          # the boundary that flips the recompression planner between its LEGACY and MODERN queries.
-          timescaledb: '2.19.0-pg16'
-        - node: 22
-          typeorm: '1.0.0'
-          # _timescaledb_catalog.chunk.dropped removed.
-          timescaledb: '2.26.0-pg17'
-        - node: 22
-          typeorm: '1.0.0'
-          # PostgreSQL 18. Previously unreachable, because `latest-pg17` pinned the PG axis to 17
-          # by accident while the README claimed no PG ceiling at all.
-          timescaledb: '2.29.1-pg18'
+        include:
+          # Version-axis legs. One node/typeorm cell each — the full cross is already covered above —
+          # pinned to the releases where the catalog actually MOVED, plus the second PG major.
+          # Every tag here was confirmed to resolve on Docker Hub before being added.
+          - node: 22
+            typeorm: '1.0.0'
+            # compression_settings.relid re-keys from the compressed twin to the user-facing chunk:
+            # the boundary that flips the recompression planner between its LEGACY and MODERN queries.
+            timescaledb: '2.19.0-pg16'
+          - node: 22
+            typeorm: '1.0.0'
+            # _timescaledb_catalog.chunk.dropped removed.
+            timescaledb: '2.26.0-pg17'
+          - node: 22
+            typeorm: '1.0.0'
+            # PostgreSQL 18. Previously unreachable, because `latest-pg17` pinned the PG axis to 17
+            # by accident while the README claimed no PG ceiling at all.
+            timescaledb: '2.29.1-pg18'
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
