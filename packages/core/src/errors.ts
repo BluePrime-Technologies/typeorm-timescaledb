@@ -5,6 +5,10 @@
 export const TimescaleErrorCode = {
   /** An identifier (table/column) failed allow-list / safety validation. */
   UNSAFE_IDENTIFIER: 'TSDB_UNSAFE_IDENTIFIER',
+  /** A caller-supplied SQL expression FRAGMENT carried a statement separator or comment opener
+   * at top level. Distinct from UNSAFE_IDENTIFIER: a fragment is composed SQL text, not a name,
+   * and reporting it as an identifier problem misdirects whoever reads the log. */
+  UNSAFE_FRAGMENT: 'TSDB_UNSAFE_FRAGMENT',
   /** A required timescaledb_toolkit function was used but the extension is absent. */
   TOOLKIT_MISSING: 'TSDB_TOOLKIT_MISSING',
   /** A hypertable-scoped operation was requested but the `timescaledb` extension is absent. */
