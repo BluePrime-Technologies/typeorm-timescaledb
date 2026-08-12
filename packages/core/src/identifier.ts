@@ -1,4 +1,5 @@
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
+import { findUnquotedToken } from './sql-lex.js';
 
 /** PostgreSQL identifiers are limited to 63 bytes (NAMEDATALEN - 1). */
 const MAX_IDENTIFIER_BYTES = 63;
@@ -112,4 +113,67 @@ export function quoteQualified(qualified: string, role = 'identifier'): string {
  */
 export function safeIdent(identifier: string, role = 'identifier'): string {
   return quoteIdent(assertSafeIdentifier(identifier, role), role);
+}
+
+/**
+ * Tokens that must not appear at TOP LEVEL in an expression fragment: a statement separator, and
+ * both comment openers. Order is not significant — the lexer tests every token at each position.
+ */
+const DANGEROUS_FRAGMENT_TOKENS = [';', '--', '/*'] as const;
+
+/**
+ * Defence-in-depth for the COMPOSED-FRAGMENT surface: ~25 public expression helpers take an
+ * already-built SQL fragment (`locf(expr)`, `candlestickAccessorExpr(agg)`, …) and wrap it verbatim.
+ *
+ * The contract is coherent — the intended producers (`candlestickAggExpr`, `statsAgg1DExpr`, …) all
+ * run their columns through {@link safeIdent}, and no internal caller feeds unvalidated text in. But
+ * it is the largest raw-string surface in a public library and, until now, the contract lived only in
+ * prose. This does not replace that contract; it refuses the shapes that could only be an injection
+ * or a mistake, so a caller who violates the contract gets an error here instead of a surprise in
+ * their database.
+ *
+ * Deliberately NOT a SQL parser. It rejects statement separators and comment introducers — the
+ * constructs that let a fragment stop being an expression — and nothing else, so every legitimate
+ * expression (function calls, casts, string literals, arithmetic) still passes.
+ *
+ * The compile-time version of this is a branded `SafeSqlFragment` returned by the agg builders and
+ * required by the accessors. That is a breaking change to ~25 signatures, so it belongs to 1.0, not
+ * to a minor.
+ */
+export function assertSafeFragment(fragment: string, role: string): string {
+  if (typeof fragment !== 'string' || fragment.length === 0) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `${role} must be a non-empty SQL expression fragment`,
+      { role },
+    );
+  }
+  // `;` ends a statement; the two comment openers each swallow the rest of the generated expression.
+  //
+  // Scanned with the shared lexer rather than tested against the raw text, because these three CAN
+  // appear in a legitimate expression — inside a literal. `string_agg(message, '--')` and
+  // `count(*) FILTER (WHERE tag <> 'a;b')` are valid SQL, and the first version of this guard
+  // rejected both while reporting a reason that was false. Only a top-level occurrence is dangerous.
+  const found = findUnquotedToken(fragment, DANGEROUS_FRAGMENT_TOKENS);
+  if (found.kind === 'found') {
+    throw new TimescaleError(
+      TimescaleErrorCode.UNSAFE_FRAGMENT,
+      `${role} contains ${JSON.stringify(found.token)} at offset ${found.index}, outside any ` +
+        `literal or comment, where it would ${found.token === ';' ? 'end the statement' : 'comment out the rest of the expression'}. ` +
+        `Build it from the aggregate helpers (e.g. candlestickAggExpr, statsAgg1DExpr) rather than ` +
+        `assembling SQL text by hand.`,
+      { role, value: fragment },
+    );
+  }
+  if (found.kind === 'unterminated') {
+    // An unterminated literal or block comment hides whatever this fragment is composed into, which
+    // is the same swallowing failure by a different route.
+    throw new TimescaleError(
+      TimescaleErrorCode.UNSAFE_FRAGMENT,
+      `${role} ends inside an unterminated string literal, quoted identifier, block comment or ` +
+        `dollar-quoted block, so anything composed after it would be swallowed.`,
+      { role, value: fragment },
+    );
+  }
+  return fragment;
 }

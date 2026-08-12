@@ -7,6 +7,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [0.7.0] - 2026-08-12
+
+Minor release: **a correctness and safety audit of everything 0.6.0 shipped.** No new
+feature surface — one new guard is exported, and the rest is defects found by auditing the
+migration engine, the CLI, the runtime reads and the version matrix, then fixed with a test
+each. Several of these made the engine report success while doing the wrong thing, which is
+the failure mode this release exists to remove.
+
+One behaviour change is **breaking for CI scripts**; see below.
+
+### Breaking
+
+- **`check` now exits `2` on drift, not `1`.** Exit `1` collided with "the command failed",
+  so a connection error and a schema difference were indistinguishable to a CI gate — a
+  broken pipeline read as drift, and a script that treated `1` as drift would "detect" drift
+  when the database was simply unreachable. Drift is now `2`, failure stays `1`, clean stays
+  `0`. Update any pipeline that tests for `1`.
+
+### Fixed
+
+Safety and correctness of the diff engine:
+
+- `diffSchemaState` was **silently blind to a changed time-dimension column** and returned an
+  empty plan — a clean bill of health for a database whose partitioning key had moved. It now
+  throws, because there is no safe automatic conversion.
+- An **undeclared `chunkInterval` reset a tuned interval to the 7-day default.** Absent now
+  means "leave it alone", which is what every other undeclared field already meant.
+- **`down()` of a lengthening retention alter destroyed data**, and the operation was
+  classified `online-safe`. Re-shortening a retention window drops chunks; reverting it
+  cannot be lossless. Lengthening is now `one-way`, an unprovable comparison is `one-way`,
+  and the `down()` emits a notice instead of a destructive statement. Interval comparison
+  moved to BigInt, which also fixes a precision loss on large intervals.
+- `removeRetentionPolicySQL.down()` **re-installed a data-dropping policy** on rollback.
+- A partially-declared `continuousAggregates` list **silenced every aggregate you forgot to
+  list**, reporting a clean diff for objects it had never looked at.
+- `push --apply` **claimed convergence for a change that only applies to future chunks**, and
+  an unknown-precision recompression plan with no chunks printed "already match".
+
+Reads that were wrong rather than absent:
+
+- `listJobs({ hypertable })` **returned `[]` for continuous-aggregate policies** on
+  TimescaleDB 2.18, where `jobs.hypertable_*` names the internal materialization hypertable
+  rather than the user-facing view.
+- `introspect()`'s continuous-aggregate query had **no fallback**, so one unavailable catalog
+  column failed the entire read; it now degrades to public views and flags the result.
+- `listChunks` **reported null ranges for every chunk of an integer-time hypertable**,
+  because it selected only the timestamp pair.
+- `recompress` **checked precision after an empty-chunk shortcut** and a bare `catch {}` hid
+  real failures; it now absorbs only "column/table does not exist".
+
+Injection and path handling:
+
+- Config discovery **walked to the filesystem root**, so a `timescaledb.config.json` in any
+  ancestor directory — a shared parent, `$HOME`, `/tmp`, `/` — chose which module the CLI
+  imported, and importing executes. The walk now stops at the project root.
+- A discovered config's **`outDir` was an unconstrained write path**; relative path values
+  now resolve against the config file and must stay inside its directory.
+- The single-statement guard on raw continuous-aggregate definitions was **bypassable**, and
+  a digit-leading dollar-quote tag was accepted where PostgreSQL would not read one.
+- The ~25 pass-through expression builders now validate their fragment (`assertSafeFragment`,
+  exported) instead of documenting "must already be safe" in prose only.
+
+Version compatibility, which was untested where it mattered most:
+
+- The CI matrix **floated on `latest`** and skipped the entire 2.19–2.28 band, where both
+  catalog boundaries this library depends on actually moved. Pinned to 2.18.0, 2.19.0,
+  2.26.0, 2.29.1 across PostgreSQL 16/17/18, with a separate scheduled job on `latest` as an
+  early warning. PostgreSQL support is now declared in `docs/compatibility.md`, with a
+  statement of what "tested" means.
+- New integration suite asserts that **every catalog column this library reads exists on the
+  running server**, per matrix leg, and fails the build if a `SELECT *` against a catalog
+  relation is reintroduced.
+
+CLI contract:
+
+- `pushCommand`'s error path **replaced the real failure with a second, unrelated error**.
+- `mix` reported a mutating run identically to a preview, and **wrote a migration file on a
+  preview run**.
+- A recompression rollback failure aborted the whole run and discarded its result.
+- `formatPlanPreview` rendered the caller-supplied safety class rather than
+  `classifyOperation`'s, so a preview could disagree with the engine.
+- Misplaced non-safety flags (`-o`, `-n`, `--output`) were silently ignored.
+- `loadDataSourceModule` awaited every export while hunting for a DataSource.
+
+### Changed
+
+- Source maps and declaration maps are no longer published. They referenced sources the
+  tarball deliberately does not ship, so every map pointed at nothing; the package is 153
+  files / 0.83 MB, down from 264 / 1.19 MB.
+- All GitHub Actions are pinned to commit SHAs, with a Dependabot config to advance them.
+
+### Known limitations
+
+Unchanged from 0.6.x and stated so they are not mistaken for fixed: continuous aggregates are
+not structurally diffed; space dimensions are not reconciled in place; a policy's
+`schedule_interval` is not reproduced by `pull` and is deliberately not reported per object,
+because introspection cannot distinguish a tuned cadence from the engine default it always
+fills in (see `PULL_BASE_DDL_CAVEAT`).
+
 ## [0.6.1] - 2026-07-27
 
 Documentation-only patch. **No source changes** — published solely so the npm package pages

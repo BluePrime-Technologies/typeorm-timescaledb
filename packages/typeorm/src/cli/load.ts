@@ -152,7 +152,19 @@ export async function loadDataSourceModule(modulePath: string): Promise<LoadedDa
   const candidates =
     mod.default !== undefined ? [mod.default, ...Object.values(mod)] : Object.values(mod);
   for (const candidate of candidates) {
-    const resolved = await candidate; // support Promise<DataSource> exports
+    // Only await something that is actually thenable, and swallow its rejection.
+    //
+    // This used to `await candidate` over every export in declaration order. A module with, say,
+    // `export const ready = somePromiseThatRejects` declared before the DataSource made EVERY CLI
+    // verb fail with that unrelated rejection — and any exported promise got awaited, and its
+    // rejection consumed, purely as a side effect of running a schema command.
+    const isThenable =
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      typeof (candidate as { then?: unknown }).then === 'function';
+    const resolved = isThenable
+      ? await Promise.resolve(candidate).catch(() => undefined)
+      : candidate;
     if (isDataSource(resolved)) {
       return { dataSource: resolved, ...(continuousAggregates && { continuousAggregates }) };
     }

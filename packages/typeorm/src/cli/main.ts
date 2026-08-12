@@ -67,7 +67,15 @@ async function main(argv: readonly string[]): Promise<void> {
         break;
       case 'check': {
         const drift = await checkCommand(dataSource, logger, caggs);
-        if (drift) process.exitCode = 1;
+        // 2, not 1. `push`/`pull`/`mix` already use 2 for "there is drift" precisely so that 1 can
+        // keep meaning "the command itself failed" — which is also what the top-level catch sets on
+        // ANY error. `check` is the verb documented as the CI drift gate, and it was the one verb
+        // where a script could not tell "your schema drifted" from "the DataSource module failed to
+        // import". Those need different responses, so they need different codes.
+        //
+        // BREAKING for anyone matching `check`'s exit 1: it is now 2. Non-zero either way, so a
+        // plain `if ! check` gate is unaffected.
+        if (drift) process.exitCode = 2;
         break;
       }
       case 'push': {
@@ -88,6 +96,12 @@ async function main(argv: readonly string[]): Promise<void> {
             outDir: args.outDir,
             ...(args.name !== undefined && { name: args.name }),
             output: args.output,
+            // Write the reproduced migration only when this is not a preview. A bare `mix` is a
+            // read-only look at both directions, and it used to drop a timestamped file into
+            // `outDir` every time — so a CI drift check accumulated near-identical migrations in
+            // the working tree. `--apply` is the run that is changing things anyway, and the one
+            // where having the artifact on disk is worth something.
+            write: args.apply,
           },
           {
             apply: args.apply,

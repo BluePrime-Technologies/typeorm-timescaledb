@@ -59,3 +59,37 @@ describe('getTopN input validation (fail-fast, no DB)', () => {
     );
   });
 });
+
+// A raw U+0000 byte in a source file makes git classify that file as BINARY, and a binary file gets
+// no diff — which is how three of them sat in `runtime/introspect.ts` across every review this
+// package has had. The file is a `\0`-separated composite Map key, written as literal bytes rather
+// than the `\0` escape; the escape produces the identical string, so nothing about the behaviour
+// depended on the literal form, only the reviewability did. It also contradicted the repo's own
+// `*.ts text` .gitattributes entry.
+describe('sources contain no raw control bytes that would make git treat them as binary', () => {
+  it('no tracked TypeScript source contains a literal NUL', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { execFileSync } = await import('node:child_process');
+    const { join } = await import('node:path');
+
+    const repoRoot = join(import.meta.dirname, '../../..');
+    const tracked = execFileSync('git', ['ls-files', '*.ts'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+      .split('\n')
+      .filter((line) => line.length > 0);
+
+    // A file list that came back empty would make this pass without checking anything.
+    expect(tracked.length).toBeGreaterThan(50);
+
+    const offenders = tracked.filter((relative) =>
+      readFileSync(join(repoRoot, relative)).includes(0),
+    );
+    expect(
+      offenders,
+      `these sources hold a raw NUL byte, so git treats them as binary and shows no diff for them: ` +
+        `${offenders.join(', ')}. Write the escape (\\0) instead — it is the same string value.`,
+    ).toEqual([]);
+  });
+});

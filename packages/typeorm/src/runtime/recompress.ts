@@ -263,8 +263,20 @@ export async function planRecompression(
       try {
         const legacy: StaleRow[] = await dataSource.query(STALE_CHUNKS_LEGACY_SQL, params);
         if (resolved(legacy)) rows = legacy;
-      } catch {
-        // Legacy columns absent (2.29+). Keep the modern result and let the guard below decide.
+      } catch (legacyError) {
+        // Swallow ONLY "the legacy columns are not there", which is the expected 2.29+ outcome.
+        //
+        // A bare catch here also hid genuine 2.18 failures — a revoked grant on
+        // `_timescaledb_catalog`, a lock timeout, a dead connection — and on 2.18 the legacy branch
+        // is the one that actually produces the answer. The plan then degraded to "every compressed
+        // chunk is a candidate" while looking like a normal version fallback, so the operator was
+        // told to rewrite the whole hypertable and never told why.
+        //
+        // 42703 = undefined_column, 42P01 = undefined_table: the two SQLSTATEs a removed column or
+        // relation produces. Anything else is a real problem and is re-thrown to the outer handler,
+        // which degrades honestly WITH a reason attached.
+        const code = (legacyError as { code?: unknown }).code;
+        if (code !== '42703' && code !== '42P01') throw legacyError;
       }
     }
   } catch (error) {
@@ -406,7 +418,18 @@ export async function applyRecompression(
       processed.push(chunk);
     } catch (error) {
       // Roll back so the chunk returns to its pre-run state rather than being stranded in rowstore.
-      if (runner.isTransactionActive) await runner.rollbackTransaction();
+      // The rollback is itself guarded. A dead connection is exactly when a chunk fails AND exactly
+      // when rollbackTransaction() rejects, so an unguarded call turned "one chunk failed, carry on"
+      // into "the whole run aborts and every result so far is discarded" — the opposite of the
+      // per-chunk contract this loop exists to provide.
+      if (runner.isTransactionActive) {
+        try {
+          await runner.rollbackTransaction();
+        } catch {
+          // Nothing useful to do: the chunk is already being recorded as failed below, and the
+          // connection is gone. Losing the rest of the run would be strictly worse.
+        }
+      }
       failed.push({ chunk, error: error instanceof Error ? error.message : String(error) });
     } finally {
       await runner.release();
@@ -420,6 +443,20 @@ export async function applyRecompression(
 export function formatRecompressionPlan(plan: RecompressionPlan): string {
   if (plan.compressedChunkCount === 0) {
     return `${plan.table}: no compressed chunks — nothing to recompress.`;
+  }
+  // Precision is checked BEFORE the empty-chunk shortcut, not after. Reversed, a degraded plan
+  // ({ chunks: [], precision: 'unknown', compressedChunkCount: 4 }) printed the fully-clean
+  // "already match the declared columnstore settings" — the one output this module's contract says
+  // must never happen, because an unrecognised catalog shape must NEVER be read as nothing to do.
+  // The ⚠ warning was only reachable from the chunks.length > 0 branch, so exactly the case where
+  // we know least produced the most confident message.
+  if (plan.precision === 'unknown' && plan.chunks.length === 0) {
+    return (
+      `${plan.table}: could NOT determine whether any of the ${String(plan.compressedChunkCount)} ` +
+      `compressed chunk(s) match the declared columnstore settings.\n` +
+      `   Reason: ${plan.imprecisionReason ?? 'unknown'}\n` +
+      `   This is NOT a clean result — treat the stored layout as unverified.`
+    );
   }
   if (plan.chunks.length === 0) {
     return `${plan.table}: all ${String(plan.compressedChunkCount)} compressed chunk(s) already match the declared columnstore settings.`;

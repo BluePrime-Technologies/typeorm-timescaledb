@@ -232,6 +232,56 @@ describe.skipIf(!IMAGE)('M4.0 introspect() — live-DB → SchemaStateIR round-t
     expect(policiesEqual(c.refresh, intended.metricHourly.refresh)).toBe(true);
   });
 
+  it('the degraded CAGG read produces the SAME aggregates as the enriched one', async () => {
+    // `introspect()` normally joins `_timescaledb_catalog.continuous_agg` and
+    // `_timescaledb_catalog.hypertable`. Those are internal tables, and 2.29.0 already replaced
+    // schema_name/table_name with `relid regclass` on a sibling catalog table. If that happens here
+    // the enriched query throws and — because introspect() is the CURRENT side of the diff — pull,
+    // push, check and generate all fail at once. So there is now a public-view-only fallback.
+    //
+    // The fallback claims to be EQUIVALENT, not lossy, and this test is what makes that a fact
+    // rather than a hope: it forces the enriched query to fail and compares the two results on a
+    // real server holding a flat aggregate, a hierarchical cagg-on-cagg, and refresh policies.
+    const enriched = await introspect(ds);
+
+    // Force the fallback without touching production code: a QueryRunner proxy that fails exactly
+    // the query which reads the internal catalog, exactly as a renamed column would.
+    const degradedDs = Object.create(ds) as DataSource & {
+      createQueryRunner: () => ReturnType<DataSource['createQueryRunner']>;
+    };
+    degradedDs.createQueryRunner = () => {
+      const runner = DataSource.prototype.createQueryRunner.call(ds);
+      const realQuery = runner.query.bind(runner);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (runner as any).query = async (sql: string, params?: unknown[]): Promise<unknown> => {
+        if (sql.includes('_timescaledb_catalog.continuous_agg')) {
+          throw new Error('column "schema_name" does not exist');
+        }
+        return realQuery(sql, params);
+      };
+      return runner;
+    };
+
+    const degraded = await introspect(degradedDs);
+
+    // Same aggregates, same identity, same source, same hierarchy flag, same refresh policy.
+    const norm = (ir: Awaited<ReturnType<typeof introspect>>) =>
+      [...ir.continuousAggregates]
+        .sort((a, b) => a.viewName.localeCompare(b.viewName))
+        .map((c) => ({
+          viewName: c.viewName,
+          source: c.source,
+          hierarchical: c.hierarchical,
+          materializedOnly: c.materializedOnly,
+          refresh: c.refresh ?? null,
+        }));
+
+    expect(norm(degraded)).toEqual(norm(enriched));
+    // And the fixture really does exercise the interesting cases, so equality is not vacuous.
+    expect(norm(enriched).some((c) => c.hierarchical)).toBe(true);
+    expect(norm(enriched).some((c) => c.refresh !== null)).toBe(true);
+  });
+
   it('recovers a HIERARCHICAL cagg-on-cagg (parent view as source)', () => {
     const c = cagg(ir, 'public.metric_daily');
     expect(c.hierarchical).toBe(intended.metricDaily.hierarchical);

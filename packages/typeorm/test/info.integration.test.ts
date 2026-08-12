@@ -158,6 +158,28 @@ describe.skipIf(!IMAGE)('M2.6 informational views + jobs', () => {
     expect(metricJobs[0]?.jobId).toBeGreaterThan(0);
   });
 
+  it("listJobs finds a CONTINUOUS AGGREGATE's refresh job by its user-facing view name", async () => {
+    // The bug this pins: `jobs.hypertable_name` is the user-facing view on 2.28+ but the INTERNAL
+    // materialization hypertable on 2.18. Filtering on the user name alone returned an EMPTY array
+    // for a CAGG on 2.18 and the refresh job on 2.29 — no error, no warning, a different answer per
+    // server. A user asking "does my aggregate have a refresh policy?" got "no" on 2.18 and could
+    // add a duplicate or conclude it was unmanaged. Passing the internal name instead is not an
+    // option: `_timescaledb_internal._materialized_hypertable_N` is not a name this API exposes.
+    //
+    // Nothing covered this before — the only filter test used a plain hypertable, which works on
+    // every version, so the whole suite stayed green while the CAGG case was wrong.
+    const ts = createTimescale(ds);
+    const caggJobs = await ts.listJobs({ hypertable: 'metric_daily' });
+    expect(caggJobs.map((j) => j.procName)).toContain('policy_refresh_continuous_aggregate');
+
+    // The filter must still be a filter: an unrelated name returns nothing.
+    expect(await ts.listJobs({ hypertable: 'no_such_relation' })).toEqual([]);
+
+    // And it must not have become a pass-through that returns every job regardless.
+    const all = await ts.listJobs();
+    expect(caggJobs.length).toBeLessThan(all.length);
+  });
+
   it('getJobStats returns a typed row (when present) and null for an unknown job', async () => {
     const ts = createTimescale(ds);
     const retention = (await ts.listJobs()).find((j) => j.procName === 'policy_retention');

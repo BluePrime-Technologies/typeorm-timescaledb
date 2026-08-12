@@ -216,8 +216,16 @@ export async function pushCommand(
   try {
     result = await pushSchema(dataSource, options);
   } catch (err) {
-    const { plan } = await pushSchema(dataSource, { ...options, apply: false });
-    if (!isEmptyPlan(plan)) logger.log(formatPlanWithLint(plan));
+    // Best-effort diagnostic, and it must stay best-effort. This recovery call was unguarded, so
+    // whenever the original failure had also broken the connection — the common case, since it is
+    // usually a database error — the re-introspect threw and THAT error propagated instead of the
+    // real one. The user was shown a second, unrelated failure and the actual cause was lost.
+    try {
+      const { plan } = await pushSchema(dataSource, { ...options, apply: false });
+      if (!isEmptyPlan(plan)) logger.log(formatPlanWithLint(plan));
+    } catch {
+      // Deliberately swallowed: the original error is the one worth reporting.
+    }
     throw err;
   }
   const { plan, applied, statements } = result;
@@ -268,6 +276,32 @@ export async function pushCommand(
     return 'applied-with-drift';
   }
 
+  // A `needs-recompress` step changes the CATALOG only. Existing compressed chunks keep the old
+  // segmentby/orderby layout until they are rewritten, and the catalog reports the new setting
+  // either way — so a later `check` looks clean while the stored data does not match.
+  //
+  // Without this branch `push --apply` printed the linter's own TSDB003 warning saying exactly that,
+  // and then asserted on the very next line that "the database now matches your entities", exiting
+  // 0 for CI. Two contradictory claims in one run, and the confident one was wrong.
+  const needsRecompress = plan.steps.filter((s) => s.safety === 'needs-recompress');
+  if (needsRecompress.length > 0) {
+    const tables = [
+      ...new Set(
+        needsRecompress.map((s) =>
+          'table' in s.operation ? String(s.operation.table) : 'unknown table',
+        ),
+      ),
+    ];
+    logger.log(
+      `\nApplied ${statements.length} statement(s). The CATALOG now matches your entities, but ` +
+        `${needsRecompress.length} change(s) do not touch data already written: existing compressed ` +
+        `chunks on ${tables.join(', ')} still carry the previous columnstore layout.\n` +
+        `Rewrite them with planRecompression()/applyRecompression() — a later drift check will look ` +
+        `clean before you do, because the catalog already reports the new setting.`,
+    );
+    return 'applied-with-drift';
+  }
+
   logger.log(
     `\nApplied ${statements.length} statement(s) — the database now matches your entities.`,
   );
@@ -296,6 +330,13 @@ export function mixOutcome(pulled: PullOutcome, pushed: PushOutcome): MixOutcome
   }
 
   if (pushed === 'applied') return 'applied';
+
+  // A push that RAN statements and still left unconvergeable drift used to collapse to plain
+  // 'attention' — the identical value a preview-only run produces — so the "the push was applied,
+  // but…" warning never printed and the report hid that the database had been changed. The exit
+  // code was 2 either way, so the gate was right and only the report was wrong; that is still worth
+  // fixing, because the operator reads the report to decide what to do next.
+  if (pushed === 'applied-with-drift') return 'applied-with-attention';
 
   // `complete` means the pull SUCCEEDED in reproducing what the database has — it is a good outcome,
   // not a problem. Requiring `nothing-to-pull` for `clean` (as this once did) meant only a database
@@ -327,7 +368,14 @@ export async function mixCommand(
   pushOptions: PushOptions = {},
 ): Promise<MixOutcome> {
   logger.log('── pull: what the database has that your code does not ──');
-  const pulled = await pullCommand(dataSource, logger, fileOptions);
+  // Only write the migration when the caller explicitly asked for the artifact. `mix` is
+  // preview-by-default for the DATABASE, but it used to write a file on EVERY run — including a
+  // read-only CI drift check — so repeated runs accumulated near-identical migrations in the working
+  // tree. Previewing should not leave litter behind.
+  const pulled = await pullCommand(dataSource, logger, {
+    ...fileOptions,
+    write: fileOptions.write ?? false,
+  });
 
   if (pulled === 'partial') {
     // Said BEFORE the push plan, not after. Converging toward code that does not yet describe the
@@ -376,6 +424,15 @@ export interface PullFileOptions {
   readonly output?: OutputFormat;
   /** Override the timestamp (for reproducible output / tests). */
   readonly timestamp?: number;
+  /**
+   * Write the migration file. Default `true`.
+   *
+   * `mix` passes `false` unless the artifact was asked for. `mix` is preview-by-default for the
+   * DATABASE, but every invocation — including a read-only CI drift check — used to drop a
+   * timestamped file into `outDir`, so repeated CI runs accumulated near-identical migrations in the
+   * working tree. Previewing should not leave litter behind.
+   */
+  readonly write?: boolean;
 }
 
 /**
@@ -415,10 +472,16 @@ export async function pullCommand(
   const content =
     output === 'sql' ? renderTimescaleMigrationSql(migration) : renderTimescaleMigration(migration);
   const path = join(options.outDir, `${migration.timestamp}-${base}.${output}`);
-  writer.mkdirp(options.outDir);
-  writer.write(path, content);
-
-  logger.log(`Reproduced migration: ${path}`);
+  if (options.write ?? true) {
+    writer.mkdirp(options.outDir);
+    writer.write(path, content);
+    logger.log(`Reproduced migration: ${path}`);
+  } else {
+    logger.log(
+      `Reproduced ${migration.up.length} statement(s) — no file written (preview). ` +
+        `Run \`pull\` to write the migration.`,
+    );
+  }
   logger.log(formatPullCoverage(coverage));
 
   if (!coverage.complete) {

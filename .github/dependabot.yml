@@ -1,0 +1,36 @@
+# Every action in .github/workflows is pinned to a commit SHA, which stops a moved tag from
+# silently changing what CI runs — this repository has had a supply-chain compromise land in
+# build configuration before, so that pin is deliberate.
+#
+# A SHA pin does not float, though: without something to advance it, "pinned" becomes "frozen on
+# a version with a known bug and nobody watching". That is what this file is for. It is the other
+# half of pinning, not an optional extra — the pins were previously unmanaged, and one of them sat
+# on a SHA whose own version comment was six minor versions stale.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR advancing every action beats five that each need their own CI run and review.
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: 'chore(ci)'
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # Every production dependency of the published packages is deliberately minimal
+    # (`@blueprime/timescaledb-core` and `zod`); the rest of the tree is test and build tooling.
+    # Grouping the dev tree keeps that noise to one reviewable PR while still leaving a
+    # production-dependency bump on its own, where it belongs.
+    groups:
+      dev-tooling:
+        dependency-type: development
+        patterns: ['*']
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'

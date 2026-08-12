@@ -1,4 +1,4 @@
-import { safeIdent } from '../identifier.js';
+import { assertSafeFragment, safeIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
 import { numericLiteral } from './numeric.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
@@ -86,6 +86,7 @@ export function approxCountDistinctAggExpr(column: string): string {
  * `aggExpr` must already be safe.
  */
 export function distinctCountExpr(aggExpr: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `distinct_count(${aggExpr})`;
 }
 
@@ -572,11 +573,13 @@ export function stateAggExpr(timeColumn: string, valueColumn: string): string {
  * `aggExpr` must already be safe (built via {@link stateAggExpr}).
  */
 export function stateIntoValuesExpr(aggExpr: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `into_values(${aggExpr})`;
 }
 
 /** `state_timeline(<agg>)` — table function returning `(state, start_time, end_time)`. */
 export function stateTimelineExpr(aggExpr: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `state_timeline(${aggExpr})`;
 }
 
@@ -585,6 +588,7 @@ export function stateTimelineExpr(aggExpr: string): string {
  * for one state. `stateToken` must be a positional parameter placeholder (`$N`).
  */
 export function statePeriodsExpr(aggExpr: string, stateToken: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `state_periods(${aggExpr}, ${assertParamPlaceholder(stateToken, 'state')})`;
 }
 
@@ -593,6 +597,7 @@ export function statePeriodsExpr(aggExpr: string, stateToken: string): string {
  * must be a positional parameter placeholder (`$N`). `aggExpr` must already be safe.
  */
 export function stateAtExpr(aggExpr: string, pointToken: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `state_at(${aggExpr}, ${assertParamPlaceholder(pointToken, 'point')})`;
 }
 
@@ -637,11 +642,13 @@ export function mcvAggExpr(count: number, valueColumn: string): string {
  * must already be safe (built via {@link mcvAggExpr}).
  */
 export function mcvIntoValuesExpr(aggExpr: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `into_values(${aggExpr})`;
 }
 
 /** `topn(<agg>, <n>)` — set-returning: the top `n` values (frequency-descending). */
 export function mcvTopNExpr(aggExpr: string, n: number): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `topn(${aggExpr}, ${positiveIntLiteral(n, 'topn n')})`;
 }
 
@@ -650,6 +657,7 @@ export function mcvTopNExpr(aggExpr: string, n: number): string {
  * `valueToken` must be a positional parameter placeholder (`$N`).
  */
 export function mcvMaxFrequencyExpr(aggExpr: string, valueToken: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `max_frequency(${aggExpr}, ${assertParamPlaceholder(valueToken, 'value')})`;
 }
 
@@ -658,6 +666,7 @@ export function mcvMaxFrequencyExpr(aggExpr: string, valueToken: string): string
  * `valueToken` must be a positional parameter placeholder (`$N`).
  */
 export function mcvMinFrequencyExpr(aggExpr: string, valueToken: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `min_frequency(${aggExpr}, ${assertParamPlaceholder(valueToken, 'value')})`;
 }
 
@@ -727,16 +736,19 @@ export function heartbeatAccessorExpr(accessor: HeartbeatAccessor, aggExpr: stri
 
 /** `live_at(<agg>, <point>)` — boolean: was the system live at `point`. `pointToken` is a bind token. */
 export function heartbeatLiveAtExpr(aggExpr: string, pointToken: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `live_at(${aggExpr}, ${assertBindToken(pointToken, 'point')})`;
 }
 
 /** `live_ranges(<agg>)` — table function returning the live `(start, end)` intervals. */
 export function heartbeatLiveRangesExpr(aggExpr: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `live_ranges(${aggExpr})`;
 }
 
 /** `dead_ranges(<agg>)` — table function returning the dead `(start, end)` intervals. */
 export function heartbeatDeadRangesExpr(aggExpr: string): string {
+  assertSafeFragment(aggExpr, 'aggExpr');
   return `dead_ranges(${aggExpr})`;
 }
 

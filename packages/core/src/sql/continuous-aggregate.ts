@@ -5,6 +5,7 @@ import { assertParsableInterval } from '../normalize.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 import { timeBucketExpr } from './hyperfunctions.js';
 import { parseTable, nonDestructiveNotice, type MigrationStatement } from './hypertable.js';
+import { findUnquotedToken } from '../sql-lex.js';
 
 /**
  * Pure SQL builders for TimescaleDB **continuous aggregates** (CAGGs).
@@ -416,55 +417,18 @@ export function normalizeCaggDefinitionBody(definition: string): string {
  * land inside it. A line comment running to end-of-input is fine, because the clause is appended
  * after a newline.
  */
+const SEPARATOR_ONLY = [';'] as const;
+
 export function classifyDefinitionBody(body: string): DefinitionVerdict {
   if (body.length === 0) return 'empty';
-  let i = 0;
-  while (i < body.length) {
-    const ch = body[i];
-    if (ch === "'") {
-      i++;
-      let closed = false;
-      while (i < body.length) {
-        if (body[i] === "'") {
-          if (body[i + 1] === "'") {
-            i += 2; // escaped quote inside the literal
-            continue;
-          }
-          i++;
-          closed = true;
-          break;
-        }
-        i++;
-      }
-      // An unterminated string literal would swallow the appended clause just like a comment would.
-      if (!closed) return 'unterminated';
-      continue;
-    }
-    if (ch === '-' && body[i + 1] === '-') {
-      const nl = body.indexOf('\n', i);
-      if (nl === -1) return 'usable'; // comment to end-of-input; the \n we append clears it
-      i = nl + 1;
-      continue;
-    }
-    if (ch === '/' && body[i + 1] === '*') {
-      const end = body.indexOf('*/', i + 2);
-      if (end === -1) return 'unterminated';
-      i = end + 2;
-      continue;
-    }
-    if (ch === '$') {
-      const tag = /^\$[A-Za-z_0-9]*\$/.exec(body.slice(i))?.[0];
-      if (tag !== undefined) {
-        const end = body.indexOf(tag, i + tag.length);
-        if (end === -1) return 'unterminated';
-        i = end + tag.length;
-        continue;
-      }
-    }
-    if (ch === ';') return 'multi-statement';
-    i++;
-  }
-  return 'usable';
+  // The walk itself lives in `sql-lex.ts`, shared with `assertSafeFragment`. It used to live here,
+  // and a second, naive copy appeared in that other guard — see that module's header.
+  //
+  // Comment openers are NOT passed as tokens: a view body may legally contain comments, so they are
+  // regions to skip. Only a top-level `;` makes this a second statement.
+  const found = findUnquotedToken(body, SEPARATOR_ONLY);
+  if (found.kind === 'unterminated') return 'unterminated';
+  return found.kind === 'found' ? 'multi-statement' : 'usable';
 }
 
 export function createContinuousAggregateRawSQL(

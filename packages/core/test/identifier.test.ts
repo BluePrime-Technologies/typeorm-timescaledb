@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  assertSafeIdentifier,
-  quoteIdent,
-  quoteQualified,
   TimescaleError,
   TimescaleErrorCode,
+  assertSafeFragment,
+  assertSafeIdentifier,
+  locfExpr,
+  quoteIdent,
+  quoteQualified,
 } from '../src/index.js';
 
 describe('assertSafeIdentifier', () => {
@@ -72,5 +74,37 @@ describe('quoteQualified', () => {
     // and is rejected outright — mirroring parseTable's cap.
     expect(() => quoteQualified('a.b.c')).toThrowError(/schema\.name/);
     expect(() => quoteQualified('a.b.c')).toThrowError(TimescaleError);
+  });
+});
+
+describe('assertSafeFragment — the composed-fragment surface has a runtime floor', () => {
+  // ~25 public helpers wrap an already-built SQL fragment verbatim. No internal caller violates the
+  // contract, but it is the largest raw-string surface in the library and until now the contract
+  // lived only in prose. This is not a SQL parser: it refuses the constructs that let a fragment
+  // stop being an expression, and nothing else.
+  it.each([';', '--', '/*'])('refuses a fragment containing %s', (bad) => {
+    expect(() => assertSafeFragment(`avg("v") ${bad} rest`, 'aggregateExpr')).toThrow(
+      TimescaleError,
+    );
+  });
+
+  it('refuses an empty fragment', () => {
+    expect(() => assertSafeFragment('', 'aggregateExpr')).toThrow(TimescaleError);
+  });
+
+  it.each([
+    'avg("value")',
+    'sum("v")::numeric',
+    'count(*) + 1',
+    'first("v", "ts")',
+    'avg("v" * 2.5)',
+    'string_agg("v", \', \')',
+  ])('accepts the legitimate expression %s', (good) => {
+    expect(assertSafeFragment(good, 'aggregateExpr')).toBe(good);
+  });
+
+  it('is applied by the accessor helpers, not just available to callers', () => {
+    expect(() => locfExpr('x); DROP TABLE t; --')).toThrow(TimescaleError);
+    expect(locfExpr('avg("value")')).toBe('locf(avg("value"))');
   });
 });

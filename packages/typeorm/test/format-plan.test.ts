@@ -57,3 +57,23 @@ describe('formatPlanPreview', () => {
     }
   });
 });
+
+describe("formatPlanPreview — the rendered safety class is the engine's, not the caller's", () => {
+  it("ignores a hand-built plan's claimed safety and shows what classifyOperation says", () => {
+    // Every plan the CLI builds today carries an authoritative class, so this was correct in
+    // practice — but it was the one place a hand-built Plan could show an operator a safety class
+    // the engine would not agree with. The apply gate was always authoritative; now the display is
+    // too, so they cannot disagree.
+    const operation = {
+      kind: 'alterRetentionPolicy',
+      table: 'public.m',
+      from: '30 days',
+      to: '365 days',
+    } as const;
+    const lie = formatPlanPreview({
+      steps: [{ operation, safety: 'online-safe', reason: 'not true' }],
+    } as unknown as Parameters<typeof formatPlanPreview>[0]);
+    expect(lie).toContain(classifyOperation(operation).safety);
+    expect(lie).not.toContain('[online-safe]');
+  });
+});

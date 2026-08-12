@@ -86,10 +86,21 @@ function objectOf(operation: Operation): string | undefined {
  * and `metric` for one table — matching raw text made TSDB009 miss a rename whenever the two steps
  * happened to spell it differently, which is the quietest possible way for a lint rule to fail.
  */
+/**
+ * Schema-qualify a bare object name so two spellings of the same table compare equal.
+ *
+ * Module-level rather than a closure inside {@link sameObject} because the rename-resolution map in
+ * TSDB010 keys on it: a second copy of this rule would let map lookups and `sameObject` disagree
+ * about whether `t` and `public.t` are the same table, which is the drift this file has been bitten
+ * by elsewhere.
+ */
+function normalizeObject(name: string): string {
+  return name.includes('.') ? name : `public.${name}`;
+}
+
 function sameObject(a: string | undefined, b: string | undefined): boolean {
   if (a === undefined || b === undefined) return false;
-  const q = (n: string): string => (n.includes('.') ? n : `public.${n}`);
-  return q(a) === q(b);
+  return normalizeObject(a) === normalizeObject(b);
 }
 
 function finding(
@@ -202,7 +213,10 @@ export const ANALYZERS: readonly Analyzer[] = [
               operation,
               index,
               `Nothing is deleted by this step, and it is reversible — but from now on ${operation.table} grows without bound. On a high-ingest hypertable that becomes a disk-space incident rather than a schema one.`,
-              'Confirm this is intended, and that disk headroom is monitored.',
+              'Confirm this is intended, and that disk headroom is monitored. Note the REVERT too: ' +
+                'down() re-adds the policy at its prior threshold, so the next scheduler run drops ' +
+                'every chunk accumulated while it was gone — asynchronously, after the migration ' +
+                'has already reported success.',
             ),
           ]
         : null,
@@ -273,10 +287,54 @@ export const ANALYZERS: readonly Analyzer[] = [
     check: (operation, index, plan) => {
       const target = objectOf(operation);
       if (target === undefined) return null;
+      // Follow renames, so a rename and its follow-up steps count as ONE object.
+      //
+      // `objectOf` returns `from` for a renameHypertable (deliberately — the step acts on the name
+      // that exists when it runs), while every later step targets `to`. So the plan shape where this
+      // rule is most useful — "you renamed this table AND changed three things on it" — was the one
+      // shape it never fired for: sameObject('public.old','public.new') is false.
+      //
+      // Renames are resolved to their final name before counting; both spellings of the same
+      // physical table then land in the same bucket.
+      // Built once per analysis, not scanned per hop. The first version called `plan.steps.find`
+      // inside the hop loop, and `finalName` is itself called from `sameResolvedObject`, which runs
+      // under both a `findIndex` and a `filter`, with the whole analyzer running once per step — so
+      // the cost was superlinear in the step count several times over. A bulk refactor that renames
+      // a few thousand tables in one plan is a realistic input, and it made linting the dominant
+      // cost of `generate`.
+      //
+      // Keyed by the NORMALIZED name so lookups agree with `sameObject`, which is what the old
+      // predicate used; keying on the raw string would silently stop following `public.t` -> `t`.
+      const renameTargets = new Map<string, string>();
+      for (const step of plan.steps) {
+        if (step.operation.kind === 'renameHypertable') {
+          const { from, to } = step.operation as { from: string; to: string };
+          renameTargets.set(normalizeObject(from), to);
+        }
+      }
+      const resolvedNames = new Map<string, string>();
+      const finalName = (name: string): string => {
+        const memo = resolvedNames.get(name);
+        if (memo !== undefined) return memo;
+        let current = name;
+        // Still bounded by the step count: a rename chain cannot be longer than the plan, and the
+        // bound also stops a cyclic chain (`a`->`b`, `b`->`a`) from spinning forever.
+        for (let hop = 0; hop < plan.steps.length; hop++) {
+          const next = renameTargets.get(normalizeObject(current));
+          if (next === undefined) break;
+          current = next;
+        }
+        resolvedNames.set(name, current);
+        return current;
+      };
+      const resolved = finalName(target);
+      const sameResolvedObject = (candidate: string | undefined): boolean =>
+        candidate !== undefined && sameObject(finalName(candidate), resolved);
+
       // Report once, on the FIRST step for that object, rather than N times.
-      const firstIndex = plan.steps.findIndex((s) => sameObject(objectOf(s.operation), target));
+      const firstIndex = plan.steps.findIndex((s) => sameResolvedObject(objectOf(s.operation)));
       if (firstIndex !== index) return null;
-      const count = plan.steps.filter((s) => sameObject(objectOf(s.operation), target)).length;
+      const count = plan.steps.filter((s) => sameResolvedObject(objectOf(s.operation))).length;
       return count < 2
         ? null
         : [

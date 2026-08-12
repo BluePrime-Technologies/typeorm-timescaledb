@@ -323,3 +323,32 @@ export function caggComparable(c: ContinuousAggregateState): {
     source: c.source,
   };
 }
+
+/**
+ * `true` when a retention/compression threshold is being SHORTENED — the direction with a real data
+ * effect, because the next scheduler tick then drops chunks that were previously retained.
+ *
+ * Returns `undefined` when the comparison cannot be PROVEN: a `raw:` quarantine or an integer-time
+ * threshold has no duration to compare. Callers must treat `undefined` as "not proven safe", never
+ * as "safe" — an unprovable comparison guarding a data-loss decision has to fail closed.
+ *
+ * Lives here rather than in safety.ts because both the classifier and the SQL builder need it: the
+ * builder has to know whether `down()` would shorten before deciding what `down()` may emit.
+ */
+export function isShortening(from: string, to: string): boolean | undefined {
+  const a = canonicalizeInterval(from);
+  const b = canonicalizeInterval(to);
+  if (a.startsWith('raw:') || b.startsWith('raw:')) return undefined;
+  // BigInt, not Number. `canonicalizeInterval` computes the microsecond total in BigInt; narrowing
+  // it here lost precision past Number.MAX_SAFE_INTEGER (~285 years in µs), where two distinct
+  // thresholds could compare EQUAL and a shortening would be classified reversible. Unreachable for
+  // realistic retention windows, but the producer already uses BigInt so matching it costs nothing.
+  const us = (v: string): bigint | undefined => {
+    const digits = /^us:(-?\d+)$/.exec(v)?.[1];
+    return digits === undefined ? undefined : BigInt(digits);
+  };
+  const x = us(a);
+  const y = us(b);
+  if (x === undefined || y === undefined) return undefined;
+  return y < x;
+}

@@ -268,6 +268,75 @@ describe('diffSchemaState — additive (create-only) plan', () => {
 // Guard + characterization tests for the unrepresentable / deferred cases the reviews surfaced. The
 // diff must THROW (not silently under-converge) on desired state the string-only builders can't emit,
 // and must clearly report the one known additive gap (compression policy on an already-columnstore table).
+describe('diffSchemaState — a changed time dimension is refused, never silently ignored', () => {
+  // Regression: only `chunkInterval` was compared on an existing hypertable, so moving
+  // `@TimeColumn()` to another column produced an EMPTY plan with no advisory. `check` exited
+  // clean and CI went green while the table was still partitioned on the old column — chunk
+  // exclusion, the implied columnstore orderby and every CAGG bucket then reasoned about a column
+  // the database does not partition on. A drift gate returning "no drift" for real drift is the
+  // one outcome it must never produce.
+  const onTime = (column: string): HypertableState => ({
+    table: 'public.metric',
+    dimensions: [{ column, kind: 'time', chunkInterval: '7 days' }],
+  });
+
+  it('throws when the declared time column differs from the database', () => {
+    expect(() => diffSchemaState(ir(onTime('ts')), ir(onTime('created_at')))).toThrow(
+      TimescaleError,
+    );
+  });
+
+  it('names both columns and the remedy, so the error is actionable', () => {
+    try {
+      diffSchemaState(ir(onTime('ts')), ir(onTime('created_at')));
+      throw new Error('expected diffSchemaState to throw');
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toMatch(/"ts"/);
+      expect(message).toMatch(/"created_at"/);
+      expect(message).toMatch(/recreating the hypertable/);
+    }
+  });
+
+  it('throws when desired declares no time dimension for an existing hypertable', () => {
+    const noTime: HypertableState = { table: 'public.metric', dimensions: [] };
+    expect(() => diffSchemaState(ir(onTime('ts')), ir(noTime))).toThrow(TimescaleError);
+  });
+
+  it('still reports an unchanged time column as no drift', () => {
+    // The guard must not turn every existing hypertable into an error.
+    expect(diffSchemaState(ir(onTime('ts')), ir(onTime('ts'))).steps).toEqual([]);
+  });
+
+  it('does NOT touch a chunk interval the desired state never declared', () => {
+    // Regression: an undeclared chunkInterval fell back to TIMESCALE_DEFAULTS, so a hypertable at a
+    // DBA-tuned 30 days, described by a decorator that says nothing about chunk sizing, produced
+    // `setChunkInterval 30 days -> 7 days`. No data loss (future chunks only), but the sizing
+    // silently regressed and the plan looked deliberate. Unset means unmanaged here, as it already
+    // did for segmentBy/orderBy and scheduleInterval.
+    const tuned: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '30 days' }],
+    };
+    const undeclared: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time' }],
+    };
+    expect(diffSchemaState(ir(tuned), ir(undeclared)).steps).toEqual([]);
+  });
+
+  it('still detects a chunk-interval change on the same column', () => {
+    const wider: HypertableState = {
+      table: 'public.metric',
+      dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '1 day' }],
+    };
+    const plan = diffSchemaState(ir(onTime('ts')), ir(wider));
+    expect(ops(plan)).toEqual([
+      { kind: 'setChunkInterval', table: 'public.metric', from: '7 days', to: '1 day' },
+    ]);
+  });
+});
+
 describe('diffSchemaState — unrepresentable desired state throws (no silent false convergence)', () => {
   it('throws on an integer-time chunk interval (not expressible by the builder)', () => {
     const intTime: HypertableState = {
@@ -860,6 +929,35 @@ describe('diffSchemaState — continuous aggregates (additive only)', () => {
   const withCaggs = (...caggs: ContinuousAggregateState[]): SchemaStateIR => ({
     hypertables: [],
     continuousAggregates: caggs,
+  });
+
+  describe('an undeclared aggregate is named even when OTHER aggregates are declared', () => {
+    // Regression: the current-only sweep sat behind an early return taken only when the desired
+    // list was COMPLETELY empty, so declaring one aggregate silenced the advisory for every other
+    // one in the database — the configuration nearly every real project is in. `check` then printed
+    // "No drift detected" and exited 0 without ever naming the undeclared view.
+    const declared = cagg({ viewName: 'public.declared' });
+    const forgotten = cagg({ viewName: 'public.forgotten' });
+
+    it('names the undeclared aggregate when a DIFFERENT one is declared', () => {
+      const plan = diffSchemaState(withCaggs(declared, forgotten), withCaggs(declared));
+      const named = (plan.advisories ?? []).map((a) => a.object);
+      expect(named).toContain('public.forgotten');
+    });
+
+    it('still names every aggregate when NONE is declared', () => {
+      const plan = diffSchemaState(withCaggs(declared, forgotten), withCaggs());
+      const named = (plan.advisories ?? []).map((a) => a.object);
+      expect(named).toEqual(expect.arrayContaining(['public.declared', 'public.forgotten']));
+    });
+
+    it('does not report a declared aggregate as undeclared', () => {
+      const plan = diffSchemaState(withCaggs(declared), withCaggs(declared));
+      const undeclaredNotices = (plan.advisories ?? []).filter((a) =>
+        a.detail.includes('is not declared'),
+      );
+      expect(undeclaredNotices).toEqual([]);
+    });
   });
 
   const refresh = {

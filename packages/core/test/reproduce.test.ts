@@ -82,6 +82,70 @@ describe('stateToOperations', () => {
       'addColumnstorePolicy',
       'addRetentionPolicy',
     ]);
+    // `desc: true, nullsFirst: true` is PostgreSQL's DEFAULT placement for a descending column, and
+    // the builder emits the direction — so the replay reproduces this exactly and there is nothing
+    // to report. An earlier version reported it, on the theory that any `nullsFirst` value was a
+    // lost facet; because the field is a required boolean it fired for every columnstore hypertable
+    // in existence, including ones whose orderby the engine itself invented.
+    expect(result.skipped).toEqual([]);
+  });
+
+  it('reports a NON-DEFAULT nulls placement, which the columnstore builder cannot express', () => {
+    // The mirror of the case above: placement that diverges from the direction's default is the one
+    // thing the builder genuinely drops, and the module contract says anything not reproduced gets
+    // reported — "a reproduce step that silently dropped an object would be worse than useless — it
+    // would look like a faithful copy."
+    const result = stateToOperations(
+      ir({
+        hypertables: [
+          hypertable({
+            columnstore: {
+              segmentBy: ['device'],
+              orderBy: [
+                { column: 'ts', desc: true, nullsFirst: false }, // DESC defaults to NULLS FIRST
+                { column: 'seq', desc: false, nullsFirst: true }, // ASC defaults to NULLS LAST
+              ],
+            },
+          }),
+        ],
+      }),
+    );
+
+    // Still reproduced — the skip is a fidelity note on an emitted object, not a refusal.
+    expect(kinds(result)).toEqual(['createHypertable', 'addColumnstorePolicy']);
+    expect(result.skipped).toEqual([
+      {
+        object: 'public.metrics',
+        facet: 'columnstore',
+        reason: 'facet-not-reproduced',
+        detail: expect.stringContaining('ts, seq'),
+      },
+    ]);
+  });
+
+  it('does NOT report a policy schedule_interval per object — it cannot tell tuned from default', () => {
+    // Deliberate. Introspection always carries the engine-filled schedule_interval, so reporting it
+    // fired on EVERY pull of every real database and made `complete` meaningless. Caught by the live
+    // round-trip test, which saw '1 day' — the default, not a tuned value.
+    // `TIMESCALE_DEFAULTS.policyScheduleInterval` is `undefined` because the library does not know
+    // that value, and the diff engine ignores the field for the same reason. The omission is stated
+    // once in PULL_BASE_DDL_CAVEAT instead.
+    const result = stateToOperations(
+      ir({
+        hypertables: [
+          hypertable({
+            // Default placement for DESC, so the only thing this fixture can possibly report is the
+            // cadence — which is the point of the assertion below.
+            columnstore: {
+              segmentBy: ['device'],
+              orderBy: [{ column: 'ts', desc: true, nullsFirst: true }],
+            },
+            compressionPolicy: { kind: 'compression', after: '7 days', scheduleInterval: '3 days' },
+            retentionPolicy: { kind: 'retention', after: '90 days', scheduleInterval: '12 hours' },
+          }),
+        ],
+      }),
+    );
     expect(result.skipped).toEqual([]);
   });
 

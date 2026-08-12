@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, for the floating-`latest` early-warning job only. Every other job is fully pinned, so a
+  # server-side change surfaces here rather than on an unrelated pull request.
+  schedule:
+    - cron: '0 6 * * 1'
 
 permissions:
   contents: read
@@ -13,9 +17,9 @@ jobs:
     name: lint + typecheck + unit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -29,9 +33,9 @@ jobs:
     name: package smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -47,13 +51,43 @@ jobs:
       matrix:
         node: [20, 22, 24]
         typeorm: ['0.3.20', '1.0.0']
+        # BOTH ends pinned, deliberately.
+        #
         # 2.18 is the floor: the columnstore DDL we emit (enable_columnstore /
         # add_columnstore_policy) landed in 2.18.0; 2.17 only has legacy compression.
-        timescaledb: ['2.18.0-pg16', 'latest-pg17']
+        #
+        # The ceiling used to be the floating `latest-pg17`, and that cost real time: the 2.29
+        # removal of schema_name/table_name/compressed_chunk_id from _timescaledb_catalog.chunk
+        # landed on whoever pushed next, so a contributor who changed nothing related had to debug
+        # it. A floating ceiling also means an old green run cannot be re-run to the same server,
+        # and — for a published library whose compatibility claim is a public promise — the version
+        # we certify against should be a decision, not a Docker Hub side effect.
+        #
+        # `latest` still gets tested, in the scheduled early-warning job at the bottom of this file,
+        # where an upstream change breaks a nightly instead of an unrelated PR.
+        timescaledb: ['2.18.0-pg16', '2.29.1-pg17']
+        include:
+          # Version-axis legs. One node/typeorm cell each — the full cross is already covered above —
+          # pinned to the releases where the catalog actually MOVED, plus the second PG major.
+          # Every tag here was confirmed to resolve on Docker Hub before being added.
+          - node: 22
+            typeorm: '1.0.0'
+            # compression_settings.relid re-keys from the compressed twin to the user-facing chunk:
+            # the boundary that flips the recompression planner between its LEGACY and MODERN queries.
+            timescaledb: '2.19.0-pg16'
+          - node: 22
+            typeorm: '1.0.0'
+            # _timescaledb_catalog.chunk.dropped removed.
+            timescaledb: '2.26.0-pg17'
+          - node: 22
+            typeorm: '1.0.0'
+            # PostgreSQL 18. Previously unreachable, because `latest-pg17` pinned the PG axis to 17
+            # by accident while the README claimed no PG ceiling at all.
+            timescaledb: '2.29.1-pg18'
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
@@ -100,9 +134,9 @@ jobs:
     name: integration (timescaledb_toolkit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -112,12 +146,41 @@ jobs:
       - name: Pre-pull TimescaleDB-HA (toolkit) image
         run: |
           for i in 1 2 3 4 5; do
-            docker pull "timescale/timescaledb-ha:pg17" && exit 0
+            docker pull "timescale/timescaledb-ha:pg17.10-ts2.29.1" && exit 0
             echo "pull attempt $i failed; retrying in $((i*10))s..."; sleep $((i*10))
           done
-          echo "::error::could not pull timescale/timescaledb-ha:pg17 after retries"; exit 1
+          echo "::error::could not pull timescale/timescaledb-ha:pg17.10-ts2.29.1 after retries"; exit 1
       - run: pnpm test
         env:
           # Only the toolkit image is set, so the toolkit suite runs and the
           # no-toolkit guard block self-skips (it needs TIMESCALE_IMAGE).
-          TIMESCALE_TOOLKIT_IMAGE: timescale/timescaledb-ha:pg17
+          TIMESCALE_TOOLKIT_IMAGE: timescale/timescaledb-ha:pg17.10-ts2.29.1
+
+  # Floating `latest`, on purpose and in one place. This is how we learn early that upstream moved
+  # the catalog again — the 2.29 chunk-column removal is the precedent — without letting that
+  # discovery arrive as a red build on someone else's unrelated PR.
+  #
+  # `continue-on-error` because a break here is NEWS, not a merge blocker: nothing has shipped
+  # against `latest` and no compatibility claim covers it. When it fires, the fix is to add a pinned
+  # matrix leg for the new version.
+  integration-latest:
+    name: integration (floating latest — early warning)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        timescaledb: ['latest-pg17', 'latest-pg18']
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm --filter typeorm-timescaledb test
+        env:
+          TIMESCALE_IMAGE: timescale/timescaledb:${{ matrix.timescaledb }}

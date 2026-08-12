@@ -1,4 +1,10 @@
-export { assertSafeIdentifier, quoteIdent, quoteQualified, safeIdent } from './identifier.js';
+export {
+  assertSafeFragment,
+  assertSafeIdentifier,
+  quoteIdent,
+  quoteQualified,
+  safeIdent,
+} from './identifier.js';
 export { quoteLiteral } from './literal.js';
 export { assertInterval, assertPositiveInterval, INTERVAL_PATTERN } from './interval.js';
 export { TimescaleError, TimescaleErrorCode } from './errors.js';
@@ -183,3 +189,4 @@ export type { SafetyClass, OperationSafety } from './safety.js';
 // Reproduce (M4.4b) — a live SchemaStateIR back into the operations that recreate it, for `pull`.
 export { stateToOperations } from './reproduce.js';
 export type { ReproduceResult, SkippedObject, SkipReason, SkippedFacet } from './reproduce.js';
+export { findUnquotedToken, type LexResult } from './sql-lex.js';

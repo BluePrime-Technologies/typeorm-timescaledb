@@ -5,6 +5,8 @@ import {
   addContinuousAggregatePolicySQL,
   TimescaleError,
 } from '../src/index.js';
+// Not re-exported from the package root (deliberately internal), so import the module directly.
+import { classifyDefinitionBody } from '../src/sql/continuous-aggregate.js';
 
 describe('createContinuousAggregateSQL', () => {
   const base = {
@@ -240,5 +242,50 @@ describe('addContinuousAggregatePolicySQL', () => {
         endOffset: '0 hour',
       }),
     ).toThrowError(TimescaleError);
+  });
+});
+
+describe('classifyDefinitionBody — double-quoted identifiers do not desynchronise the scanner', () => {
+  // The scanner skipped string literals, dollar quotes and both comment forms, but NOT quoted
+  // identifiers. A single quote inside one flipped it into "string literal" and it stayed there
+  // across the real statement separators — so a smuggled statement was classified 'usable' and
+  // emitted verbatim into a generated migration. Reachable via `pull` on a brownfield database:
+  // pg_get_viewdef happily emits "a'b" for a column name this library would refuse to create.
+  it('catches a statement smuggled between quote-containing identifiers', () => {
+    const body = `SELECT "a'b" FROM t; DROP TABLE victim; SELECT "c'd" FROM u`;
+    expect(classifyDefinitionBody(body)).toBe('multi-statement');
+  });
+
+  it('no longer FALSELY rejects a legal identifier containing a quote', () => {
+    expect(classifyDefinitionBody(`SELECT "a'b" FROM t`)).toBe('usable');
+  });
+
+  it('handles the "" escape inside an identifier', () => {
+    expect(classifyDefinitionBody(`SELECT "a""b" FROM t`)).toBe('usable');
+  });
+
+  it('treats an unterminated identifier as unterminated, not usable', () => {
+    expect(classifyDefinitionBody(`SELECT "abc FROM t`)).toBe('unterminated');
+  });
+
+  it('still skips ordinary string literals and still catches a plain multi-statement', () => {
+    expect(classifyDefinitionBody(`SELECT 'a;b' FROM t`)).toBe('usable');
+    expect(classifyDefinitionBody(`SELECT 'a''b' FROM t`)).toBe('usable');
+    expect(classifyDefinitionBody(`SELECT 1; DROP TABLE t`)).toBe('multi-statement');
+  });
+});
+
+describe('classifyDefinitionBody — a dollar-quote tag cannot begin with a digit', () => {
+  // PostgreSQL tags follow unquoted-identifier rules, so `$1$` is not a delimiter. The scanner's
+  // character class allowed a leading digit, so it treated `$1$ … $1$` as a quoted block and skipped
+  // everything inside — including a real statement separator the server WOULD execute.
+  it('no longer skips a separator hidden behind $1$', () => {
+    expect(classifyDefinitionBody('SELECT 1 $1$ ; $1$')).toBe('multi-statement');
+  });
+
+  it('still skips a legal named tag and a bare $$', () => {
+    expect(classifyDefinitionBody('SELECT $tag$ ; $tag$ FROM t')).toBe('usable');
+    expect(classifyDefinitionBody('SELECT $$ ; $$ FROM t')).toBe('usable');
+    expect(classifyDefinitionBody('SELECT $_a1$ ; $_a1$ FROM t')).toBe('usable');
   });
 });

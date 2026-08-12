@@ -646,3 +646,28 @@ describe('lint reaches BOTH verbs, not just check', () => {
     expect(lines.join('\n')).toMatch(/TSDB010/);
   });
 });
+
+describe('pushCommand — the original failure is never replaced by the diagnostic re-introspect', () => {
+  // The recovery call that prints the plan after a failed apply was unguarded. Whenever the
+  // original failure had also broken the connection — the common case, since it is usually a
+  // database error — the re-introspect threw and THAT error propagated. The user saw a second,
+  // unrelated failure and the actual cause was gone.
+  it('rethrows the apply error, not the error from the failed recovery introspect', async () => {
+    let call = 0;
+    const boom = new Error('the real failure: permission denied for schema public');
+    const ds = {
+      isInitialized: true,
+      createQueryRunner: () => {
+        call += 1;
+        // First call = the apply (fails). Second = the diagnostic re-introspect (also fails,
+        // because the connection is gone).
+        throw call === 1 ? boom : new Error('Connection terminated unexpectedly');
+      },
+    } as unknown as Parameters<typeof pushCommand>[0];
+
+    const logger = { log: () => undefined, error: () => undefined };
+    await expect(pushCommand(ds, logger, { apply: true })).rejects.toThrow(
+      'the real failure: permission denied for schema public',
+    );
+  });
+});

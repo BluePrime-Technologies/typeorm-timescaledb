@@ -40,7 +40,11 @@ const PARTIAL_IR: SchemaStateIR = {
   continuousAggregates: [],
 };
 
-const fakeDataSource = {} as DataSource;
+// `pullSchema` reads through introspect() (mocked above) AND runs one direct probe for policies
+// attached to a continuous aggregate — the objects that never reach the IR, and whose absence used
+// to let coverage report a complete copy of a database it had not copied. The fake answers that
+// probe with "none", which is the shape these IR-driven cases mean to describe.
+const fakeDataSource = { query: async () => [] } as unknown as DataSource;
 
 function collectLogger(): {
   logger: { log: (m: string) => void; error: (m: string) => void };
@@ -294,5 +298,81 @@ describe('pullSchema with continuous aggregates', () => {
     expect(sql).toContain('CREATE MATERIALIZED VIEW');
     expect(sql).toContain('add_continuous_aggregate_policy');
     expect(sql).toContain("INTERVAL '01:00:00'");
+  });
+});
+
+describe('pullSchema — one unreproducible identifier does not abort the whole pull', () => {
+  // `stateToOperations` documents itself as TOTAL and keeps that promise; the throw happened one
+  // layer down in planToMigration → compilePlan → parseTable, whose allow-list is ASCII-only while
+  // PostgreSQL permits non-ASCII letters unquoted under UTF-8. So `pull` against a database with one
+  // such table died outright and reproduced NOTHING. Totality has to hold end to end.
+  it('reproduces every other object and reports the one it could not name', async () => {
+    introspectMock.mockResolvedValue({
+      hypertables: [
+        {
+          table: 'public.fine',
+          dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '7 days' }],
+          policies: [],
+        },
+        {
+          table: 'public.mesüres', // legal in PostgreSQL, refused by the ASCII allow-list
+          dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '7 days' }],
+          policies: [],
+        },
+      ],
+      continuousAggregates: [],
+    } satisfies SchemaStateIR);
+
+    const result = await pullSchema(fakeDataSource, { timestamp: 1_760_000_000_000 });
+
+    // The good table still made it into the migration.
+    expect(result.migration.up.join('\n')).toContain('fine');
+    // The bad one is reported, not silently dropped, and not fatal.
+    const skips = result.coverage.skipped.filter((s) => s.reason === 'identifier-not-expressible');
+    expect(skips).toHaveLength(1);
+    expect(skips[0]?.object).toBe('public.mesüres');
+    expect(result.coverage.complete).toBe(false);
+    // And nothing referencing the unreproducible name leaked into the emitted SQL.
+    expect(result.migration.up.join('\n')).not.toContain('mesüres');
+  });
+});
+
+describe('pullCommand — write is opt-out, so a preview leaves no file behind', () => {
+  // `mix` calls pullCommand and is preview-by-default for the DATABASE, but a file landed in outDir
+  // on EVERY invocation — including a read-only CI drift check — so repeated runs accumulated
+  // near-identical migrations in the working tree.
+  function collectWriter(): { writer: FileWriter; written: string[] } {
+    const written: string[] = [];
+    return {
+      written,
+      writer: { mkdirp: () => undefined, write: (path: string) => written.push(path) },
+    };
+  }
+
+  it('writes nothing when write is false, even with objects to reproduce', async () => {
+    introspectMock.mockResolvedValue(FULL_IR);
+    const { writer, written } = collectWriter();
+    const { logger, out } = collectLogger();
+    await pullCommand(
+      fakeDataSource,
+      logger,
+      { outDir: 'migrations', write: false, timestamp: 1_760_000_000_000 },
+      writer,
+    );
+    expect(written).toEqual([]);
+    expect(out.join('\n')).toMatch(/no file written \(preview\)/);
+  });
+
+  it('still writes by default — pull itself is not a preview', async () => {
+    introspectMock.mockResolvedValue(FULL_IR);
+    const { writer, written } = collectWriter();
+    const { logger } = collectLogger();
+    await pullCommand(
+      fakeDataSource,
+      logger,
+      { outDir: 'migrations', timestamp: 1_760_000_000_000 },
+      writer,
+    );
+    expect(written).toHaveLength(1);
   });
 });

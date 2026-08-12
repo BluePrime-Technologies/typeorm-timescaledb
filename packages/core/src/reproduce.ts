@@ -58,6 +58,33 @@ export type SkipReason =
   | 'created-before-threshold'
   /** A custom `add_job` whose config this engine does not interpret. */
   | 'unmanaged-policy'
+  /**
+   * A compression/retention policy attached to a CONTINUOUS AGGREGATE rather than to a user
+   * hypertable. `introspect()` keys those policies by the hypertable they name and reads them only
+   * while mapping user hypertables, so they never reach the IR — which means `stateToOperations`
+   * cannot see them either, and a reproduction that omits them would otherwise report itself
+   * complete. Detected separately by `pullSchema` and recorded here so coverage stays honest.
+   */
+  | 'cagg-attached-policy'
+  /**
+   * An identifier PostgreSQL accepts but these builders will not emit. The allow-list is ASCII-only
+   * (`/^[A-Za-z_][A-Za-z0-9_$]*$/`) while PostgreSQL permits non-ASCII letters unquoted under UTF-8,
+   * and anything at all when quoted. Reproducing such an object would mean emitting an identifier the
+   * safety layer exists to refuse, so it is reported instead — which keeps `pull` TOTAL rather than
+   * aborting the whole run over one table it cannot name.
+   */
+  | 'identifier-not-expressible'
+  /**
+   * The object WAS reproduced, but a facet of it was not — currently only a columnstore
+   * `nulls first/last` placement, which the builder cannot express, so replaying produces
+   * PostgreSQL's default for that direction instead of what the source database had. Recorded
+   * because the module contract is that anything not reproduced is reported; "it would look like a
+   * faithful copy" is precisely the failure mode.
+   *
+   * NOT used for a policy `schedule_interval`, even though that is equally unreproduced — see the
+   * note at the columnstore skip for why per-object reporting is wrong there.
+   */
+  | 'facet-not-reproduced'
   /** A space dimension that `create_hypertable`/`add_dimension` cannot reproduce as given. */
   | 'space-dimension-incomplete'
   /** The hypertable has no time dimension — nothing to create it from. */
@@ -234,6 +261,39 @@ function reproduceHypertable(h: HypertableState, skipped: SkippedObject[]): Oper
       }),
       ...(after !== undefined && { after }),
     });
+
+    // NULLS placement is not expressible by the columnstore builder, and was dropped silently — the
+    // one thing this module's contract forbids: "a reproduce step that silently dropped an object
+    // would be worse than useless — it would look like a faithful copy."
+    //
+    // A policy's `schedule_interval` is equally unreproduced but is deliberately NOT reported here.
+    // Introspection cannot tell an explicitly-tuned cadence from the engine default it always fills
+    // in: `TIMESCALE_DEFAULTS.policyScheduleInterval` is `undefined` because the library does not
+    // know that value, and the diff engine ignores the field for the same reason. Reporting it fired
+    // on EVERY pull of every real database — the live round-trip test caught it reporting '1 day',
+    // the default — which makes `complete` meaningless and trains people to ignore the field. It is
+    // stated once in `PULL_BASE_DDL_CAVEAT`, which exists for exactly this class of omission.
+    // Report only a NON-DEFAULT placement. `nullsFirst` is a required boolean on
+    // `OrderByElement`, never `undefined`, so testing for presence was a tautology that fired for
+    // every columnstore hypertable with any orderby at all — including one whose orderby the
+    // ENGINE invented, which is what the live round-trip caught. What the builder actually drops is
+    // the placement itself (`orderElementToConfig` emits column + direction only), and PostgreSQL
+    // then applies its per-direction default: ASC→NULLS LAST, DESC→NULLS FIRST. So the replay is
+    // faithful exactly when the source placement already equals that default — `nullsFirst ===
+    // desc` — and lossy only when it diverges.
+    const nonDefaultNulls = h.columnstore.orderBy.filter((o) => o.nullsFirst !== o.desc);
+    if (nonDefaultNulls.length > 0) {
+      skipped.push({
+        object: h.table,
+        facet: 'columnstore',
+        reason: 'facet-not-reproduced',
+        detail:
+          `the columnstore orderby puts NULLS ${nonDefaultNulls[0]?.nullsFirst === true ? 'FIRST' : 'LAST'} on ` +
+          `${nonDefaultNulls.map((o) => o.column).join(', ')}, against PostgreSQL's default for that ` +
+          `direction, and this engine cannot express it — the replayed columnstore will use the ` +
+          `default. Set it by hand with ALTER TABLE ... SET (timescaledb.orderby = '...') if it matters.`,
+      });
+    }
   } else if (h.compressionPolicy !== undefined) {
     // A compression policy with no columnstore config to attach it to: the IR says a job exists
     // but there is nothing to enable. Report rather than emit a policy that would fail to apply.

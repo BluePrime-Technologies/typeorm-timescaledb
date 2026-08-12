@@ -1,4 +1,4 @@
-import { safeIdent } from '../identifier.js';
+import { assertSafeFragment, safeIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
 import { assertInterval } from '../interval.js';
 import { numericLiteral } from './numeric.js';
@@ -214,6 +214,7 @@ export function timeBucketGapfillExpr(input: TimeBucketGapfillExprInput): string
  * over a {@link safeIdent}-quoted column) — it is wrapped verbatim.
  */
 export function locfExpr(aggregateExpr: string): string {
+  assertSafeFragment(aggregateExpr, 'aggregateExpr');
   return `locf(${aggregateExpr})`;
 }
 
@@ -222,6 +223,7 @@ export function locfExpr(aggregateExpr: string): string {
  * inside a gapfill query.** `aggregateExpr` must be an already-safe SQL fragment.
  */
 export function interpolateExpr(aggregateExpr: string): string {
+  assertSafeFragment(aggregateExpr, 'aggregateExpr');
   return `interpolate(${aggregateExpr})`;
 }
 

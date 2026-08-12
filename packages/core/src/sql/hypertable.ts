@@ -1,6 +1,6 @@
 import { assertSafeIdentifier, quoteIdent } from '../identifier.js';
 import { quoteLiteral } from '../literal.js';
-import { assertParsableInterval } from '../normalize.js';
+import { assertParsableInterval, isShortening } from '../normalize.js';
 import { TimescaleError, TimescaleErrorCode } from '../errors.js';
 
 /**
@@ -28,7 +28,11 @@ function orderByDirection(direction: string | undefined): 'ASC' | 'DESC' {
  *
  * Target: TimescaleDB **≥ 2.18** (the columnstore DDL — `enable_columnstore`,
  * `add_columnstore_policy`; 2.17 and earlier had only the legacy compression
- * syntax). Verified against the latest stable line (2.27).
+ * syntax). CI exercises pinned 2.18.0, 2.19.0, 2.26.0 and 2.29.1 across PostgreSQL
+ * 16/17/18 — see `docs/compatibility.md`. This line used to say "verified against
+ * the latest stable line (2.27)", which had quietly become false; a version claim
+ * in a comment goes stale the moment the matrix moves, so it now points at the one
+ * place that is kept in step with CI.
  *
  * Safety: every table/column flows through {@link assertSafeIdentifier}; values in
  * identifier position are quoted with {@link quoteIdent}, values in string-literal
@@ -377,10 +381,20 @@ const addCompressionPolicyCall = (
   `CALL add_columnstore_policy(${t.regclass}, after => INTERVAL ${quoteLiteral(after)}, if_not_exists => ${ifNotExists ? 'TRUE' : 'FALSE'}${scheduleArg(scheduleInterval)});`;
 const removeRetentionPolicyCall = (t: ParsedTable): string =>
   `SELECT remove_retention_policy(${t.regclass}, if_exists => TRUE);`;
+/**
+ * Render the optional `schedule_interval` argument.
+ *
+ * Validated like every other interval in this module. It used to go through `quoteLiteral` alone —
+ * not an injection (the escaping holds), but a garbage value sailed through codegen and then failed
+ * at APPLY time, inside a migration, with a Postgres syntax error pointing at generated SQL the
+ * author never wrote. Failing at build time names the bad input instead.
+ */
 const scheduleArg = (scheduleInterval: string | undefined): string =>
   scheduleInterval === undefined
     ? ''
-    : `, schedule_interval => INTERVAL ${quoteLiteral(scheduleInterval)}`;
+    : `, schedule_interval => INTERVAL ${quoteLiteral(
+        assertParsableInterval(scheduleInterval, 'scheduleInterval', { positive: true }),
+      )}`;
 
 const addRetentionPolicyCall = (
   t: ParsedTable,
@@ -637,15 +651,28 @@ export function alterRetentionPolicySQL(input: AlterPolicyInput): MigrationState
     `WHERE proc_name = 'policy_retention' AND hypertable_schema = ${quoteLiteral(t.schema)} AND hypertable_name = ${quoteLiteral(t.name)};`;
   // Assert fresh (`if_not_exists => FALSE`) after the remove — a duplicate means the remove failed;
   // fail loudly rather than silently leave the old threshold. remove precedes add → block idempotent.
+  // `down()` may only restore the previous threshold when doing so LENGTHENS retention. Restoring a
+  // SHORTER threshold is a data-loss event on the next scheduler tick — rolling back a 30d → 365d
+  // change would re-install 30d on a hypertable that has been retaining a year, and ~11 months of
+  // chunks become eligible for dropping. `down()` never destroys data, so it declines instead.
+  //
+  // isShortening(from, to) describes the UP direction. down goes to → from, so:
+  //   true      up shortened   → down lengthens  → safe to restore
+  //   false     up lengthened  → down shortens   → refuse, emit a notice
+  //   undefined not comparable → cannot prove it is safe → refuse, emit a notice (fail closed)
+  const upShortens = isShortening(from, to);
+  const downIsSafe = upShortens === true;
   return {
     up: [
       removeRetentionPolicyCall(t),
       addRetentionPolicyCall(t, to, false, input.scheduleInterval),
     ],
-    down: [
-      removeRetentionPolicyCall(t),
-      addRetentionPolicyCall(t, from, false, input.scheduleInterval),
-    ],
+    down: downIsSafe
+      ? [
+          removeRetentionPolicyCall(t),
+          addRetentionPolicyCall(t, from, false, input.scheduleInterval),
+        ]
+      : [nonDestructiveNotice(`the retention threshold (${from} → ${to})`, t.ident)],
     inspect,
   };
 }
