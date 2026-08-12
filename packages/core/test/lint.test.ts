@@ -188,3 +188,31 @@ describe('formatLintFindings', () => {
     expect(text).toMatch(/→ /); // the remediation is rendered, not just stored
   });
 });
+
+describe('TSDB010 — a rename and its follow-up steps are ONE object', () => {
+  // `objectOf` returns `from` for a renameHypertable (deliberately — the step acts on the name that
+  // exists when it runs), while every later step targets `to`. So the plan shape where this rule is
+  // most useful — "you renamed this table AND changed things on it" — was the one shape it never
+  // fired for.
+  const step = (operation: Operation) => ({ operation, ...classifyOperation(operation) });
+
+  it('fires for a rename plus a follow-up on the new name', () => {
+    const plan: Plan = {
+      steps: [
+        step({ kind: 'renameHypertable', from: 'public.old', to: 'public.new' }),
+        step({ kind: 'alterRetentionPolicy', table: 'public.new', from: '30 days', to: '90 days' }),
+      ],
+    };
+    expect(lintPlan(plan).map((f) => f.code)).toContain('TSDB010');
+  });
+
+  it('does not merge two unrelated tables', () => {
+    const plan: Plan = {
+      steps: [
+        step({ kind: 'alterRetentionPolicy', table: 'public.a', from: '30 days', to: '90 days' }),
+        step({ kind: 'alterRetentionPolicy', table: 'public.b', from: '30 days', to: '90 days' }),
+      ],
+    };
+    expect(lintPlan(plan).map((f) => f.code)).not.toContain('TSDB010');
+  });
+});

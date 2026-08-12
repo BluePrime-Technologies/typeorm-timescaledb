@@ -113,3 +113,45 @@ export function quoteQualified(qualified: string, role = 'identifier'): string {
 export function safeIdent(identifier: string, role = 'identifier'): string {
   return quoteIdent(assertSafeIdentifier(identifier, role), role);
 }
+
+/**
+ * Defence-in-depth for the COMPOSED-FRAGMENT surface: ~25 public expression helpers take an
+ * already-built SQL fragment (`locf(expr)`, `candlestickAccessorExpr(agg)`, …) and wrap it verbatim.
+ *
+ * The contract is coherent — the intended producers (`candlestickAggExpr`, `statsAgg1DExpr`, …) all
+ * run their columns through {@link safeIdent}, and no internal caller feeds unvalidated text in. But
+ * it is the largest raw-string surface in a public library and, until now, the contract lived only in
+ * prose. This does not replace that contract; it refuses the shapes that could only be an injection
+ * or a mistake, so a caller who violates the contract gets an error here instead of a surprise in
+ * their database.
+ *
+ * Deliberately NOT a SQL parser. It rejects statement separators and comment introducers — the
+ * constructs that let a fragment stop being an expression — and nothing else, so every legitimate
+ * expression (function calls, casts, string literals, arithmetic) still passes.
+ *
+ * The compile-time version of this is a branded `SafeSqlFragment` returned by the agg builders and
+ * required by the accessors. That is a breaking change to ~25 signatures, so it belongs to 1.0, not
+ * to a minor.
+ */
+export function assertSafeFragment(fragment: string, role: string): string {
+  if (typeof fragment !== 'string' || fragment.length === 0) {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `${role} must be a non-empty SQL expression fragment`,
+      { role },
+    );
+  }
+  // `;` ends a statement. `--` and `/*` start comments, either of which can swallow the rest of the
+  // generated expression. None of the three can appear in a legitimate aggregate expression.
+  const offender = /;|--|\/\*/.exec(fragment)?.[0];
+  if (offender !== undefined) {
+    throw new TimescaleError(
+      TimescaleErrorCode.UNSAFE_IDENTIFIER,
+      `${role} contains ${JSON.stringify(offender)}, which cannot appear in a SQL expression ` +
+        `fragment. Build it from the aggregate helpers (e.g. candlestickAggExpr, statsAgg1DExpr) ` +
+        `rather than assembling SQL text by hand.`,
+      { role, value: fragment },
+    );
+  }
+  return fragment;
+}

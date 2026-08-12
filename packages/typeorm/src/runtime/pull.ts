@@ -33,7 +33,9 @@ export const PULL_BASE_DDL_CAVEAT =
   'already exist — a create_hypertable runs against a table it does not create. ' +
   'Also NOT reproduced, and NOT counted above: compression/retention policies attached to a ' +
   "continuous aggregate (rather than to a hypertable), the chunk interval of a CAGG's own " +
-  'materialization hypertable, and NULLS FIRST/LAST placement on a columnstore ORDER BY. Those ' +
+  'materialization hypertable, and the schedule_interval of every compression/retention policy ' +
+  '(introspection cannot tell a tuned cadence from the engine default, so the replayed policy runs ' +
+  'on the default). Those ' +
   'are invisible to introspection today, so "not reproduced: none" above cannot speak for them — ' +
   'check them by hand before treating a pulled migration as a complete copy. ' +
   'Finally, this migration targets an EMPTY database. It is not idempotent against the database ' +

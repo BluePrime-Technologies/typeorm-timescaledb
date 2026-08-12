@@ -11,8 +11,17 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    "declarationMap": false,
+    // Source maps are OFF for the published build, deliberately.
+    //
+    // They were on, and the tarball shipped 110 `.js.map`/`.d.ts.map` files pointing at `src/` —
+    // which is NOT published, and must not be: `scripts/package-smoke-test.mjs` asserts no source
+    // ships, and that is a project decision, not an oversight. So the maps could never be resolved by
+    // any consumer. That is the one combination with cost and no benefit: ~30% of the tarball for
+    // nothing. Either ship src or drop the maps; the project already decided not to ship src.
+    //
+    // Local debugging is unaffected — tests and dev tooling run from source, not from dist.
+    "sourceMap": false,
     "composite": true,
     "skipLibCheck": true,
     "esModuleInterop": true,

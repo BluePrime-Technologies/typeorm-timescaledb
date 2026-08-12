@@ -276,10 +276,37 @@ export const ANALYZERS: readonly Analyzer[] = [
     check: (operation, index, plan) => {
       const target = objectOf(operation);
       if (target === undefined) return null;
+      // Follow renames, so a rename and its follow-up steps count as ONE object.
+      //
+      // `objectOf` returns `from` for a renameHypertable (deliberately — the step acts on the name
+      // that exists when it runs), while every later step targets `to`. So the plan shape where this
+      // rule is most useful — "you renamed this table AND changed three things on it" — was the one
+      // shape it never fired for: sameObject('public.old','public.new') is false.
+      //
+      // Renames are resolved to their final name before counting; both spellings of the same
+      // physical table then land in the same bucket.
+      const finalName = (name: string): string => {
+        let current = name;
+        // Bounded by the step count: a rename chain cannot be longer than the plan.
+        for (let hop = 0; hop < plan.steps.length; hop++) {
+          const renamed = plan.steps.find(
+            (s) =>
+              s.operation.kind === 'renameHypertable' &&
+              sameObject((s.operation as { from: string }).from, current),
+          );
+          if (renamed === undefined) return current;
+          current = (renamed.operation as { to: string }).to;
+        }
+        return current;
+      };
+      const resolved = finalName(target);
+      const sameResolvedObject = (candidate: string | undefined): boolean =>
+        candidate !== undefined && sameObject(finalName(candidate), resolved);
+
       // Report once, on the FIRST step for that object, rather than N times.
-      const firstIndex = plan.steps.findIndex((s) => sameObject(objectOf(s.operation), target));
+      const firstIndex = plan.steps.findIndex((s) => sameResolvedObject(objectOf(s.operation)));
       if (firstIndex !== index) return null;
-      const count = plan.steps.filter((s) => sameObject(objectOf(s.operation), target)).length;
+      const count = plan.steps.filter((s) => sameResolvedObject(objectOf(s.operation))).length;
       return count < 2
         ? null
         : [
