@@ -66,6 +66,14 @@ export type SkipReason =
    * complete. Detected separately by `pullSchema` and recorded here so coverage stays honest.
    */
   | 'cagg-attached-policy'
+  /**
+   * An identifier PostgreSQL accepts but these builders will not emit. The allow-list is ASCII-only
+   * (`/^[A-Za-z_][A-Za-z0-9_$]*$/`) while PostgreSQL permits non-ASCII letters unquoted under UTF-8,
+   * and anything at all when quoted. Reproducing such an object would mean emitting an identifier the
+   * safety layer exists to refuse, so it is reported instead — which keeps `pull` TOTAL rather than
+   * aborting the whole run over one table it cannot name.
+   */
+  | 'identifier-not-expressible'
   /** A space dimension that `create_hypertable`/`add_dimension` cannot reproduce as given. */
   | 'space-dimension-incomplete'
   /** The hypertable has no time dimension — nothing to create it from. */

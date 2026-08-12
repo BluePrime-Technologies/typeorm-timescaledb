@@ -483,7 +483,13 @@ export function classifyDefinitionBody(body: string): DefinitionVerdict {
       continue;
     }
     if (ch === '$') {
-      const tag = /^\$[A-Za-z_0-9]*\$/.exec(body.slice(i))?.[0];
+      // A dollar-quote tag follows UNQUOTED-IDENTIFIER rules, so it cannot begin with a digit —
+      // `$$` (empty tag) and `$tag$` are the only legal forms. The old class allowed a leading
+      // digit, so `$1$ … $1$` was treated as a quoted block and everything inside was skipped,
+      // INCLUDING a statement separator: `SELECT 1 $1$ ; $1$` classified as 'usable'. PostgreSQL
+      // would not have read those as delimiters, so the scanner skipped text the server executes.
+      // Same smuggling class as the quoted-identifier desync fixed above, one lexer state over.
+      const tag = /^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/.exec(body.slice(i))?.[0];
       if (tag !== undefined) {
         const end = body.indexOf(tag, i + tag.length);
         if (end === -1) return 'unterminated';

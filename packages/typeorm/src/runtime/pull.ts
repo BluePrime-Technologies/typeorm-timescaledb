@@ -1,7 +1,9 @@
 import type { DataSource } from 'typeorm';
 import {
   classifyOperation,
+  compileOperation,
   stateToOperations,
+  type Operation,
   type Plan,
   type PlanStep,
   type SchemaStateIR,
@@ -150,10 +152,41 @@ export async function pullSchema(
   }));
   const plan: Plan = { steps };
 
-  const migration = planToMigration(plan, {
-    ...(options.name !== undefined && { name: options.name }),
-    ...(options.timestamp !== undefined && { timestamp: options.timestamp }),
-  });
+  // Compile operation-by-operation so ONE unreproducible object cannot abort the whole pull.
+  //
+  // `stateToOperations` documents itself as total — "it never throws on a shape it cannot express" —
+  // and it keeps that promise. The throw happened one layer down, in planToMigration → compilePlan →
+  // parseTable, whose allow-list is ASCII-only while PostgreSQL permits non-ASCII letters unquoted
+  // under UTF-8 (and anything when quoted). So `pull` against a database with one such table died
+  // outright, reproducing NOTHING, when the honest outcome is a migration for everything else plus a
+  // report naming what was left out. Totality has to hold end to end or it is not totality.
+  const compilable: PlanStep[] = [];
+  const unexpressible: SkippedObject[] = [];
+  for (const step of steps) {
+    try {
+      compileOperation(step.operation);
+      compilable.push(step);
+    } catch (error) {
+      unexpressible.push({
+        object: objectOfOperation(step.operation),
+        facet: 'hypertable',
+        reason: 'identifier-not-expressible',
+        detail:
+          `could not be reproduced: ${error instanceof Error ? error.message : String(error)}. ` +
+          `PostgreSQL accepts this name; these builders deliberately do not emit it. Reproduce this ` +
+          `object by hand — everything else in this migration is unaffected.`,
+      });
+    }
+  }
+  if (unexpressible.length > 0) skipped.push(...unexpressible);
+
+  const migration = planToMigration(
+    { steps: compilable },
+    {
+      ...(options.name !== undefined && { name: options.name }),
+      ...(options.timestamp !== undefined && { timestamp: options.timestamp }),
+    },
+  );
 
   return {
     ir,
@@ -193,4 +226,13 @@ export function formatPullCoverage(coverage: PullCoverage): string {
 
   lines.push('', `NOTE: ${PULL_BASE_DDL_CAVEAT}`);
   return lines.join('\n');
+}
+
+/** Best-effort object name for a skip report — operations name a table, a view, or a rename source. */
+function objectOfOperation(operation: Operation): string {
+  const o = operation as { table?: unknown; view?: unknown; from?: unknown };
+  if (typeof o.table === 'string') return o.table;
+  if (typeof o.view === 'string') return o.view;
+  if (typeof o.from === 'string') return o.from;
+  return '(unknown object)';
 }

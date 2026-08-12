@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   CliError,
@@ -137,7 +137,11 @@ describe('resolveConfig', () => {
     writeConfig(d, { dataSource: 'discovered.ts' });
     const other = join(d, 'other.json');
     writeFileSync(other, JSON.stringify({ dataSource: 'explicit.ts' }), 'utf8');
-    expect(resolveConfig(['check', '--config', other], d)).toEqual({ dataSource: 'explicit.ts' });
+    // resolveConfig anchors path values to the CONFIG FILE'S directory, so the same config behaves
+    // identically from every cwd. loadConfigFile still returns the raw string (asserted above).
+    expect(resolveConfig(['check', '--config', other], d)).toEqual({
+      dataSource: join(dirname(other), 'explicit.ts'),
+    });
   });
 
   it('ERRORS when an explicit --config does not exist', () => {
@@ -157,7 +161,9 @@ describe('resolveConfig', () => {
     const d = dir();
     const path = join(d, 'c.json');
     writeFileSync(path, JSON.stringify({ outDir: 'x' }), 'utf8');
-    expect(resolveConfig(['check', `--config=${path}`], d)).toEqual({ outDir: 'x' });
+    expect(resolveConfig(['check', `--config=${path}`], d)).toEqual({
+      outDir: join(dirname(path), 'x'),
+    });
   });
 });
 
@@ -300,5 +306,47 @@ describe('findConfigFile — the walk stops at the project root', () => {
     writeFileSync(join(pkg, 'package.json'), '{}');
     writeFileSync(join(pkg, 'timescaledb.config.json'), '{}');
     expect(findConfigFile(join(pkg, 'src'))).toBe(join(pkg, 'timescaledb.config.json'));
+  });
+});
+
+describe('resolveConfig — path values are anchored to the config file and contained', () => {
+  const base = mkdtempSync(join(tmpdir(), 'tsdb-cfg-paths-'));
+  afterAll(() => rmSync(base, { recursive: true, force: true }));
+
+  it('resolves a relative dataSource against the CONFIG file, not the cwd', () => {
+    // A repo-root config saying "src/data-source.ts" worked from the repo root and broke from
+    // <repo>/packages/app — precisely the monorepo case the upward walk exists to serve. From a deep
+    // subdirectory it resolved somewhere the config author never named.
+    const proj = join(base, 'anchor');
+    mkdirSync(join(proj, 'packages', 'app'), { recursive: true });
+    writeFileSync(join(proj, 'package.json'), '{}');
+    writeFileSync(
+      join(proj, 'timescaledb.config.json'),
+      JSON.stringify({ dataSource: 'src/data-source.ts' }),
+    );
+    expect(resolveConfig([], join(proj, 'packages', 'app')).dataSource).toBe(
+      join(proj, 'src', 'data-source.ts'),
+    );
+  });
+
+  it('refuses an outDir that escapes the project', () => {
+    // outDir went straight to mkdirSync(recursive) and a write, so a config could have a schema
+    // command create directories and drop files anywhere on the filesystem.
+    const proj = join(base, 'escape');
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(join(proj, 'package.json'), '{}');
+    writeFileSync(
+      join(proj, 'timescaledb.config.json'),
+      JSON.stringify({ outDir: '../../../../evil' }),
+    );
+    expect(() => resolveConfig([], proj)).toThrow(/resolves outside the project/);
+  });
+
+  it('still accepts an in-project outDir', () => {
+    const proj = join(base, 'inproject');
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(join(proj, 'package.json'), '{}');
+    writeFileSync(join(proj, 'timescaledb.config.json'), JSON.stringify({ outDir: 'migrations' }));
+    expect(resolveConfig([], proj).outDir).toBe(join(proj, 'migrations'));
   });
 });

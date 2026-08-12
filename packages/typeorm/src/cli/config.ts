@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { CliError, CONFIG_FILENAME, FLAG_ALIASES, BOOLEAN_FLAGS } from './args.js';
 
 // CONFIG_FILENAME is declared in args.ts and re-exported here so `config.ts` is the one import
@@ -148,15 +148,57 @@ export function loadConfigFile(path: string): TimescaleConfig {
  * be told it is not there, rather than silently getting discovery or defaults. A *discovered* config
  * simply being absent is not an error; running without one is the normal case.
  */
+/**
+ * Path-valued keys in the config file. A relative value for one of these is resolved against the
+ * CONFIG FILE'S directory, not the process cwd.
+ *
+ * Why: a config at `<repo>/timescaledb.config.json` saying `{ "dataSource": "src/data-source.ts" }`
+ * worked from the repo root and broke from `<repo>/packages/app` — precisely the monorepo case the
+ * upward walk exists to serve. Worse, from a deep subdirectory the relative path resolved somewhere
+ * the config author never named. A path written in a file means "relative to that file"; that is the
+ * only reading under which the same config behaves identically from every directory.
+ */
+const PATH_KEYS = ['dataSource', 'outDir'] as const;
+
 export function resolveConfig(argv: readonly string[], cwd: string): TimescaleConfig {
   const explicit = extractConfigPath(argv);
   if (explicit !== undefined) {
     const path = resolve(cwd, explicit);
     if (!existsSync(path)) throw new CliError(`Config file not found: ${path}`);
-    return loadConfigFile(path);
+    return anchorPaths(loadConfigFile(path), dirname(path));
   }
   const found = findConfigFile(cwd);
-  return found === undefined ? {} : loadConfigFile(found);
+  return found === undefined ? {} : anchorPaths(loadConfigFile(found), dirname(found));
+}
+
+/**
+ * Resolve a config's relative path values against `configDir`, and refuse one that escapes the
+ * project.
+ *
+ * `outDir` was previously handed straight to `mkdirSync(dir, { recursive: true })` and a write, so a
+ * config saying `"outDir": "../../../../../Users/x/Library/LaunchAgents"` had `generate`/`pull`
+ * create that directory and drop a file into it. The filename is machine-generated, so this is not
+ * arbitrary content — but creating directories and writing files outside the project is not
+ * something a schema command should be able to be told to do by a file it merely found.
+ */
+function anchorPaths(config: TimescaleConfig, configDir: string): TimescaleConfig {
+  const out: Record<string, unknown> = { ...config };
+  for (const key of PATH_KEYS) {
+    const value = out[key];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const absolute = resolve(configDir, value);
+    const contained = absolute === configDir || absolute.startsWith(configDir + sep);
+    if (!contained) {
+      throw new CliError(
+        `Config key "${key}" resolves outside the project: ${value} → ${absolute}\n\n` +
+          `Paths in ${CONFIG_FILENAME} are resolved relative to that file and must stay inside its ` +
+          `directory. Pass an explicit --${key === 'dataSource' ? 'dataSource' : 'outDir'} on the ` +
+          `command line if you genuinely mean a path outside the project.`,
+      );
+    }
+    out[key] = absolute;
+  }
+  return out as TimescaleConfig;
 }
 
 /**

@@ -300,3 +300,39 @@ describe('pullSchema with continuous aggregates', () => {
     expect(sql).toContain("INTERVAL '01:00:00'");
   });
 });
+
+describe('pullSchema — one unreproducible identifier does not abort the whole pull', () => {
+  // `stateToOperations` documents itself as TOTAL and keeps that promise; the throw happened one
+  // layer down in planToMigration → compilePlan → parseTable, whose allow-list is ASCII-only while
+  // PostgreSQL permits non-ASCII letters unquoted under UTF-8. So `pull` against a database with one
+  // such table died outright and reproduced NOTHING. Totality has to hold end to end.
+  it('reproduces every other object and reports the one it could not name', async () => {
+    introspectMock.mockResolvedValue({
+      hypertables: [
+        {
+          table: 'public.fine',
+          dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '7 days' }],
+          policies: [],
+        },
+        {
+          table: 'public.mesüres', // legal in PostgreSQL, refused by the ASCII allow-list
+          dimensions: [{ column: 'ts', kind: 'time', chunkInterval: '7 days' }],
+          policies: [],
+        },
+      ],
+      continuousAggregates: [],
+    } satisfies SchemaStateIR);
+
+    const result = await pullSchema(fakeDataSource, { timestamp: 1_760_000_000_000 });
+
+    // The good table still made it into the migration.
+    expect(result.migration.up.join('\n')).toContain('fine');
+    // The bad one is reported, not silently dropped, and not fatal.
+    const skips = result.coverage.skipped.filter((s) => s.reason === 'identifier-not-expressible');
+    expect(skips).toHaveLength(1);
+    expect(skips[0]?.object).toBe('public.mesüres');
+    expect(result.coverage.complete).toBe(false);
+    // And nothing referencing the unreproducible name leaked into the emitted SQL.
+    expect(result.migration.up.join('\n')).not.toContain('mesüres');
+  });
+});

@@ -274,3 +274,18 @@ describe('classifyDefinitionBody — double-quoted identifiers do not desynchron
     expect(classifyDefinitionBody(`SELECT 1; DROP TABLE t`)).toBe('multi-statement');
   });
 });
+
+describe('classifyDefinitionBody — a dollar-quote tag cannot begin with a digit', () => {
+  // PostgreSQL tags follow unquoted-identifier rules, so `$1$` is not a delimiter. The scanner's
+  // character class allowed a leading digit, so it treated `$1$ … $1$` as a quoted block and skipped
+  // everything inside — including a real statement separator the server WOULD execute.
+  it('no longer skips a separator hidden behind $1$', () => {
+    expect(classifyDefinitionBody('SELECT 1 $1$ ; $1$')).toBe('multi-statement');
+  });
+
+  it('still skips a legal named tag and a bare $$', () => {
+    expect(classifyDefinitionBody('SELECT $tag$ ; $tag$ FROM t')).toBe('usable');
+    expect(classifyDefinitionBody('SELECT $$ ; $$ FROM t')).toBe('usable');
+    expect(classifyDefinitionBody('SELECT $_a1$ ; $_a1$ FROM t')).toBe('usable');
+  });
+});
