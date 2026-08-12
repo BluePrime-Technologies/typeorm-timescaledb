@@ -70,6 +70,53 @@ describe('findUnquotedToken', () => {
     expect(findUnquotedToken('SELECT 1 $$ ; $$', [';'])).toEqual({ kind: 'clean' });
   });
 
+  it("treats a backslash-escaped quote inside an E'' escape string as escaped", () => {
+    // Measured on PostgreSQL 17: SELECT E'foo\'--bar' is the single string foo'--bar. Closing the
+    // literal at that inner quote made the following `--` look top level.
+    expect(findUnquotedToken("string_agg(message, E'foo\\'--bar')", FRAGMENT_TOKENS)).toEqual({
+      kind: 'clean',
+    });
+    expect(findUnquotedToken("f(E'a\\';DROP TABLE t;')", FRAGMENT_TOKENS)).toEqual({
+      kind: 'clean',
+    });
+  });
+
+  it('does NOT apply the backslash rule to a plain literal, where standard_conforming_strings makes it ordinary', () => {
+    // Verified `standard_conforming_strings = on`, so 'a\' really does end at that quote and the
+    // following `;` is a real separator. Treating it as escaped here would be the dangerous
+    // direction — it would skip past live SQL.
+    expect(findUnquotedToken("f('a\\'); DROP TABLE t", FRAGMENT_TOKENS)).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+  });
+
+  it('does not mistake an identifier ending in e for an escape-string prefix', () => {
+    // `value'...'` is not an E-string; a backslash inside it is an ordinary character, so the
+    // literal ends at the next quote and the `;` after it is real.
+    expect(findUnquotedToken("value'a\\'; DROP TABLE t", FRAGMENT_TOKENS)).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+  });
+
+  it('nests block comments the way PostgreSQL does', () => {
+    // Measured: SELECT /* a /* b */ still_comment */ 42 returns 42, and
+    // SELECT 1 /* a /* b */ ; */ + 1 returns 2 — the inner close does not end the outer comment.
+    expect(findUnquotedToken('avg(v) /* a /* b */ ; */ , sum(v)', [';'])).toEqual({
+      kind: 'clean',
+    });
+    // An outer comment left open is still unterminated even though an inner one closed.
+    expect(findUnquotedToken('avg(v) /* a /* b */ unclosed', [';'])).toEqual({
+      kind: 'unterminated',
+    });
+    // A separator AFTER a fully closed nested comment is still found.
+    expect(findUnquotedToken('avg(v) /* a /* b */ c */ ; DROP TABLE t', [';'])).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+  });
+
   it('reports unterminated states, but treats a line comment to end-of-input as clean', () => {
     expect(findUnquotedToken("f('unclosed", [';'])).toEqual({ kind: 'unterminated' });
     expect(findUnquotedToken('f("unclosed', [';'])).toEqual({ kind: 'unterminated' });

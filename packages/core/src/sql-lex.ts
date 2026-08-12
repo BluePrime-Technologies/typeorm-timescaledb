@@ -38,6 +38,22 @@ export type LexResult =
  * generated expression) while another caller treats those as regions to skip (a view body may
  * legally contain comments). That ordering is the whole reason one walk can serve both.
  */
+/**
+ * True if the quote at `quoteIndex` opens an E-prefixed escape string (`E'…'`), where a backslash
+ * escapes the following character.
+ *
+ * The character before the quote must be `E`/`e` AND must itself not be part of a longer word —
+ * otherwise a column called `value` followed by a literal (`value'x'`, or any identifier ending in
+ * `e`) would be misread as an escape string, and a backslash inside it would then be treated as an
+ * escape rather than the ordinary character it is.
+ */
+function isEscapeStringPrefix(text: string, quoteIndex: number): boolean {
+  const prev = text[quoteIndex - 1];
+  if (prev !== 'E' && prev !== 'e') return false;
+  const before = text[quoteIndex - 2];
+  return before === undefined || !/[A-Za-z0-9_$]/.test(before);
+}
+
 export function findUnquotedToken(text: string, tokens: readonly string[]): LexResult {
   let i = 0;
   while (i < text.length) {
@@ -48,11 +64,22 @@ export function findUnquotedToken(text: string, tokens: readonly string[]): LexR
 
     const ch = text[i];
 
-    // Single-quoted literal, `''` escaping an embedded quote.
+    // Single-quoted literal. A quote is escaped by doubling (`''`) and, in an E-prefixed escape
+    // string, ALSO by a backslash. Measured on PostgreSQL 17: `SELECT E'foo\'--bar'` is the single
+    // string `foo'--bar`. Without the backslash rule the scan closed the literal at that inner
+    // quote, saw the following `--` at top level, and refused a legal fragment.
+    //
+    // Only for E-strings: `standard_conforming_strings` is `on` (verified on the same server), so in
+    // a plain literal a backslash is an ordinary character and `'a\'` really does end there.
     if (ch === "'") {
+      const escapeString = isEscapeStringPrefix(text, i);
       i++;
       let closed = false;
       while (i < text.length) {
+        if (escapeString && text[i] === '\\') {
+          i += 2; // the backslash and whatever it escapes, quote included
+          continue;
+        }
         if (text[i] === "'") {
           if (text[i + 1] === "'") {
             i += 2;
@@ -101,10 +128,30 @@ export function findUnquotedToken(text: string, tokens: readonly string[]): LexR
       continue;
     }
 
+    // Block comment. PostgreSQL NESTS these, unlike C — measured on 17:
+    // `SELECT /* a /* b */ still_comment */ 42` returns 42, and
+    // `SELECT 1 /* a /* b */ ; */ + 1` returns 2, so the `;` inside is inert.
+    //
+    // Stopping at the first `*/` therefore left the scan at top level while the server was still
+    // inside the comment, which reported an inert `;` as a real separator and refused a legal view
+    // body. Depth-tracked instead.
     if (ch === '/' && text[i + 1] === '*') {
-      const end = text.indexOf('*/', i + 2);
-      if (end === -1) return { kind: 'unterminated' };
-      i = end + 2;
+      let depth = 1;
+      i += 2;
+      while (i < text.length && depth > 0) {
+        if (text[i] === '/' && text[i + 1] === '*') {
+          depth++;
+          i += 2;
+          continue;
+        }
+        if (text[i] === '*' && text[i + 1] === '/') {
+          depth--;
+          i += 2;
+          continue;
+        }
+        i++;
+      }
+      if (depth > 0) return { kind: 'unterminated' };
       continue;
     }
 
