@@ -182,6 +182,33 @@ describe('findUnquotedToken', () => {
     });
   });
 
+  it('counts backslashes: an EVEN run leaves the quote as a real terminator', () => {
+    // A review pass reported this as a HIGH bypass, claiming PostgreSQL keeps the string open. It
+    // does not. Measured on 17: E'abc\\' is the string abc\ with length 4, and
+    // `SELECT E'abc\\' AS a ; SELECT 'SECOND_RAN'` runs BOTH statements — so the trailing quote
+    // terminates and the `;` after it is REAL. The finding was a mis-trace; these assertions pin the
+    // measured behaviour so the next reader does not have to re-derive it.
+    const evenRun = "E'abc\\\\'"; // chars: E ' a b c \ \ '
+    expect(findUnquotedToken(evenRun, [';'])).toEqual({ kind: 'clean' });
+    expect(findUnquotedToken(`${evenRun} ; DROP TABLE victim`, [';'])).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+    // An ODD run escapes the quote, so the literal really is still open.
+    expect(findUnquotedToken("E'abc\\'", [';'])).toEqual({ kind: 'unterminated' });
+    expect(findUnquotedToken("E'abc\\' ; DROP TABLE victim", [';'])).toEqual({
+      kind: 'unterminated',
+    });
+  });
+
+  it('never reports a caller token that sits inside a literal or comment', () => {
+    // The same pass claimed the token pre-scan matches inside quoted spans. It cannot: once a state
+    // is entered, the inner loop consumes the whole span without returning to the token check.
+    expect(findUnquotedToken("f('a;b', 'c--d', 'e/*f')", [';', '--', '/*'])).toEqual({
+      kind: 'clean',
+    });
+  });
+
   it('reports unterminated states, but treats a line comment to end-of-input as clean', () => {
     expect(findUnquotedToken("f('unclosed", [';'])).toEqual({ kind: 'unterminated' });
     expect(findUnquotedToken('f("unclosed', [';'])).toEqual({ kind: 'unterminated' });
