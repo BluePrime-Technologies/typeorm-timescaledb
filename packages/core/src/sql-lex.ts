@@ -50,8 +50,19 @@ export type LexResult =
 function isEscapeStringPrefix(text: string, quoteIndex: number): boolean {
   const prev = text[quoteIndex - 1];
   if (prev !== 'E' && prev !== 'e') return false;
-  const before = text[quoteIndex - 2];
-  return before === undefined || !/[A-Za-z0-9_$]/.test(before);
+  return !isIdentifierChar(text[quoteIndex - 2]);
+}
+
+/**
+ * True if `ch` can appear inside a PostgreSQL identifier. `$` is included: it is legal in an
+ * identifier everywhere except the first position, which is exactly why a `$` following one does not
+ * open a dollar-quoted string.
+ *
+ * `undefined` (start of input) is not an identifier character, so a construct at position 0 is
+ * treated as opening one.
+ */
+function isIdentifierChar(ch: string | undefined): boolean {
+  return ch !== undefined && /[A-Za-z0-9_$]/.test(ch);
 }
 
 export function findUnquotedToken(text: string, tokens: readonly string[]): LexResult {
@@ -69,8 +80,16 @@ export function findUnquotedToken(text: string, tokens: readonly string[]): LexR
     // string `foo'--bar`. Without the backslash rule the scan closed the literal at that inner
     // quote, saw the following `--` at top level, and refused a legal fragment.
     //
-    // Only for E-strings: `standard_conforming_strings` is `on` (verified on the same server), so in
-    // a plain literal a backslash is an ordinary character and `'a\'` really does end there.
+    // Only for E-strings, because `standard_conforming_strings` is `on` (the default since 9.1, and
+    // verified on the same server), so in a plain literal a backslash is an ordinary character and
+    // `'a\'` really does end there.
+    //
+    // That is an ASSUMPTION, not something this library checks — there is no runtime `SHOW` guard,
+    // and adding one would make a pure function need a connection. It is safe to assume because
+    // being wrong about it fails in the harmless direction: with the setting `off`, a plain literal
+    // WOULD honour backslash escapes, so the scan closes it earlier than the server does, ends up at
+    // top level sooner, and finds MORE tokens. That refuses valid input; it never passes a separator
+    // the server would execute. Every divergence in this lexer is held to that direction.
     if (ch === "'") {
       const escapeString = isEscapeStringPrefix(text, i);
       i++;
@@ -155,11 +174,20 @@ export function findUnquotedToken(text: string, tokens: readonly string[]): LexR
       continue;
     }
 
-    if (ch === '$') {
-      // A dollar-quote tag follows UNQUOTED-IDENTIFIER rules, so it cannot begin with a digit —
-      // `$$` and `$tag$` are the only legal forms. Allowing a leading digit treated `$1$ … $1$` as
-      // a quoted block and skipped a statement separator inside it that PostgreSQL would have read
-      // as real, so the scanner skipped text the server executes.
+    // A dollar-quote tag OPENS a quoted block only when the `$` does not continue an identifier.
+    // `$` is legal inside a PostgreSQL identifier (just not first), so in `x$t$ ; $t$` the server
+    // lexes `x$t$` as the identifier `x$t$` — measured on 17, which reports "unterminated
+    // dollar-quoted string" against the SECOND `$t$`, proving the `;` between them was read as a
+    // real separator. Without this check the scan treated `$t$ … $t$` as a quoted block and called
+    // that input clean, staying "inside a quote" while the server was at top level. That is the
+    // dangerous direction: it would pass a statement separator, and a DROP after it, as inert.
+    //
+    // Third instance of this same family, after the digit-leading tag and the quoted-identifier
+    // desync — every one of them a state the scan entered when PostgreSQL did not.
+    if (ch === '$' && !isIdentifierChar(text[i - 1])) {
+      // The tag itself follows UNQUOTED-IDENTIFIER rules, so it cannot begin with a digit: `$$` and
+      // `$tag$` are the only legal forms. Allowing a leading digit treated `$1$ … $1$` as a quoted
+      // block and skipped a separator inside it that PostgreSQL reads as real.
       const tag = /^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/.exec(text.slice(i))?.[0];
       if (tag !== undefined) {
         const end = text.indexOf(tag, i + tag.length);

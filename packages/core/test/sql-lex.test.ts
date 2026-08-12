@@ -117,6 +117,34 @@ describe('findUnquotedToken', () => {
     });
   });
 
+  it('does not open a dollar quote when the $ continues an identifier', () => {
+    // Measured on PostgreSQL 17: `SELECT 1 AS x$t$ ; $t$` errors with "unterminated dollar-quoted
+    // string" pointing at the SECOND $t$ — so the server lexed `x$t$` as the identifier `x$t$` and
+    // read the `;` as a real separator. Treating `$t$ … $t$` as a quoted block called that clean,
+    // which is the dangerous direction: it would pass a separator, and anything after it, as inert.
+    expect(findUnquotedToken('x$t$ ; $t$', [';'])).toMatchObject({ kind: 'found', token: ';' });
+    expect(findUnquotedToken('SELECT 1 AS x$t$ ; DROP TABLE victim; $t$', [';'])).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+    // A tag NOT preceded by an identifier character still opens a block, as before.
+    expect(findUnquotedToken('avg(v), $t$ ; $t$', [';'])).toEqual({ kind: 'clean' });
+    expect(findUnquotedToken('$t$ ; $t$', [';'])).toEqual({ kind: 'clean' });
+    // Same rule for the E-prefix: an identifier ending in `e` is not an escape-string prefix.
+    expect(findUnquotedToken("ab$e'x\\'; DROP", [';'])).toMatchObject({
+      kind: 'found',
+      token: ';',
+    });
+  });
+
+  it('does not step past the end on a trailing backslash', () => {
+    // `i += 2` over a backslash at the very end must not lose termination detection or throw.
+    expect(findUnquotedToken("E'abc\\", [';'])).toEqual({ kind: 'unterminated' });
+    expect(findUnquotedToken("E'abc\\\\", [';'])).toEqual({ kind: 'unterminated' });
+    expect(findUnquotedToken("E'abc\\'", [';'])).toEqual({ kind: 'unterminated' });
+    expect(findUnquotedToken("E'abc\\\\'", [';'])).toEqual({ kind: 'clean' });
+  });
+
   it('reports unterminated states, but treats a line comment to end-of-input as clean', () => {
     expect(findUnquotedToken("f('unclosed", [';'])).toEqual({ kind: 'unterminated' });
     expect(findUnquotedToken('f("unclosed', [';'])).toEqual({ kind: 'unterminated' });
