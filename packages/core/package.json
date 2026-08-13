@@ -36,7 +36,7 @@
     "access": "public"
   },
   "devDependencies": {
-    "fast-check": "^3.23.2"
+    "fast-check": "^4.9.0"
   },
   "main": "./dist/cjs/index.js",
   "module": "./dist/index.js",
