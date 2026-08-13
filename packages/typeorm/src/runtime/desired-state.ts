@@ -138,15 +138,13 @@ export function compileDesiredState(
         ? undefined
         : {
             segmentBy: (cs.segmentBy ?? []).map(toDb),
-            orderBy: (cs.orderBy ?? []).map(
-              (o): OrderByElement => ({
-                column: toDb(o.column),
-                desc: o.direction === 'DESC',
-                // Decorators don't express NULLS placement; use Postgres's per-direction default,
-                // matching what introspect() reads back (ASC → NULLS LAST, DESC → NULLS FIRST).
-                nullsFirst: o.direction === 'DESC',
-              }),
-            ),
+            orderBy: (cs.orderBy ?? []).map((o): OrderByElement => ({
+              column: toDb(o.column),
+              desc: o.direction === 'DESC',
+              // Decorators don't express NULLS placement; use Postgres's per-direction default,
+              // matching what introspect() reads back (ASC → NULLS LAST, DESC → NULLS FIRST).
+              nullsFirst: o.direction === 'DESC',
+            })),
           };
 
     // The columnstore `compressAfter` becomes the compression POLICY; segmentBy/orderBy are the

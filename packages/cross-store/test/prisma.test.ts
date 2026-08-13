@@ -74,21 +74,19 @@ describe('PrismaAdapter', () => {
   });
 });
 
-runAdapterConformance(
-  'PrismaAdapter (fake client)',
-  (): Promise<ConformanceContext> =>
-    Promise.resolve({
-      adapter: new PrismaAdapter({
-        store: 'canonical',
-        client: new FakePrisma(SEEDED, 'id', { scopeColumn: 'workspace_id' }),
-      }),
-      brokenAdapter: new PrismaAdapter({
-        store: 'canonical',
-        client: new FakePrisma([], 'id', { broken: true }),
-      }),
-      table: 'accounts',
-      column: 'id',
-      seeded: SEEDED,
-      scopeColumn: 'workspace_id',
+runAdapterConformance('PrismaAdapter (fake client)', (): Promise<ConformanceContext> =>
+  Promise.resolve({
+    adapter: new PrismaAdapter({
+      store: 'canonical',
+      client: new FakePrisma(SEEDED, 'id', { scopeColumn: 'workspace_id' }),
     }),
+    brokenAdapter: new PrismaAdapter({
+      store: 'canonical',
+      client: new FakePrisma([], 'id', { broken: true }),
+    }),
+    table: 'accounts',
+    column: 'id',
+    seeded: SEEDED,
+    scopeColumn: 'workspace_id',
+  }),
 );

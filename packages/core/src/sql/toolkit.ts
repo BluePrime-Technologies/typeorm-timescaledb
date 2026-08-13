@@ -136,13 +136,7 @@ export function statsAgg2DExpr(yColumn: string, xColumn: string): string {
 
 /** 1D `stats_agg` accessors. The moment accessors take a {@link StatsMethod}. */
 export type Stats1DAccessor =
-  | 'average'
-  | 'sum'
-  | 'stddev'
-  | 'variance'
-  | 'skewness'
-  | 'kurtosis'
-  | 'num_vals';
+  'average' | 'sum' | 'stddev' | 'variance' | 'skewness' | 'kurtosis' | 'num_vals';
 
 const STATS_1D_ACCESSORS: ReadonlySet<string> = new Set([
   'average',
@@ -503,13 +497,7 @@ export function timeWeightAccessorExpr(accessor: TimeWeightAccessor, aggExpr: st
 
 /** Allowed `integral` time units (the denominator of the integral). */
 export type IntegralUnit =
-  | 'microsecond'
-  | 'millisecond'
-  | 'second'
-  | 'minute'
-  | 'hour'
-  | 'day'
-  | 'week';
+  'microsecond' | 'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week';
 
 const INTEGRAL_UNITS: ReadonlySet<string> = new Set([
   'microsecond',

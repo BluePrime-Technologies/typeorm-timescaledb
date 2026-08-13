@@ -84,7 +84,7 @@ export function canonicalizeInterval(value: IntervalOrInt): string {
   let days = 0n;
   let micros = 0n;
 
-  for (let i = 0; i < parts.length; ) {
+  for (let i = 0; i < parts.length;) {
     const tok = parts[i]!;
     const tm = TIME_TOKEN_RE.exec(tok);
     if (tm) {
