@@ -328,17 +328,15 @@ export async function planRecompression(
         return !sameArray(r[c] ?? null, desired);
       }),
     )
-    .map(
-      (r): StaleChunk => ({
-        chunk: r.chunk,
-        ...(r.chunk_segmentby !== null && { chunkSegmentBy: r.chunk_segmentby }),
-        ...(r.desired_segmentby !== null && { desiredSegmentBy: r.desired_segmentby }),
-        ...(r.chunk_orderby !== null && { chunkOrderBy: r.chunk_orderby }),
-        ...(r.desired_orderby !== null && { desiredOrderBy: r.desired_orderby }),
-        ...(r.chunk_orderby_desc !== null && { chunkOrderByDesc: r.chunk_orderby_desc }),
-        ...(r.desired_orderby_desc !== null && { desiredOrderByDesc: r.desired_orderby_desc }),
-      }),
-    );
+    .map((r): StaleChunk => ({
+      chunk: r.chunk,
+      ...(r.chunk_segmentby !== null && { chunkSegmentBy: r.chunk_segmentby }),
+      ...(r.desired_segmentby !== null && { desiredSegmentBy: r.desired_segmentby }),
+      ...(r.chunk_orderby !== null && { chunkOrderBy: r.chunk_orderby }),
+      ...(r.desired_orderby !== null && { desiredOrderBy: r.desired_orderby }),
+      ...(r.chunk_orderby_desc !== null && { chunkOrderByDesc: r.chunk_orderby_desc }),
+      ...(r.desired_orderby_desc !== null && { desiredOrderByDesc: r.desired_orderby_desc }),
+    }));
 
   return { table: qualified, chunks, precision: 'exact', compressedChunkCount };
 }

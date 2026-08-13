@@ -32,15 +32,13 @@ const SEEDED: SnapshotRow[] = [
   { id: 'c', workspace_id: 'w2', kind: 'inflow' },
 ];
 
-runAdapterConformance(
-  'in-memory fake',
-  (): Promise<ConformanceContext> =>
-    Promise.resolve({
-      adapter: new InMemoryAdapter('canonical', SEEDED),
-      brokenAdapter: new InMemoryAdapter('canonical', [], true),
-      table: 'canonical_records',
-      column: 'id',
-      seeded: SEEDED,
-      scopeColumn: 'workspace_id',
-    }),
+runAdapterConformance('in-memory fake', (): Promise<ConformanceContext> =>
+  Promise.resolve({
+    adapter: new InMemoryAdapter('canonical', SEEDED),
+    brokenAdapter: new InMemoryAdapter('canonical', [], true),
+    table: 'canonical_records',
+    column: 'id',
+    seeded: SEEDED,
+    scopeColumn: 'workspace_id',
+  }),
 );
