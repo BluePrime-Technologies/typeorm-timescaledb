@@ -87,7 +87,7 @@
     "@prisma/client": "^6.0.0",
     "pg": "^8.23.0",
     "prisma": "^6.0.0",
-    "testcontainers": "^12.1.0",
+    "testcontainers": "12.0.1",
     "typeorm": "^1.1.0"
   },
   "publishConfig": {
