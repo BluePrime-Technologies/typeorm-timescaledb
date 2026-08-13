@@ -66,13 +66,22 @@ jobs:
             echo "core@$V already published — skipping"
           else
             pnpm --filter @blueprime/timescaledb-core publish --no-git-checks --access public --provenance
-          fi
-          # A scoped package's FIRST publish under a new org can report success yet still
-          # 404 for anonymous installs until access is (re)asserted — see RELEASING.md.
-          # This re-assert is idempotent and kicks the public read-path. Skipped under
-          # tokenless OIDC (no token to authenticate the access call).
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            npm access set status=public @blueprime/timescaledb-core
+            # A scoped package's FIRST publish under a new org can report success yet still
+            # 404 for anonymous installs until access is (re)asserted — see RELEASING.md.
+            # INSIDE the else on purpose: when the version is already on npm there is nothing to
+            # kick, and running it anyway is what broke the v0.7.0 release.
+            #
+            # NON-FATAL. `npm access set` is an account change, and npm now restricts granular
+            # tokens that bypass 2FA from making those:
+            #   npm error 403 Forbidden - POST /-/package/@blueprime%2ftimescaledb-core/access
+            # The publish itself had already succeeded, but the failing re-assert took the whole
+            # step down and SKIPPED the typeorm-timescaledb publish, half-releasing the version.
+            # A genuinely private package surfaces as a 404 on install, which is loud enough;
+            # it is not worth failing a release over. Skipped under tokenless OIDC.
+            if [ -n "$NODE_AUTH_TOKEN" ]; then
+              npm access set status=public @blueprime/timescaledb-core \
+                || echo "::warning::could not re-assert public access (403 is expected for a 2FA-bypass token); the publish itself succeeded"
+            fi
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
