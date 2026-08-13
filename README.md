@@ -161,6 +161,7 @@ import { TimescaleModule, InjectTimescaleRepository } from 'typeorm-timescaledb/
 
 @Module({
   imports: [
+    // `dataSource` must already be initialized (await dataSource.initialize()) — forRoot() does not do this for you
     TimescaleModule.forRoot({ dataSource, assert: 'assert' }), // boot-time drift check
     TimescaleModule.forFeature([Reading]),
   ],
