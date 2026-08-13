@@ -62,11 +62,15 @@ jobs:
             echo "cross-store@$V already published — skipping"
           else
             pnpm --filter @blueprime/cross-store publish --no-git-checks --access public --provenance
-          fi
-          # A scoped package's FIRST publish under an org can 404 for anonymous installs until access
-          # is (re)asserted — idempotent re-assert; skipped under tokenless OIDC (no token).
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            npm access set status=public @blueprime/cross-store
+            # A scoped package's FIRST publish under an org can 404 for anonymous installs until
+            # access is (re)asserted. INSIDE the else, and NON-FATAL: npm restricts 2FA-bypass
+            # tokens from account changes, so this 403s. Run unconditionally and fatally, it took
+            # down the v0.7.0 release of the sibling packages AFTER their publish had succeeded.
+            # Skipped under tokenless OIDC (no token).
+            if [ -n "$NODE_AUTH_TOKEN" ]; then
+              npm access set status=public @blueprime/cross-store \
+                || echo "::warning::could not re-assert public access (403 is expected for a 2FA-bypass token); the publish itself succeeded"
+            fi
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
