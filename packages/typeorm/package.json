@@ -1,6 +1,6 @@
 {
   "name": "typeorm-timescaledb",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Pre-1.0 TypeORM integration for TimescaleDB: typed hypertables, columnstore, retention, reviewable migrations, and a typed hyperfunction query layer with stable toolkit aggregates.",
   "license": "Apache-2.0",
   "type": "module",

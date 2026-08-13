@@ -7,15 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [0.7.1] - 2026-08-13
+
+Documentation-only patch. **No source changes** — published so the npm package pages describe what
+0.7.0 actually ships. npm renders a README only at publish time, so a corrected README cannot reach
+the package page without a release.
+
+### Changed
+
+- README: `What's in 0.6.x` → `0.7.x`, plus a real **0.7.0 release scope** section. The published
+  page advertised 0.6.x, and still listed the `push`/`pull`/`mix` verbs under "not in this release"
+  — they shipped in 0.7.0.
+- CHANGELOG: corrected the 0.7.0 entry below, which claimed "no new feature surface". It was written
+  from the audit reports rather than from the commit range; 0.7.0 contains ten feature commits. The
+  **Added** section below is that correction.
+
 ## [0.7.0] - 2026-08-12
 
-Minor release: **a correctness and safety audit of everything 0.6.0 shipped.** No new
-feature surface — one new guard is exported, and the rest is defects found by auditing the
-migration engine, the CLI, the runtime reads and the version matrix, then fixed with a test
-each. Several of these made the engine report success while doing the wrong thing, which is
-the failure mode this release exists to remove.
+Minor release: **one-command migration verbs, continuous aggregates in the diff, and a full
+correctness and safety audit of everything 0.6.0 shipped.**
+
+The engine that landed in 0.6.0 could read, diff and converge a database, but only via `check` +
+`generate` or the programmatic API. This release puts one command in front of it, adds continuous
+aggregates to the comparison, and audits the whole surface — 41 numbered findings across seven
+review reports, plus 6 more found by adversarially reviewing the fixes. Several of those made the
+engine report success while doing the wrong thing, which is the failure mode this release exists to
+remove.
 
 One behaviour change is **breaking for CI scripts**; see below.
+
+### Added
+
+- **`push`** — converge the live database to your entities behind one command. Previews by default;
+  mutates only with `--apply`, and refuses `refuse-by-default` operations unless you opt in.
+- **`pull`** — adopt an existing database into a migration, reproducing its TimescaleDB layer as
+  operations and reporting per object whatever it could not reproduce.
+- **`mix`** — pull then push, for adopting a database you did not create.
+- **`timescaledb.config.json`** — keep `dataSource` / `outDir` / `output` in a file so the common
+  path is one command. The safety flags (`--apply`, `--allow-drops`, `--allow-refused`) are
+  deliberately **not** configurable: a file committed to the repository must never pre-authorise a
+  destructive run for everyone who later types the command.
+- **Continuous aggregates in the diff** — CAGGs are compiled into the desired state and diffed
+  additively, wired into `check` and `push`, with an explicit advisory for what was _not_ compared.
+- **Decompress → alter → recompress planner** — a columnstore change against compressed chunks is
+  planned as an explicit three-phase operation instead of silently applying to future chunks only.
+- **Static plan linter** — `lintPlan(plan)` flags destructive and lock-taking steps (`TSDB001`…)
+  before anything runs, with `formatLintFindings` for CLI output.
+- **`assertSafeFragment`** — validates the ~25 pass-through expression builders that previously
+  documented "must already be safe" in prose only.
 
 ### Breaking
 

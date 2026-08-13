@@ -2,13 +2,13 @@
 
 > A pre-1.0, multi-DataSource-safe [TimescaleDB](https://www.tigerdata.com/) integration for [TypeORM](https://typeorm.io/) — define hypertables, columnstore, and retention as typed entities, and generate/apply reviewable migrations for them.
 
-**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.2.x** introduced the query layer (time buckets, gap-filling, candlesticks); **0.3.0** expanded the stable `timescaledb_toolkit` aggregate coverage; **0.4.0** completes continuous aggregates (typed decorators, refresh policies, hierarchical, drift) and adds downsampling, informational views + jobs, and T-Digest percentiles; **0.5.0** adds async/deferred NestJS configuration (`forRootAsync`) and a fail-fast TimescaleDB-presence check; **0.6.0** ships the **migration engine** — it reads your live database, diffs it against your entities, and converges it, with every step safety-classified.
+**The vision:** every TimescaleDB capability expressed through typed ORM constructs, so you never hand-write TimescaleDB SQL. **0.2.x** introduced the query layer (time buckets, gap-filling, candlesticks); **0.3.0** expanded the stable `timescaledb_toolkit` aggregate coverage; **0.4.0** completes continuous aggregates (typed decorators, refresh policies, hierarchical, drift) and adds downsampling, informational views + jobs, and T-Digest percentiles; **0.5.0** adds async/deferred NestJS configuration (`forRootAsync`) and a fail-fast TimescaleDB-presence check; **0.6.0** ships the **migration engine** — it reads your live database, diffs it against your entities, and converges it, with every step safety-classified; **0.7.0** turns that engine into one-command verbs (`push` / `pull` / `mix`), adds continuous aggregates to the diff, a decompress→alter→recompress planner, a static plan linter, and a config file — on top of a full correctness and safety audit.
 
 ## Status and scope
 
 `typeorm-timescaledb` is an actively maintained **pre-1.0** package for TypeORM users who want typed TimescaleDB hypertables, columnstore, retention, reviewable migrations, DataSource-scoped repositories, drift detection, NestJS integration, a typed hyperfunction query layer, and stable toolkit aggregate helpers.
 
-It is **not** a complete TimescaleDB abstraction yet. Experimental (non-stable) toolkit aggregates and structural diffing of continuous aggregates are planned but not shipped. (Continuous aggregates and stable Toolkit aggregates including T-Digest shipped in 0.4.0; the migration engine shipped in 0.6.0 — see below.)
+It is **not** a complete TimescaleDB abstraction yet. Experimental (non-stable) toolkit aggregates and structural diffing of continuous aggregates are planned but not shipped. (Continuous aggregates and stable Toolkit aggregates including T-Digest shipped in 0.4.0; the migration engine shipped in 0.6.0, and the `push`/`pull`/`mix` verbs plus CAGG diffing in 0.7.0 — see below.)
 
 **What the engine does and does not change for you:** it auto-diffs compression/retention thresholds, the chunk interval, the columnstore segment-by/order-by configuration, and renames — and, only when you opt in, removes a retention or compression policy (reversibly). It never emits a destructive change: dropping a hypertable or disabling a columnstore is always yours to write by hand, and a space-dimension divergence is reported as an error rather than silently ignored. The base `CREATE TABLE` remains TypeORM's responsibility; this package adds the TimescaleDB layer on top.
 
@@ -188,9 +188,9 @@ Return `undefined` from `useFactory` to register a no-op context (no `DataSource
 boot-time drift check) for environments where TimescaleDB isn't configured — mark any
 `@InjectTimescaleContext()` / `@InjectTimescaleRepository()` consumer `@Optional()` in that case.
 
-## What's in 0.6.x
+## What's in 0.7.x
 
-**Works today (0.6.x):**
+**Works today (0.7.x):**
 
 - **Migration engine** — read the live database, diff it against your entities, converge it:
   - `introspect(dataSource)` → a canonical `SchemaStateIR` of what the database actually has.
@@ -206,6 +206,18 @@ boot-time drift check) for environments where TimescaleDB isn't configured — m
     TypeORM migration via `queryRunner`, producing SQL byte-identical to the generated path.
   - **`applyDirect(dataSource, plan, opts?)`** → apply a plan straight to a live database in one
     transaction, refusing `refuse-by-default` operations unless you explicitly opt in.
+  - **One-command verbs** → **`push`** converges the database to your entities (previews by default,
+    mutates only with `--apply`), **`pull`** adopts an existing database into a migration, and
+    **`mix`** does pull-then-push for adopting a database you did not create.
+  - **`timescaledb.config.json`** → keep `dataSource`/`outDir`/`output` in a file so the common path
+    is one command. Safety flags (`--apply`, `--allow-drops`, `--allow-refused`) are deliberately
+    **not** configurable — a file committed to the repo must never pre-authorise a destructive run.
+  - **Continuous aggregates in the diff** → CAGGs are compiled into the desired state and diffed
+    additively, and `check`/`push` refuse to be quiet about what they did not compare.
+  - **Recompress planner** → a columnstore change on compressed chunks is planned as
+    decompress → alter → recompress rather than silently applying to future chunks only.
+  - **Plan linter** → `lintPlan(plan)` statically flags destructive and lock-taking steps
+    (`TSDB001`…) before anything runs.
 
 - `@Hypertable` / `@TimeColumn` / `@HypertablePrimaryKey` — hypertables with chunk interval, **columnstore** (segmentby/orderby + policy), **retention** policy, and **space (hash) partitioning**.
 - **Migration generation + CLI** (`generate | run | revert | status`) — reviewable, reversible migrations; generated `down()` methods are **never destructive**.
@@ -218,6 +230,35 @@ boot-time drift check) for environments where TimescaleDB isn't configured — m
 - **T-Digest percentiles** — `repo.getTDigestPercentiles(...)` / `repo.getTDigestPercentileRanks(...)` (toolkit `tdigest`).
 - **NestJS module** with optional-peer wiring, named multi-DataSource contexts, and **async/deferred configuration** (`TimescaleModule.forRootAsync` — `useFactory` + `inject` + `imports`, with an optional no-op mode).
 - Unified import surface (one package, never raw `typeorm`); dual ESM + CJS.
+
+## 0.7.0 release scope
+
+The 0.7.0 release makes the migration engine usable in one command and audits everything under it.
+
+**Added:** the **`push`**, **`pull`** and **`mix`** verbs; **`timescaledb.config.json`**;
+**continuous aggregates in the diff** (compiled into the desired state, diffed additively, wired
+into `check`/`push`); a **decompress → alter → recompress planner** for columnstore changes on
+compressed chunks; and a **static plan linter** (`lintPlan`) for destructive and lock-taking steps.
+
+**Audited:** 41 numbered findings across seven review reports, plus 6 more found by adversarially
+reviewing the fixes. Most were silent wrongness rather than crashes — `diffSchemaState` returning an
+empty plan for a moved time dimension, `down()` destroying data on a lengthened retention window
+while classified `online-safe`, `listJobs` returning `[]` for continuous-aggregate policies on
+TimescaleDB 2.18, config discovery importing a module from any ancestor directory, and `pull`
+reporting a complete copy of a database it demonstrably had not copied. See the
+[CHANGELOG](./CHANGELOG.md) for the full list.
+
+**⚠️ Breaking:** **`check` now exits `2` on drift, not `1`.** Exit `1` collided with "the command
+failed", so an unreachable database was indistinguishable from real drift. Update any CI script that
+tests for `1`.
+
+**Verified on** TimescaleDB 2.18.0, 2.19.0, 2.26.0 and 2.29.1 across PostgreSQL 16, 17 and 18.
+
+**Known limitations in 0.7.0:** continuous aggregates are diffed by presence, not structurally (a
+changed bucket width or aggregate list is reported as `not-compared`, not converged); space (hash)
+dimensions cannot be reconciled in place — a divergence is reported as an error naming the required
+manual migration; and a policy's `schedule_interval` is not reproduced by `pull`, because
+introspection cannot distinguish a tuned cadence from the engine default it always fills in.
 
 ## 0.6.0 release scope
 
@@ -232,8 +273,8 @@ See the [CHANGELOG](./CHANGELOG.md) for the full list. No breaking API changes.
 **Known limitations in 0.6.0:** continuous aggregates are not structurally diffed (the diff is
 hypertable-scoped, so `check` does not cover CAGG drift); space (hash) dimensions cannot be
 reconciled in place — a divergence is reported as an error naming the required manual migration;
-and the one-command `push` / `pull` / `sync` verbs are not in this release (use `check` plus
-`generate`, or the programmatic API).
+and the one-command `push` / `pull` / `mix` verbs were not in that release (they shipped in
+0.7.0 — see above).
 
 ## 0.5.0 release scope
 
