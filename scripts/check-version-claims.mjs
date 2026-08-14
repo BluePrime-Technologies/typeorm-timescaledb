@@ -35,6 +35,26 @@ const version = JSON.parse(read('packages/typeorm/package.json')).version;
 const [major, minor] = version.split('.');
 const line = `${major}.${minor}`; // e.g. "0.7"
 
+/** Escape every regex metacharacter, not just the dot — a prerelease like `0.8.0-rc.1+build` puts a
+ *  quantifier in the middle otherwise, and the heading check silently stops matching. */
+function escapeRegExp(literal) {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Build a pattern that matches "<prefix>0.N.x<suffix>" for any N that is NOT the current minor.
+ *
+ * The negative lookahead is DERIVED, never written in. Hardcoding `(?!7)` worked at 0.7 and would
+ * have started flagging the CURRENT release line as stale the moment the version moved to 0.8 — the
+ * same drift this whole gate exists to catch, in the gate itself.
+ */
+function staleLine(prefix, suffix = '\\.x') {
+  return new RegExp(
+    `${prefix}${escapeRegExp(major)}\\.(?!${escapeRegExp(minor)}\\b)\\d+${suffix}`,
+    'g',
+  );
+}
+
 /**
  * Surfaces that state what the package currently ships. Adding a new such page means adding it
  * here — an unlisted page is exactly how `feature-status.md` drifted unnoticed.
@@ -48,21 +68,21 @@ const SURFACES = [
     file: 'README.md',
     // The npm package page renders this file (copied in by packages/typeorm prepack), so a stale
     // heading here is the most publicly visible instance of this bug.
-    staleCurrentClaim: [/What's in 0\.(?!7)\d+\.x/g, /\*\*Works today \(0\.(?!7)\d+\.x\)/g],
+    staleCurrentClaim: [staleLine("What's in "), staleLine('\\*\\*Works today \\(')],
   },
   {
     file: 'CHANGELOG.md',
     // Must carry an entry for the version about to ship, or the release has no notes at all.
-    requireHeading: new RegExp(`^## \\[${version.replace(/\./g, '\\.')}\\]`, 'm'),
+    requireHeading: new RegExp(`^## \\[${escapeRegExp(version)}\\]`, 'm'),
   },
   {
     file: 'docs/feature-status.md',
     staleCurrentClaim: [
-      /the current published release line \(0\.(?!7)\d+\.x\)/g,
-      /shipped for the current 0\.(?!7)\d+\.x scope/g,
+      staleLine('the current published release line \\('),
+      staleLine('shipped for the current '),
     ],
   },
-  { file: 'docs/overview.md', staleCurrentClaim: [/0\.(?!7)\d+\.x foundation release/g] },
+  { file: 'docs/overview.md', staleCurrentClaim: [staleLine('', ' foundation release')] },
 ];
 
 const failures = [];
