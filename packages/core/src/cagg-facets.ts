@@ -196,17 +196,25 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
   // here is what keeps a WHERE-filtered or joined aggregate honest rather than silently mis-read.
   if (/\b(JOIN|WHERE|HAVING|UNION|WINDOW|DISTINCT|ORDER\s+BY|LIMIT)\b/i.test(sql)) return undefined;
 
-  // Single literal spaces, NOT `\s+`. Whitespace was collapsed above, so the quantifiers bought
-  // nothing and cost a polynomial-backtracking surface: CodeQL flagged this as ReDoS on
-  // "strings starting with 'select ' and with many repetitions of '  '". The input is genuinely
-  // uncontrolled — `definition` is `pg_get_viewdef` output — so that was a real hang, not a
-  // theoretical one.
-  const m = /^SELECT (.+?) FROM (.+?) GROUP BY (.+)$/i.exec(sql);
-  if (m === null) return undefined;
+  // Split on literal keywords with indexOf rather than a regex. `definition` is `pg_get_viewdef`
+  // output — genuinely uncontrolled input that `check` runs on every aggregate — and CodeQL
+  // correctly flagged even the whitespace-free form `/^SELECT (.+?) FROM (.+?) GROUP BY (.+)$/`
+  // as polynomial: two lazy groups separated by literals means the engine rescans for each
+  // separator from every position. Replacing `\s+` with single spaces removed one source of
+  // backtracking and left this one, so the regex goes entirely.
+  //
+  // indexOf is O(n) with no backtracking at all, and the code reads more plainly for it. Uses the
+  // FIRST ` FROM ` and the LAST ` GROUP BY `, which is right for the shapes this parser accepts:
+  // subqueries and joins are rejected before we get here, so there is exactly one of each.
+  if (!/^SELECT /i.test(sql)) return undefined;
+  const fromAt = sql.toUpperCase().indexOf(' FROM ');
+  const groupAt = sql.toUpperCase().lastIndexOf(' GROUP BY ');
+  if (fromAt === -1 || groupAt === -1 || groupAt <= fromAt) return undefined;
 
-  const [, selectList, fromPart, groupPart] = m;
-  if (selectList === undefined || fromPart === undefined || groupPart === undefined)
-    return undefined;
+  const selectList = sql.slice('SELECT '.length, fromAt).trim();
+  const fromPart = sql.slice(fromAt + ' FROM '.length, groupAt).trim();
+  const groupPart = sql.slice(groupAt + ' GROUP BY '.length).trim();
+  if (selectList.length === 0 || fromPart.length === 0 || groupPart.length === 0) return undefined;
 
   // A single relation only — a comma here is an implicit join. Dots ARE allowed: a qualified
   // `"public"."readings"` is one relation, and normalizeRelation canonicalises it.
@@ -220,8 +228,11 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
   // whose bucket is elsewhere is one we do not claim to understand.
   const first = items[0];
   if (first === undefined) return undefined;
-  const bucketMatch = /^(.*?) AS ("(?:[^"]|"")+"|[A-Za-z_][\w$]*)$/i.exec(first);
-  const bucketExpr = bucketMatch?.[1]?.trim() ?? first;
+  // Same treatment as the structural split: find the LAST ` AS ` by index rather than with a lazy
+  // group. The alias cannot contain ` AS ` unless quoted, and a quoted alias is matched whole by
+  // BUCKET_RE's own pattern, so the last occurrence is the separator.
+  const asAt = first.toUpperCase().lastIndexOf(' AS ');
+  const bucketExpr = (asAt === -1 ? first : first.slice(0, asAt)).trim();
   const bm = BUCKET_RE.exec(bucketExpr);
   if (bm === null) return undefined;
   const bucketWidth = (bm[1] ?? bm[2] ?? '').trim();
