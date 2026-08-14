@@ -73,12 +73,68 @@ export interface CaggFacets {
   readonly aggregates: readonly CaggAggregateFacet[];
 }
 
-/** Strip one layer of double quotes from an identifier, if present. */
-function unquote(raw: string): string {
+/**
+ * Canonicalise a possibly-qualified relation to `schema.name`, defaulting the schema to `public`.
+ *
+ * Two bugs lived here. `unquote` alone treats `"public"."readings"` as ONE quoted token and yields
+ * the garbage `public"."readings`. And even unquoted correctly, `public.readings` does not equal the
+ * server's `readings` — PostgreSQL omits the schema when it is on the search_path, while the
+ * declared side renders it qualified. Either one reports a converged aggregate as drift, which the
+ * live round-trip test caught: `source readings vs public"."readings`.
+ *
+ * Same lesson as `normalizeObject` in `lint.ts` — comparing object names needs ONE normalisation,
+ * applied to both sides.
+ */
+function normalizeRelation(raw: string): string {
+  const parts: string[] = [];
+  let buf = '';
+  let inQuote = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === '"') {
+      if (inQuote && raw[i + 1] === '"') {
+        buf += '"';
+        i++;
+        continue;
+      }
+      inQuote = !inQuote;
+      continue;
+    }
+    if (ch === '.' && !inQuote) {
+      parts.push(buf);
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  parts.push(buf);
+  // Each part is normalised the same way as any other identifier: the server folds an unquoted
+  // schema or table, so `"Public"."readings"` and `public.readings` must land on one string.
+  const cleaned = parts.map((p) => p.trim()).filter((p) => p.length > 0);
+  if (cleaned.length === 0) return raw.trim();
+  const wasQuoted = /"/.test(raw);
+  const fold = (v: string): string => (wasQuoted ? v : v.toLowerCase());
+  const name = fold(cleaned[cleaned.length - 1] ?? '');
+  const schema = fold(cleaned.length > 1 ? (cleaned[cleaned.length - 2] ?? 'public') : 'public');
+  return `${schema}.${name}`;
+}
+
+/**
+ * Canonicalise an identifier the way PostgreSQL itself does: a QUOTED identifier keeps its case, an
+ * UNQUOTED one folds to lower case.
+ *
+ * Measured on PG17/TSDB 2.29.1 — declaring `AS Bucket` / `AS AvgValue` unquoted and reading
+ * `view_definition` back returns `AS bucket` / `AS avgvalue`. Stripping quotes without folding
+ * therefore compares `AvgValue` against `avgvalue` and reports drift on an aggregate nobody
+ * changed, which is the one outcome this module exists to prevent. Found by adversarial review
+ * before merge, then verified against a live server rather than taken on trust.
+ */
+function normaliseIdent(raw: string): string {
   const t = raw.trim();
-  return t.startsWith('"') && t.endsWith('"') && t.length >= 2
-    ? t.slice(1, -1).replace(/""/g, '"')
-    : t;
+  if (t.startsWith('"') && t.endsWith('"') && t.length >= 2) {
+    return t.slice(1, -1).replace(/""/g, '"'); // quoted: case is significant
+  }
+  return t.toLowerCase(); // unquoted: the server folded it, so we must too
 }
 
 /**
@@ -119,11 +175,11 @@ function splitTopLevel(text: string): string[] | undefined {
 
 /** `time_bucket('01:00:00'::interval, "time")` -> width + column. Also accepts `INTERVAL '1 hour'`. */
 const BUCKET_RE =
-  /^time_bucket\(\s*(?:'([^']*)'::interval|INTERVAL\s+'([^']*)')\s*,\s*("(?:[^"]|"")+"|[A-Za-z_][\w$]*)\s*\)$/i;
+  /^time_bucket\( ?(?:'([^']*)'::interval|INTERVAL '([^']*)') ?, ?("(?:[^"]|"")+"|[A-Za-z_][\w$]*) ?\)$/i;
 
 /** `avg(value) AS avg_value`, `count(*) AS n`. Deliberately does NOT accept nested expressions. */
 const AGG_RE =
-  /^([A-Za-z_][\w$]*)\(\s*(\*|"(?:[^"]|"")+"|[A-Za-z_][\w$]*)\s*\)\s+AS\s+("(?:[^"]|"")+"|[A-Za-z_][\w$]*)$/i;
+  /^([A-Za-z_][\w$]*)\( ?(\*|"(?:[^"]|"")+"|[A-Za-z_][\w$]*) ?\) AS ("(?:[^"]|"")+"|[A-Za-z_][\w$]*)$/i;
 
 /**
  * Parse a rendered continuous-aggregate SELECT into its facets.
@@ -140,16 +196,22 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
   // here is what keeps a WHERE-filtered or joined aggregate honest rather than silently mis-read.
   if (/\b(JOIN|WHERE|HAVING|UNION|WINDOW|DISTINCT|ORDER\s+BY|LIMIT)\b/i.test(sql)) return undefined;
 
-  const m = /^SELECT\s+(.+?)\s+FROM\s+(.+?)\s+GROUP\s+BY\s+(.+)$/i.exec(sql);
+  // Single literal spaces, NOT `\s+`. Whitespace was collapsed above, so the quantifiers bought
+  // nothing and cost a polynomial-backtracking surface: CodeQL flagged this as ReDoS on
+  // "strings starting with 'select ' and with many repetitions of '  '". The input is genuinely
+  // uncontrolled — `definition` is `pg_get_viewdef` output — so that was a real hang, not a
+  // theoretical one.
+  const m = /^SELECT (.+?) FROM (.+?) GROUP BY (.+)$/i.exec(sql);
   if (m === null) return undefined;
 
   const [, selectList, fromPart, groupPart] = m;
   if (selectList === undefined || fromPart === undefined || groupPart === undefined)
     return undefined;
 
-  // A single relation only — a comma here is an implicit join.
+  // A single relation only — a comma here is an implicit join. Dots ARE allowed: a qualified
+  // `"public"."readings"` is one relation, and normalizeRelation canonicalises it.
   if (/[,()]/.test(fromPart)) return undefined;
-  const source = unquote(fromPart);
+  const source = normalizeRelation(fromPart);
 
   const items = splitTopLevel(selectList);
   if (items === undefined || items.length < 2) return undefined;
@@ -158,7 +220,7 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
   // whose bucket is elsewhere is one we do not claim to understand.
   const first = items[0];
   if (first === undefined) return undefined;
-  const bucketMatch = /^(.*?)\s+AS\s+("(?:[^"]|"")+"|[A-Za-z_][\w$]*)$/i.exec(first);
+  const bucketMatch = /^(.*?) AS ("(?:[^"]|"")+"|[A-Za-z_][\w$]*)$/i.exec(first);
   const bucketExpr = bucketMatch?.[1]?.trim() ?? first;
   const bm = BUCKET_RE.exec(bucketExpr);
   if (bm === null) return undefined;
@@ -176,8 +238,8 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
       if (fn === undefined || arg === undefined || alias === undefined) return undefined;
       aggregates.push({
         fn: fn.toLowerCase(),
-        ...(arg === '*' ? {} : { column: unquote(arg) }),
-        as: unquote(alias),
+        ...(arg === '*' ? {} : { column: normaliseIdent(arg) }),
+        as: normaliseIdent(alias),
       });
       continue;
     }
@@ -185,7 +247,7 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
     const plain =
       /^("(?:[^"]|"")+"|[A-Za-z_][\w$]*)(?:\s+AS\s+("(?:[^"]|"")+"|[A-Za-z_][\w$]*))?$/i.exec(item);
     if (plain === null || plain[1] === undefined) return undefined;
-    groupBy.push(unquote(plain[1]));
+    groupBy.push(normaliseIdent(plain[1]));
   }
 
   if (aggregates.length === 0) return undefined;
@@ -201,13 +263,13 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
     const bare = key.replace(/^\((.*)\)$/s, '$1').trim();
     if (BUCKET_RE.test(bare)) continue; // the bucket itself
     if (/^\d+$/.test(bare)) continue; // an unexpanded positional reference
-    if (accountedFor.has(unquote(bare))) continue;
+    if (accountedFor.has(normaliseIdent(bare))) continue;
     return undefined;
   }
 
   return {
     bucketWidth: canonicalizeInterval(bucketWidth),
-    timeColumn: unquote(timeColumnRaw),
+    timeColumn: normaliseIdent(timeColumnRaw),
     source,
     groupBy: [...groupBy].sort(),
     aggregates: [...aggregates].sort((a, b) => a.as.localeCompare(b.as)),

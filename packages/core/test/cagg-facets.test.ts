@@ -30,7 +30,7 @@ describe('extractCaggFacets — the declared and stored forms must agree', () =>
     expect(server).toEqual({
       bucketWidth: 'us:3600000000', // canonicalised, not raw text
       timeColumn: 'time',
-      source: 'sensor_reading',
+      source: 'public.sensor_reading', // canonicalised: the server omits the schema, the declared side qualifies it
       groupBy: ['sensor_id'],
       aggregates: [{ fn: 'avg', column: 'value', as: 'avg_value' }],
     });
@@ -125,5 +125,54 @@ describe('extractCaggFacets — refuses rather than guesses', () => {
   it('undefined is a first-class result, never a throw', () => {
     expect(() => extractCaggFacets('not sql at all')).not.toThrow();
     expect(extractCaggFacets('')).toBeUndefined();
+  });
+});
+
+describe('extractCaggFacets — identifier case, the false positive adversarial review caught', () => {
+  it('folds UNQUOTED identifiers, because PostgreSQL does', () => {
+    // Measured on PG17/TSDB 2.29.1: declaring `AS Bucket` / `AS AvgValue` unquoted and reading
+    // view_definition back returns `AS bucket` / `AS avgvalue`. Comparing without folding reports
+    // drift on an aggregate nobody changed — `check` failing on a converged database.
+    const declared =
+      "SELECT time_bucket(INTERVAL '1 hour', time) AS Bucket, sensor_id, avg(value) AS AvgValue FROM readings GROUP BY 1, 2";
+    const server =
+      ' SELECT time_bucket(\'01:00:00\'::interval, "time") AS bucket, sensor_id, avg(value) AS avgvalue FROM readings GROUP BY (time_bucket(\'01:00:00\'::interval, "time")), sensor_id;';
+    expect(caggFacetsEqual(extractCaggFacets(declared)!, extractCaggFacets(server)!)).toBe(true);
+    expect(extractCaggFacets(declared)?.aggregates[0]?.as).toBe('avgvalue');
+  });
+
+  it('preserves the case of a QUOTED identifier, where case IS significant', () => {
+    // "AvgValue" quoted is a genuinely different column from avgvalue; folding it would make two
+    // different aggregates compare equal — a false NEGATIVE, the mirror mistake.
+    const quoted =
+      'SELECT time_bucket(INTERVAL \'1 hour\', time) AS "Bucket", sensor_id, avg(value) AS "AvgValue" FROM readings GROUP BY 1, 2';
+    expect(extractCaggFacets(quoted)?.aggregates[0]?.as).toBe('AvgValue');
+  });
+
+  it('folds an unquoted relation but not a quoted one', () => {
+    const unquoted =
+      "SELECT time_bucket(INTERVAL '1 h', t) AS b, s, avg(v) AS a FROM Public.Readings GROUP BY 1, 2";
+    const quoted =
+      'SELECT time_bucket(INTERVAL \'1 h\', t) AS b, s, avg(v) AS a FROM "Public"."readings" GROUP BY 1, 2';
+    expect(extractCaggFacets(unquoted)?.source).toBe('public.readings');
+    expect(extractCaggFacets(quoted)?.source).toBe('Public.readings');
+  });
+});
+
+describe('extractCaggFacets — pathological input must not hang', () => {
+  it('handles a definition with a huge run of whitespace in linear time', () => {
+    // CodeQL flagged polynomial backtracking here: "may run slow on strings starting with
+    // 'select ' and with many repetitions of '  '". The input is genuinely uncontrolled — it is
+    // pg_get_viewdef output — so a pathological view definition could have hung the diff.
+    const pathological = `SELECT${' '.repeat(50_000)}a FROM b GROUP BY 1`;
+    const started = Date.now();
+    expect(extractCaggFacets(pathological)).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('handles a long unterminated quote without blowing up', () => {
+    const started = Date.now();
+    expect(extractCaggFacets(`SELECT "${'a'.repeat(50_000)}`)).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
