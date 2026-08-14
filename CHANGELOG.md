@@ -18,9 +18,12 @@ the package page without a release.
 - README: `What's in 0.6.x` → `0.7.x`, plus a real **0.7.0 release scope** section. The published
   page advertised 0.6.x, and still listed the `push`/`pull`/`mix` verbs under "not in this release"
   — they shipped in 0.7.0.
-- CHANGELOG: corrected the 0.7.0 entry below, which claimed "no new feature surface". It was written
-  from the audit reports rather than from the commit range; 0.7.0 contains ten feature commits. The
-  **Added** section below is that correction.
+- CHANGELOG: corrected the 0.7.0 entry below on two counts, both from writing it against the audit
+  reports instead of `git log v0.6.1..v0.7.0`. It claimed "no new feature surface" when the range
+  holds ten feature commits — the **Added** section is that correction. Its **Fixed** list also
+  stopped at the audit's own findings, omitting the six defects the entry's own opening promises
+  ("plus 6 more found by adversarially reviewing the fixes"), including three SQL-lexer bypasses
+  that could hide a statement separator.
 
 ## [0.7.0] - 2026-08-12
 
@@ -107,6 +110,32 @@ Injection and path handling:
   a digit-leading dollar-quote tag was accepted where PostgreSQL would not read one.
 - The ~25 pass-through expression builders now validate their fragment (`assertSafeFragment`,
   exported) instead of documenting "must already be safe" in prose only.
+
+Found by adversarially reviewing the fixes above, not by the original audit — five review
+passes over one file, four of which produced a real defect. Three of these **hid a statement
+separator**, which is the only class here that could smuggle SQL rather than merely refuse it:
+
+- The quote/comment walk was **duplicated**: `assertSafeFragment` shipped a naive regex over `;`,
+  `--` and `/*` while `classifyDefinitionBody` already carried a proper scanner. The naive form
+  **rejected legal SQL** — `string_agg(message, '--')`, `count(*) FILTER (WHERE tag <> 'a;b')` — a
+  regression for callers, since those builders previously accepted anything. Both now share one
+  lexer, so they cannot drift.
+- **Block comments nest in PostgreSQL**, and the scan stopped at the first `*/`; an `E'…'` string
+  escapes a quote with a backslash as well as by doubling. Both left the scan at top level while
+  the server was still inside a comment or literal. (Conservative direction: they refused valid
+  input.)
+- **A `$` that follows an identifier character does not open a dollar quote.** `$` is legal inside
+  an identifier, so PostgreSQL reads `x$t$ ; $t$` as the identifier `x$t$` followed by a **real**
+  separator — while the scan treated it as a quoted block and called the input clean.
+- **Non-ASCII letters are identifier characters**, so the same hole reopened via `α$t$ ; $t$`; and
+  **a line comment ends at a bare CR**, not only LF, so `-- x\r; DROP` hid a real separator.
+- `runtime/introspect.ts` contained three raw NUL bytes (a `\0` Map-key separator written as
+  literal bytes), which made **git classify the file as binary** — so changes to the core
+  introspection path produced _no reviewable diff at all_. Written as escapes; guarded by a test.
+- `introspect()` now **fails fast** with `TSDB_TIMESCALEDB_MISSING` when the `timescaledb`
+  extension is absent, instead of surfacing a raw `relation "timescaledb_information.hypertables"
+does not exist` from the first catalog query.
+- `listChunks`/`introspect` stopped reading a **catalog column TimescaleDB 2.29 removed**.
 
 Version compatibility, which was untested where it mattered most:
 
