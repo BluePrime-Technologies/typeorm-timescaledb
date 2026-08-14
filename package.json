@@ -16,6 +16,7 @@
     "typecheck": "turbo run typecheck",
     "lint": "eslint .",
     "format": "prettier --write .",
+    "check:version-claims": "node scripts/check-version-claims.mjs",
     "format:check": "prettier --check ."
   },
   "devDependencies": {
