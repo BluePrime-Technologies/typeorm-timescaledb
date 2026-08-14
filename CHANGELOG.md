@@ -7,15 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [0.7.1] - 2026-08-13
+
+Documentation-only patch. **No source changes** — published so the npm package pages describe what
+0.7.0 actually ships. npm renders a README only at publish time, so a corrected README cannot reach
+the package page without a release.
+
+### Changed
+
+- README: `What's in 0.6.x` → `0.7.x`, plus a real **0.7.0 release scope** section. The published
+  page advertised 0.6.x, and still listed the `push`/`pull`/`mix` verbs under "not in this release"
+  — they shipped in 0.7.0.
+- CHANGELOG: corrected the 0.7.0 entry below on two counts, both from writing it against the audit
+  reports instead of `git log v0.6.1..v0.7.0`. It claimed "no new feature surface" when the range
+  holds ten feature commits — the **Added** section is that correction. Its **Fixed** list also
+  stopped at the audit's own findings, omitting the six defects the entry's own opening promises
+  ("plus 6 more found by adversarially reviewing the fixes"), including three SQL-lexer bypasses
+  that could hide a statement separator.
+
 ## [0.7.0] - 2026-08-12
 
-Minor release: **a correctness and safety audit of everything 0.6.0 shipped.** No new
-feature surface — one new guard is exported, and the rest is defects found by auditing the
-migration engine, the CLI, the runtime reads and the version matrix, then fixed with a test
-each. Several of these made the engine report success while doing the wrong thing, which is
-the failure mode this release exists to remove.
+Minor release: **one-command migration verbs, continuous aggregates in the diff, and a full
+correctness and safety audit of everything 0.6.0 shipped.**
+
+The engine that landed in 0.6.0 could read, diff and converge a database, but only via `check` +
+`generate` or the programmatic API. This release puts one command in front of it, adds continuous
+aggregates to the comparison, and audits the whole surface — 41 numbered findings across seven
+review reports, plus 6 more found by adversarially reviewing the fixes. Several of those made the
+engine report success while doing the wrong thing, which is the failure mode this release exists to
+remove.
 
 One behaviour change is **breaking for CI scripts**; see below.
+
+### Added
+
+- **`push`** — converge the live database to your entities behind one command. Previews by default;
+  mutates only with `--apply`, and refuses `refuse-by-default` operations unless you opt in.
+- **`pull`** — adopt an existing database into a migration, reproducing its TimescaleDB layer as
+  operations and reporting per object whatever it could not reproduce.
+- **`mix`** — pull then push, for adopting a database you did not create.
+- **`timescaledb.config.json`** — keep `dataSource` / `outDir` / `output` in a file so the common
+  path is one command. The safety flags (`--apply`, `--allow-drops`, `--allow-refused`) are
+  deliberately **not** configurable: a file committed to the repository must never pre-authorise a
+  destructive run for everyone who later types the command.
+- **Continuous aggregates in the diff** — CAGGs are compiled into the desired state and diffed
+  additively, wired into `check` and `push`, with an explicit advisory for what was _not_ compared.
+- **Decompress → alter → recompress planner** — a columnstore change against compressed chunks is
+  planned as an explicit three-phase operation instead of silently applying to future chunks only.
+- **Static plan linter** — `lintPlan(plan)` flags destructive and lock-taking steps (`TSDB001`…)
+  before anything runs, with `formatLintFindings` for CLI output.
+- **`assertSafeFragment`** — validates the ~25 pass-through expression builders that previously
+  documented "must already be safe" in prose only.
 
 ### Breaking
 
@@ -68,6 +110,30 @@ Injection and path handling:
   a digit-leading dollar-quote tag was accepted where PostgreSQL would not read one.
 - The ~25 pass-through expression builders now validate their fragment (`assertSafeFragment`,
   exported) instead of documenting "must already be safe" in prose only.
+
+Found by reviewing the fixes, not by the audit — three of these **hid a statement separator**:
+
+- The quote/comment walk was **duplicated**: `assertSafeFragment` shipped a naive regex over `;`,
+  `--` and `/*` while `classifyDefinitionBody` already carried a proper scanner. The naive form
+  **rejected legal SQL** — `string_agg(message, '--')`, `count(*) FILTER (WHERE tag <> 'a;b')` — a
+  regression for callers, since those builders previously accepted anything. Both now share one
+  lexer, so they cannot drift.
+- **Block comments nest in PostgreSQL**, and the scan stopped at the first `*/`; an `E'…'` string
+  escapes a quote with a backslash as well as by doubling. Both left the scan at top level while
+  the server was still inside a comment or literal. (Conservative direction: they refused valid
+  input.)
+- **A `$` that follows an identifier character does not open a dollar quote.** `$` is legal inside
+  an identifier, so PostgreSQL reads `x$t$ ; $t$` as the identifier `x$t$` followed by a **real**
+  separator — while the scan treated it as a quoted block and called the input clean.
+- **Non-ASCII letters are identifier characters**, so the same hole reopened via `α$t$ ; $t$`; and
+  **a line comment ends at a bare CR**, not only LF, so `-- x\r; DROP` hid a real separator.
+- `runtime/introspect.ts` contained three raw NUL bytes (a `\0` Map-key separator written as
+  literal bytes), which made **git classify the file as binary** — so changes to the core
+  introspection path produced _no reviewable diff at all_. Written as escapes; guarded by a test.
+- `introspect()` now **fails fast** with `TSDB_TIMESCALEDB_MISSING` when the `timescaledb`
+  extension is absent, instead of surfacing a raw `relation "timescaledb_information.hypertables"
+does not exist` from the first catalog query.
+- `listChunks`/`introspect` stopped reading a **catalog column TimescaleDB 2.29 removed**.
 
 Version compatibility, which was untested where it mattered most:
 
