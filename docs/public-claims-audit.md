@@ -1,5 +1,9 @@
 # Public claims audit for 0.1.x
 
+> **Historical artifact.** This is a point-in-time audit of the claims made at **0.1.x**, kept
+> for the record. Every "today" / "current scope" below means 0.1.x, not the current release
+> line. For what ships now, see [feature-status.md](feature-status.md).
+
 Related issue: #33
 
 ## Purpose
