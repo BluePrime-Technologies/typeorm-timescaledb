@@ -111,9 +111,7 @@ Injection and path handling:
 - The ~25 pass-through expression builders now validate their fragment (`assertSafeFragment`,
   exported) instead of documenting "must already be safe" in prose only.
 
-Found by adversarially reviewing the fixes above, not by the original audit — five review
-passes over one file, four of which produced a real defect. Three of these **hid a statement
-separator**, which is the only class here that could smuggle SQL rather than merely refuse it:
+Found by reviewing the fixes, not by the audit — three of these **hid a statement separator**:
 
 - The quote/comment walk was **duplicated**: `assertSafeFragment` shipped a naive regex over `;`,
   `--` and `/*` while `classifyDefinitionBody` already carried a proper scanner. The naive form
