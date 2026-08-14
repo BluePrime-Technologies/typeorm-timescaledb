@@ -34,3 +34,39 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: 'chore(deps)'
+    # Upgrades that are BLOCKED BY SOMETHING ELSE, not merely unreviewed. Each was proposed,
+    # attempted, and demonstrated to break a support claim this repo makes and tests (see #207);
+    # without these entries Dependabot re-proposes them every week and the dev-tooling group goes
+    # red on arrival, which trains everyone to ignore it.
+    #
+    # These are NARROW on purpose — a major hold still takes minors and patches, so security fixes
+    # on the current major keep flowing. Each entry says what has to become true to remove it.
+    ignore:
+      # typescript-eslint refuses TS 7 at startup ("typescript-eslint does not support TS 7.0"),
+      # and TS 7 also breaks the build (`Cannot find name 'TextEncoder'`). No released
+      # typescript-eslint supports it — latest is 8.67.0, peer `>=4.8.4 <6.1.0`.
+      # REMOVE WHEN: typescript-eslint ships TS >=7 support — https://github.com/typescript-eslint/typescript-eslint/issues/10940
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
+
+      # Prisma 7 needs a schema migration (`url` moves out of the datasource block into
+      # prisma.config.ts) and driver adapters instead of `new PrismaClient({ datasources })`.
+      # It is also a PUBLISHED SUPPORT CLAIM: @prisma/client is an optional peerDependency of
+      # @blueprime/cross-store, declared `^5.0.0 || ^6.0.0`. Adopting 7 in devDependencies while
+      # shipping that range means testing against a major we do not claim to support.
+      # REMOVE WHEN: the adapter is migrated AND the peer range is widened to include ^7.
+      - dependency-name: 'prisma'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@prisma/client'
+        update-types: ['version-update:semver-major']
+
+      # Every testcontainers >=12.0.2 depends on undici ^8, and undici 8 declares
+      # `engines: node >=22.19.0` — it calls `webidl.util.markAsUncloneable`, which does not exist
+      # on Node 20. All four node-20 CI legs fail with that TypeError. All three packages here
+      # declare `engines: { node: "^20.19.0 || >=22.12.0" }`, so taking it would silently narrow
+      # published support to >=22. Note 12.0.2/12.0.3/12.0.4 do NOT declare the constraint in their
+      # own `engines` — only 12.1.0 does — so nothing warns; hence a version range, not a major hold.
+      # REMOVE WHEN: Node 20 is dropped from `engines` and the CI matrix, or testcontainers
+      # supports undici 7 again.
+      - dependency-name: 'testcontainers'
+        versions: ['>=12.0.2']

@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import 'reflect-metadata';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DataSource } from 'typeorm';
@@ -171,7 +172,7 @@ describe('pullCommand', () => {
 
     expect(outcome).toBe('complete');
     expect(files).toHaveLength(1);
-    expect(files[0]?.path).toBe('migrations/1760000000000-Timescale.ts');
+    expect(files[0]?.path).toBe(join('migrations', '1760000000000-Timescale.ts'));
     expect(files[0]?.content).toContain('implements MigrationInterface');
     expect(out.join('\n')).toContain('Reproduced migration:');
   });
@@ -188,7 +189,7 @@ describe('pullCommand', () => {
       writer,
     );
 
-    expect(files[0]?.path).toBe('db/1760000000000-Adopted.sql');
+    expect(files[0]?.path).toBe(join('db', '1760000000000-Adopted.sql'));
     expect(files[0]?.content).toContain('create_hypertable');
     expect(files[0]?.content).not.toContain('MigrationInterface');
   });
