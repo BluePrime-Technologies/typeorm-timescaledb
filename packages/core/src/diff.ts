@@ -14,6 +14,7 @@ import type { AddColumnstorePolicyOperation, Operation } from './operation.js';
 import { classifyOperation, type OperationSafety } from './safety.js';
 import { intervalsEqual } from './normalize.js';
 import { TimescaleError, TimescaleErrorCode } from './errors.js';
+import { extractCaggFacets, caggFacetsEqual, type CaggFacets } from './cagg-facets.js';
 
 /**
  * The migration engine's DIFF (M4.2). `diffSchemaState(current, desired)` compares the current live-DB
@@ -191,6 +192,31 @@ export function compilePlan(plan: Plan): CompiledPlan {
   for (const s of statements) up.push(...s.up);
   for (const s of [...statements].reverse()) down.push(...s.down);
   return { up, down };
+}
+
+/** Name the facets that differ, so the advisory says WHAT changed rather than merely that it did. */
+function describeCaggDelta(current: CaggFacets, desired: CaggFacets): string {
+  const parts: string[] = [];
+  if (current.bucketWidth !== desired.bucketWidth) {
+    parts.push(
+      `bucket width ${current.bucketWidth} in the database vs ${desired.bucketWidth} declared`,
+    );
+  }
+  if (current.timeColumn !== desired.timeColumn) {
+    parts.push(`time column "${current.timeColumn}" vs "${desired.timeColumn}"`);
+  }
+  if (current.source !== desired.source) {
+    parts.push(`source ${current.source} vs ${desired.source}`);
+  }
+  if (current.groupBy.join(',') !== desired.groupBy.join(',')) {
+    parts.push(`group keys [${current.groupBy.join(', ')}] vs [${desired.groupBy.join(', ')}]`);
+  }
+  const agg = (f: CaggFacets): string =>
+    f.aggregates.map((a) => `${a.fn}(${a.column ?? '*'}) AS ${a.as}`).join(', ');
+  if (agg(current) !== agg(desired)) {
+    parts.push(`aggregates [${agg(current)}] vs [${agg(desired)}]`);
+  }
+  return parts.length > 0 ? parts.join('; ') : 'the facets differ';
 }
 
 function findDimension(h: HypertableState, kind: 'time' | 'space'): DimensionState | undefined {
@@ -784,15 +810,46 @@ function diffContinuousAggregates(
       continue;
     }
 
-    // The CAGG already exists. Presence-only from here (see the doc comment).
-    advisories.push({
-      kind: 'not-compared',
-      object: d.viewName,
-      detail:
-        'exists in the database; its definition (bucket width, group keys, aggregates) is NOT ' +
-        'compared — the catalog reports a parse-tree deparse that an unchanged aggregate does not ' +
-        'textually match. Verify changes to an existing aggregate by hand.',
-    });
+    // The CAGG already exists. Try to compare its DEFINITION structurally; fall back to the honest
+    // "not compared" only when a side cannot be parsed.
+    //
+    // Comparing the deparsed text directly is not an option — measured on PG17/TSDB 2.29.1, the
+    // server returns an unchanged aggregate with the interval reformatted, quoting stripped, the
+    // layout reindented and `GROUP BY 1, 2` EXPANDED into full expressions. `extractCaggFacets`
+    // exists because normalising that last one requires parsing the SELECT anyway.
+    const currentFacets = extractCaggFacets(c.definition);
+    const desiredFacets = extractCaggFacets(d.definition);
+
+    if (currentFacets === undefined || desiredFacets === undefined) {
+      // A shape the parser does not read. Exactly as informative as before — never a guess.
+      advisories.push({
+        kind: 'not-compared',
+        object: d.viewName,
+        detail:
+          'exists in the database, but its definition could not be parsed into comparable facets, ' +
+          'so its definition (bucket width, group keys, aggregates) is NOT compared. Verify ' +
+          'changes to this aggregate by hand.',
+      });
+    } else if (!caggFacetsEqual(currentFacets, desiredFacets)) {
+      // `not-expressible`, deliberately: this IS drift, and it BLOCKS `check` (commands.ts filters
+      // this kind as blocking). Reporting it as `not-compared` would be a false statement — we did
+      // compare, and we found a difference — and a gate that under-reports what it knows is the
+      // exact failure this engine exists to remove.
+      //
+      // It is not a plan step: TimescaleDB cannot ALTER a continuous aggregate's SELECT, so
+      // converging means drop-and-recreate, discarding materialized rows that may be the only
+      // surviving copy of data whose source chunks retention has already dropped. That belongs
+      // behind an explicit opt-in, not in an automatic plan.
+      advisories.push({
+        kind: 'not-expressible',
+        object: d.viewName,
+        detail:
+          `its definition differs from the declaration — ${describeCaggDelta(currentFacets, desiredFacets)}. ` +
+          "Altering a continuous aggregate's SELECT is not expressible: converging it means " +
+          'DROP + CREATE, which discards the materialized rows. Recreate it deliberately, or align ' +
+          'the decorator with the database.',
+      });
+    }
 
     // `materialized_only` is a real, comparable facet — it is a boolean the catalog reports
     // directly, not part of the deparsed definition. The plan for this slice said such changes are
