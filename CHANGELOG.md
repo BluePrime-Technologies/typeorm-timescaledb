@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [Unreleased]
+
+### Added
+
+- **`lintPlan`, `formatLintFindings` and `assertSafeFragment` are now exported from
+  `typeorm-timescaledb`.** The 0.7.0 changelog listed all three under **Added** without naming a
+  package, but they were only ever reachable from `@blueprime/timescaledb-core` — a transitive
+  dependency consumers do not declare. A consumer following the changelog with
+  `import { lintPlan } from 'typeorm-timescaledb'` got `undefined`, and the obvious workaround
+  (importing from `@blueprime/timescaledb-core` directly) depends on a package not in their
+  `package.json`. All three — plus the `LintFinding` / `LintSeverity` / `Plan` types the linter
+  surface uses — are now re-exported from the package you install. `assertSafeFragment` guards a
+  hand-built expression fragment against statement/comment breakout — it rejects a top-level `;`,
+  `--` or `/*` — and is **not** a general injection sanitiser, so it is not a licence to pass
+  untrusted input. (#222)
+
 ## [0.7.1] - 2026-08-13
 
 Documentation-only patch. **No source changes** — published so the npm package pages describe what
