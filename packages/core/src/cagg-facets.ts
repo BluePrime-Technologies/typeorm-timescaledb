@@ -44,6 +44,65 @@
 
 import { canonicalizeInterval } from './normalize.js';
 
+/** Calendar units, whose length is variable and therefore NOT convertible to a fixed µs count. */
+const CALENDAR_UNIT_RE = /^(mon|mons|month|months|y|yr|yrs|year|years)$/i;
+const YEAR_UNIT_RE = /^(y|yr|yrs|year|years)$/i;
+
+/**
+ * Canonicalise a BUCKET WIDTH, keeping calendar months separate from fixed durations.
+ *
+ * `canonicalizeInterval` deliberately collapses everything into one µs scalar using Postgres's
+ * `interval_cmp` rule, where a month is exactly 30 days (`normalize.ts`: `USECS_PER_MONTH = 30n *
+ * USECS_PER_DAY`). That is CORRECT for the thing it was written for — comparing policy thresholds,
+ * where Postgres itself does the same — and WRONG for a bucket width. Verified by execution:
+ * `1 mon` and `30 days` both yield `us:2592000000000`, and `1 year` and `360 days` both yield
+ * `us:31104000000000`.
+ *
+ * A TimescaleDB month bucket is calendar-variable: it starts on the 1st and runs 28–31 days. It is
+ * simply not the same aggregate as a fixed 30-day bucket, so collapsing them would report "no drift"
+ * across a change that silently re-buckets every row — the widening an hourly aggregate to monthly
+ * is one of the most common real edits a user makes.
+ *
+ * So months are carried as their own dimension. Widths with no calendar unit keep the existing
+ * single-scalar key exactly, which keeps this change additive for every shape already covered.
+ */
+function canonicalizeBucketWidth(text: string): string {
+  const parts = text
+    .trim()
+    .split(/\s+/)
+    .filter((p) => p.length > 0);
+
+  let months = 0n;
+  const rest: string[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const value = parts[i];
+    const unit = parts[i + 1];
+    if (
+      value !== undefined &&
+      unit !== undefined &&
+      /^[+-]?\d+$/.test(value) &&
+      CALENDAR_UNIT_RE.test(unit)
+    ) {
+      months += BigInt(value) * (YEAR_UNIT_RE.test(unit) ? 12n : 1n);
+      i++; // consume the unit token too
+      continue;
+    }
+    if (value !== undefined) rest.push(value);
+  }
+
+  // No calendar unit: behave exactly as before, so existing keys are untouched.
+  if (months === 0n) return canonicalizeInterval(text);
+
+  const remainder = rest.join(' ');
+  const tail = remainder.length > 0 ? canonicalizeInterval(remainder) : 'us:0';
+  // A remainder we cannot canonicalise cleanly must not be silently dropped — quarantine the whole
+  // value rather than emit a key that claims more precision than we have.
+  if (!tail.startsWith('us:')) return `raw:${text.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+
+  return `mon:${months.toString()}|${tail}`;
+}
+
 /** One aggregate output column, e.g. `avg(value) AS avg_value`. */
 export interface CaggAggregateFacet {
   /** Lower-cased function name, e.g. `avg`. */
@@ -52,6 +111,22 @@ export interface CaggAggregateFacet {
   readonly column?: string;
   /** Output alias. */
   readonly as: string;
+}
+
+/**
+ * One non-bucket GROUP BY key as it appears in the SELECT list, e.g. `sensor_id` or
+ * `sensor_id AS sid`.
+ *
+ * The alias is part of the facet because it is part of the VIEW'S PUBLIC SHAPE. An aggregate whose
+ * grain is unchanged but whose output column was renamed is a breaking change for every query
+ * reading it, so reporting that as "no drift" would be exactly the false green this module exists
+ * to prevent.
+ */
+export interface CaggGroupFacet {
+  /** The grouped column, unquoted and folded like any other identifier. */
+  readonly column: string;
+  /** Output alias, present only when the SELECT list actually aliased the column. */
+  readonly as?: string;
 }
 
 /** The facets that define a continuous aggregate, independent of how the server renders them. */
@@ -65,10 +140,16 @@ export interface CaggFacets {
   readonly bucketWidth: string;
   /** The time column the bucket is computed over, unquoted. */
   readonly timeColumn: string;
+  /**
+   * Output alias of the bucket column, e.g. `bucket`. Part of the view's public shape for the same
+   * reason {@link CaggGroupFacet.as} is: renaming it breaks every reader. `undefined` only when the
+   * SELECT list carried no `AS` at all, which the server does not emit.
+   */
+  readonly bucketAlias?: string;
   /** Source relation, unquoted. */
   readonly source: string;
   /** GROUP BY keys BESIDES the time bucket, as an unordered set. */
-  readonly groupBy: readonly string[];
+  readonly groupBy: readonly CaggGroupFacet[];
   /** Aggregate output columns, ordered by alias so ordering is not spurious drift. */
   readonly aggregates: readonly CaggAggregateFacet[];
 }
@@ -87,8 +168,18 @@ export interface CaggFacets {
  */
 function normalizeRelation(raw: string): string {
   const parts: string[] = [];
+  // Parallel to `parts`: whether THAT part carried a double quote. Tracked during the walk because
+  // the quotes are stripped as we go and cannot be recovered afterwards.
+  const quoted: boolean[] = [];
   let buf = '';
+  let sawQuote = false;
   let inQuote = false;
+  const flush = (): void => {
+    parts.push(buf);
+    quoted.push(sawQuote);
+    buf = '';
+    sawQuote = false;
+  };
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i];
     if (ch === '"') {
@@ -98,24 +189,40 @@ function normalizeRelation(raw: string): string {
         continue;
       }
       inQuote = !inQuote;
+      sawQuote = true;
       continue;
     }
     if (ch === '.' && !inQuote) {
-      parts.push(buf);
-      buf = '';
+      flush();
       continue;
     }
     buf += ch;
   }
-  parts.push(buf);
+  flush();
   // Each part is normalised the same way as any other identifier: the server folds an unquoted
   // schema or table, so `"Public"."readings"` and `public.readings` must land on one string.
-  const cleaned = parts.map((p) => p.trim()).filter((p) => p.length > 0);
-  if (cleaned.length === 0) return raw.trim();
-  const wasQuoted = /"/.test(raw);
-  const fold = (v: string): string => (wasQuoted ? v : v.toLowerCase());
-  const name = fold(cleaned[cleaned.length - 1] ?? '');
-  const schema = fold(cleaned.length > 1 ? (cleaned[cleaned.length - 2] ?? 'public') : 'public');
+  // Filtering keeps `quoted` aligned by carrying the flag through the same pass.
+  const kept = parts
+    .map((p, i) => ({ text: p.trim(), wasQuoted: quoted[i] === true }))
+    .filter((p) => p.text.length > 0);
+  if (kept.length === 0) return raw.trim();
+  const cleaned = kept.map((p) => p.text);
+  const quotedParts = kept.map((p) => p.wasQuoted);
+  // Quoting is decided PER PART, not over the whole string. A single `wasQuoted` flag over `raw`
+  // meant mixed quoting like `public."Sensor"` folded both parts the same way — so an unquoted
+  // schema kept its case because the TABLE happened to be quoted, and vice versa. PostgreSQL folds
+  // each identifier independently, so this must too.
+  //
+  // `quoted` is tracked while splitting rather than re-derived, because by this point the quotes
+  // have already been stripped from `parts` and are no longer visible.
+  const fold = (v: string, wasQuoted: boolean): string => (wasQuoted ? v : v.toLowerCase());
+  const nameIdx = cleaned.length - 1;
+  const schemaIdx = cleaned.length - 2;
+  const name = fold(cleaned[nameIdx] ?? '', quotedParts[nameIdx] === true);
+  const schema =
+    cleaned.length > 1
+      ? fold(cleaned[schemaIdx] ?? 'public', quotedParts[schemaIdx] === true)
+      : 'public';
   return `${schema}.${name}`;
 }
 
@@ -218,7 +325,13 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
 
   // A single relation only — a comma here is an implicit join. Dots ARE allowed: a qualified
   // `"public"."readings"` is one relation, and normalizeRelation canonicalises it.
-  if (/[,()]/.test(fromPart)) return undefined;
+  // Whitespace is rejected too, not just commas and parens. `FROM sensor_reading r` otherwise
+  // survived and yielded the relation `public.sensor_reading r`, which can never equal the server's
+  // `public.sensor_reading` — and once step 2 maps inequality to a blocking `not-expressible`, a
+  // declaration written with a table alias (or `FROM ONLY t`) turns a CONVERGED database's `check`
+  // permanently red with no way to converge it. Refusing to parse yields `not-compared` instead,
+  // which is honest.
+  if (/[,()\s]/.test(fromPart)) return undefined;
   const source = normalizeRelation(fromPart);
 
   const items = splitTopLevel(selectList);
@@ -233,13 +346,16 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
   // BUCKET_RE's own pattern, so the last occurrence is the separator.
   const asAt = first.toUpperCase().lastIndexOf(' AS ');
   const bucketExpr = (asAt === -1 ? first : first.slice(0, asAt)).trim();
+  // The alias was previously sliced off and thrown away, so renaming the bucket column compared
+  // equal — a breaking change to the view's public shape reported as no drift.
+  const bucketAliasRaw = asAt === -1 ? undefined : first.slice(asAt + ' AS '.length).trim();
   const bm = BUCKET_RE.exec(bucketExpr);
   if (bm === null) return undefined;
   const bucketWidth = (bm[1] ?? bm[2] ?? '').trim();
   const timeColumnRaw = bm[3];
   if (bucketWidth.length === 0 || timeColumnRaw === undefined) return undefined;
 
-  const groupBy: string[] = [];
+  const groupBy: CaggGroupFacet[] = [];
   const aggregates: CaggAggregateFacet[] = [];
 
   for (const item of items.slice(1)) {
@@ -258,7 +374,13 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
     const plain =
       /^("(?:[^"]|"")+"|[A-Za-z_][\w$]*)(?:\s+AS\s+("(?:[^"]|"")+"|[A-Za-z_][\w$]*))?$/i.exec(item);
     if (plain === null || plain[1] === undefined) return undefined;
-    groupBy.push(normaliseIdent(plain[1]));
+    // plain[2] — the alias — was captured by this regex but never stored, so `sensor_id` and
+    // `sensor_id AS sid` produced identical facets.
+    const alias = plain[2];
+    groupBy.push({
+      column: normaliseIdent(plain[1]),
+      ...(alias === undefined ? {} : { as: normaliseIdent(alias) }),
+    });
   }
 
   if (aggregates.length === 0) return undefined;
@@ -269,7 +391,10 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
   // is incomplete, so refuse.
   const groupItems = splitTopLevel(groupPart);
   if (groupItems === undefined) return undefined;
-  const accountedFor = new Set(groupBy);
+  // Keyed on the COLUMN, not the alias: the GROUP BY clause names the underlying column, never the
+  // SELECT-list alias (Postgres does allow an output-name reference, but the server re-renders it
+  // as the column, which is the form this cross-check sees).
+  const accountedFor = new Set(groupBy.map((g) => g.column));
   for (const key of groupItems) {
     const bare = key.replace(/^\((.*)\)$/s, '$1').trim();
     if (BUCKET_RE.test(bare)) continue; // the bucket itself
@@ -279,15 +404,52 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
   }
 
   return {
-    bucketWidth: canonicalizeInterval(bucketWidth),
+    bucketWidth: canonicalizeBucketWidth(bucketWidth),
     timeColumn: normaliseIdent(timeColumnRaw),
+    ...(bucketAliasRaw === undefined ? {} : { bucketAlias: normaliseIdent(bucketAliasRaw) }),
     source,
-    groupBy: [...groupBy].sort(),
+    groupBy: [...groupBy].sort(
+      (a, b) => a.column.localeCompare(b.column) || (a.as ?? '').localeCompare(b.as ?? ''),
+    ),
     aggregates: [...aggregates].sort((a, b) => a.as.localeCompare(b.as)),
   };
 }
 
-/** True when two aggregates are structurally the same. Order-insensitive by construction. */
+/**
+ * True when two aggregates are structurally the same. Order-insensitive by construction.
+ *
+ * Compared FIELD BY FIELD rather than by `JSON.stringify`. Stringify equality was safe only because
+ * both sides came from {@link extractCaggFacets}, which always emits keys in one order — but this is
+ * public API, so a caller constructing a `CaggFacets` literal by hand (different key order, or
+ * `column: undefined` written explicitly rather than omitted) would get a spurious `false` and, in
+ * step 2, spurious drift. Optional fields are compared through `?? undefined` so "absent" and
+ * "explicitly undefined" are one value.
+ */
 export function caggFacetsEqual(a: CaggFacets, b: CaggFacets): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  if (
+    a.bucketWidth !== b.bucketWidth ||
+    a.timeColumn !== b.timeColumn ||
+    (a.bucketAlias ?? undefined) !== (b.bucketAlias ?? undefined) ||
+    a.source !== b.source ||
+    a.groupBy.length !== b.groupBy.length ||
+    a.aggregates.length !== b.aggregates.length
+  ) {
+    return false;
+  }
+  // Both sides are sorted by extractCaggFacets, so a positional walk is an unordered-set compare.
+  for (let i = 0; i < a.groupBy.length; i++) {
+    const x = a.groupBy[i];
+    const y = b.groupBy[i];
+    if (x === undefined || y === undefined) return false;
+    if (x.column !== y.column || (x.as ?? undefined) !== (y.as ?? undefined)) return false;
+  }
+  for (let i = 0; i < a.aggregates.length; i++) {
+    const x = a.aggregates[i];
+    const y = b.aggregates[i];
+    if (x === undefined || y === undefined) return false;
+    if (x.fn !== y.fn || x.as !== y.as || (x.column ?? undefined) !== (y.column ?? undefined)) {
+      return false;
+    }
+  }
+  return true;
 }

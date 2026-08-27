@@ -30,8 +30,9 @@ describe('extractCaggFacets — the declared and stored forms must agree', () =>
     expect(server).toEqual({
       bucketWidth: 'us:3600000000', // canonicalised, not raw text
       timeColumn: 'time',
+      bucketAlias: 'bucket', // part of the view's public shape, so renaming it is drift
       source: 'public.sensor_reading', // canonicalised: the server omits the schema, the declared side qualifies it
-      groupBy: ['sensor_id'],
+      groupBy: [{ column: 'sensor_id' }],
       aggregates: [{ fn: 'avg', column: 'value', as: 'avg_value' }],
     });
   });
@@ -59,7 +60,7 @@ describe('extractCaggFacets — detects the drift that matters', () => {
       ` SELECT time_bucket('01:00:00'::interval, "time") AS bucket, sensor_id, region, avg(value) AS avg_value
          FROM sensor_reading GROUP BY (time_bucket('01:00:00'::interval, "time")), sensor_id, region;`,
     )!;
-    expect(regrouped.groupBy).toEqual(['region', 'sensor_id']);
+    expect(regrouped.groupBy).toEqual([{ column: 'region' }, { column: 'sensor_id' }]);
     expect(caggFacetsEqual(base, regrouped)).toBe(false);
   });
 
@@ -174,5 +175,123 @@ describe('extractCaggFacets — pathological input must not hang', () => {
     const started = Date.now();
     expect(extractCaggFacets(`SELECT "${'a'.repeat(50_000)}`)).toBeUndefined();
     expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
+/**
+ * Regression suite for the five defects the review panel found on `4919362`.
+ *
+ * Every case here is a pair of definitions that MUST NOT compare equal. Before the fix each pair
+ * did compare equal (or, for the FROM-alias case, fabricated drift on a converged database) and no
+ * test in the suite above could fail on any of them — the original tests proved the happy path and
+ * the refusal paths only.
+ */
+describe('extractCaggFacets — differences that MUST be reported', () => {
+  const base =
+    "SELECT time_bucket('1 hour'::interval, ts) AS bucket, sensor_id, avg(value) AS avg_value FROM readings GROUP BY 1, 2";
+
+  const mustDiffer = (label: string, a: string, b: string): void => {
+    it(label, () => {
+      const fa = extractCaggFacets(a);
+      const fb = extractCaggFacets(b);
+      expect(fa, `left side must parse: ${a}`).toBeDefined();
+      expect(fb, `right side must parse: ${b}`).toBeDefined();
+      if (fa === undefined || fb === undefined) return;
+      expect(caggFacetsEqual(fa, fb)).toBe(false);
+    });
+  };
+
+  // HIGH — the bucket alias was sliced off and discarded.
+  mustDiffer(
+    'a renamed BUCKET column is drift, not a no-op',
+    base,
+    base.replace('AS bucket', 'AS ts_bucket'),
+  );
+
+  // HIGH — the grouped-column alias was captured by the regex but never stored.
+  mustDiffer(
+    'a renamed GROUPED column is drift, not a no-op',
+    base,
+    base.replace('bucket, sensor_id,', 'bucket, sensor_id AS sid,'),
+  );
+
+  // HIGH — canonicalizeInterval's 30-day month collapsed these onto one key.
+  mustDiffer(
+    'a month bucket is NOT a 30-day bucket',
+    base.replace("'1 hour'", "'1 mon'"),
+    base.replace("'1 hour'", "'30 days'"),
+  );
+
+  mustDiffer(
+    'a year bucket is NOT a 360-day bucket',
+    base.replace("'1 hour'", "'1 year'"),
+    base.replace("'1 hour'", "'360 days'"),
+  );
+
+  it('still treats equivalent renderings of a FIXED width as equal', () => {
+    const a = extractCaggFacets(base);
+    const b = extractCaggFacets(base.replace("'1 hour'", "'01:00:00'"));
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    if (a === undefined || b === undefined) return;
+    expect(caggFacetsEqual(a, b)).toBe(true);
+  });
+
+  it('keys a month width separately from any µs width', () => {
+    const month = extractCaggFacets(base.replace("'1 hour'", "'1 mon'"));
+    expect(month?.bucketWidth).toBe('mon:1|us:0');
+    expect(extractCaggFacets(base)?.bucketWidth).toBe('us:3600000000');
+  });
+});
+
+describe('extractCaggFacets — shapes that must REFUSE rather than fabricate drift', () => {
+  it('refuses a FROM with a table alias, instead of inventing "public.readings r"', () => {
+    // Parsing this produced a relation no server rendering can ever equal, which under step 2's
+    // blocking advisory would turn a converged database's `check` permanently red.
+    expect(
+      extractCaggFacets(
+        "SELECT time_bucket('1 hour'::interval, ts) AS bucket, sensor_id, avg(value) AS avg_value FROM readings r GROUP BY 1, 2",
+      ),
+    ).toBeUndefined();
+  });
+
+  it('refuses FROM ONLY t for the same reason', () => {
+    expect(
+      extractCaggFacets(
+        "SELECT time_bucket('1 hour'::interval, ts) AS bucket, sensor_id, avg(value) AS avg_value FROM ONLY readings GROUP BY 1, 2",
+      ),
+    ).toBeUndefined();
+  });
+
+  it('folds each relation part independently under MIXED quoting', () => {
+    // One `wasQuoted` flag over the whole string folded both parts together, so an unquoted schema
+    // kept its case whenever the table happened to be quoted.
+    const mixed = extractCaggFacets(
+      'SELECT time_bucket(\'1 hour\'::interval, ts) AS bucket, sensor_id, avg(value) AS avg_value FROM PUBLIC."Sensor" GROUP BY 1, 2',
+    );
+    expect(mixed?.source).toBe('public.Sensor');
+  });
+});
+
+describe('caggFacetsEqual — public API, so hand-built literals must behave', () => {
+  it('is insensitive to key order and to explicit-undefined vs omitted', () => {
+    const parsed = extractCaggFacets(
+      "SELECT time_bucket('1 hour'::interval, ts) AS bucket, sensor_id, count(*) AS n FROM readings GROUP BY 1, 2",
+    );
+    expect(parsed).toBeDefined();
+    if (parsed === undefined) return;
+
+    // Same facts, different key order, and `column` written explicitly as undefined for count(*).
+    const handBuilt = {
+      aggregates: [{ as: 'n', column: undefined, fn: 'count' }],
+      groupBy: [{ as: undefined, column: 'sensor_id' }],
+      source: 'public.readings',
+      bucketAlias: 'bucket',
+      timeColumn: 'ts',
+      bucketWidth: 'us:3600000000',
+    };
+
+    expect(caggFacetsEqual(parsed, handBuilt)).toBe(true);
+    expect(JSON.stringify(parsed) === JSON.stringify(handBuilt)).toBe(false);
   });
 });

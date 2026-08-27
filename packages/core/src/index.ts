@@ -195,4 +195,5 @@ export {
   caggFacetsEqual,
   type CaggFacets,
   type CaggAggregateFacet,
+  type CaggGroupFacet,
 } from './cagg-facets.js';
