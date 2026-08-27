@@ -25,6 +25,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
+      # Fails when a public "what ships" page still advertises an older release line. Four such
+      # surfaces were found stale in one week, each by accident; docs/feature-status.md drifted
+      # three releases while containing its own "Review rule" section telling maintainers not to.
+      - run: pnpm check:version-claims
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test:unit
