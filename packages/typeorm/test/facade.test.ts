@@ -101,6 +101,44 @@ describe('unified schema DSL (facade)', () => {
     expect(pkg.formatLintFindings([])).toBe('No lint findings.');
   });
 
+  it('re-exports the REST of the plan/lint surface from the installed package (#228)', () => {
+    // #222 fixed three symbols by name; the same defect applied to the rest of the surface. These
+    // must resolve from `typeorm-timescaledb` and be the SAME references as core (no dual instance).
+    expect(typeof pkg.isEmptyPlan).toBe('function');
+    expect(Array.isArray(pkg.ANALYZERS)).toBe(true);
+    expect(pkg.isEmptyPlan).toBe(core.isEmptyPlan);
+    expect(pkg.ANALYZERS).toBe(core.ANALYZERS);
+  });
+
+  it('the re-exported plan helpers actually work through the facade', () => {
+    // Behavioural, not just presence. `isEmptyPlan` is the documented way to tell a PREVIEW apart
+    // from an ALREADY-CONVERGED database, since `PushResult.applied === false` covers both.
+    expect(pkg.isEmptyPlan({ steps: [] })).toBe(true);
+    expect(pkg.isEmptyPlan({ steps: [{}] } as never)).toBe(false);
+
+    // `ANALYZERS` is public so the rule set is inspectable rather than opaque — every entry must
+    // carry the stable `code` that docs and CI suppressions key on.
+    expect(pkg.ANALYZERS.length).toBeGreaterThan(0);
+    for (const analyzer of pkg.ANALYZERS) {
+      expect(analyzer.code).toMatch(/^TSDB\d{3}$/);
+    }
+  });
+
+  it('lets a deploy gate name Plan, PlanStep and PlanAdvisory from ONE import (#228)', () => {
+    // The point of re-exporting the member types: a caller can hold a `Plan` AND name what is
+    // inside it. `PlanAdvisory` is load-bearing — a `not-expressible` advisory is what makes
+    // `check` exit 2 — so a gate inspecting `plan.advisories` must be able to type it.
+    const plan: import('typeorm-timescaledb').Plan = {
+      steps: [] as readonly import('typeorm-timescaledb').PlanStep[],
+      advisories: [
+        { kind: 'not-expressible', object: 'public.readings_hourly', detail: 'bucket width moved' },
+      ] as readonly import('typeorm-timescaledb').PlanAdvisory[],
+    };
+    const blocking = (plan.advisories ?? []).filter((a) => a.kind === 'not-expressible');
+    expect(pkg.isEmptyPlan(plan)).toBe(true); // no steps...
+    expect(blocking).toHaveLength(1); // ...yet still drift. This is why both must be checked.
+  });
+
   it('lets a full schema (columns + hypertable) be defined from ONE import', () => {
     const { Entity, Column, Hypertable, TimeColumn, HypertablePrimaryKey, getTimescaleMetadata } =
       pkg;

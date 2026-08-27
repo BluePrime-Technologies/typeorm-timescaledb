@@ -157,6 +157,9 @@ try {
       if (typeof pkg.lintPlan !== 'function') throw new Error('missing lintPlan re-export (#222)');
       if (typeof pkg.assertSafeFragment !== 'function') throw new Error('missing assertSafeFragment re-export (#222)');
       if (typeof pkg.formatLintFindings !== 'function') throw new Error('missing formatLintFindings re-export (#222)');
+      if (typeof pkg.isEmptyPlan !== 'function') throw new Error('missing isEmptyPlan re-export (#228)');
+      if (!Array.isArray(pkg.ANALYZERS)) throw new Error('missing ANALYZERS re-export (#228)');
+      if (pkg.ANALYZERS.length === 0) throw new Error('ANALYZERS re-export is empty (#228)');
       if (typeof nest.TimescaleModule !== 'function') throw new Error('missing NestJS module export');
       if (typeof core.createHypertableSQL !== 'function') throw new Error('missing core SQL export');
     `,
@@ -177,6 +180,9 @@ try {
       if (typeof pkg.lintPlan !== 'function') throw new Error('missing lintPlan re-export (#222)');
       if (typeof pkg.assertSafeFragment !== 'function') throw new Error('missing assertSafeFragment re-export (#222)');
       if (typeof pkg.formatLintFindings !== 'function') throw new Error('missing formatLintFindings re-export (#222)');
+      if (typeof pkg.isEmptyPlan !== 'function') throw new Error('missing isEmptyPlan re-export (#228)');
+      if (!Array.isArray(pkg.ANALYZERS)) throw new Error('missing ANALYZERS re-export (#228)');
+      if (pkg.ANALYZERS.length === 0) throw new Error('ANALYZERS re-export is empty (#228)');
       if (typeof nest.TimescaleModule !== 'function') throw new Error('missing NestJS module export');
       if (typeof core.createHypertableSQL !== 'function') throw new Error('missing core SQL export');
     `,
@@ -198,6 +204,32 @@ try {
     'CLI bin is not executable',
   );
   run(binPath, ['--help'], { cwd: projectDir });
+
+  // TYPE re-exports, checked against the .d.ts a consumer actually installs.
+  //
+  // This is here rather than in a test file because `packages/typeorm/tsconfig.json` has
+  // `include: ['src/**/*']` — test files are NOT typechecked, so a type-only assertion written in
+  // one is never verified by any gate. Dropping `PlanAdvisory` from the re-export produced zero
+  // errors until this check existed. Types are erased at runtime, so the shipped declaration is the
+  // only place the claim can be proven.
+  const typeExports = [
+    'Plan',
+    'PlanStep',
+    'PlanAdvisory',
+    'LintFinding',
+    'LintSeverity',
+    'Analyzer',
+  ];
+  const installedDts = readFileSync(
+    join(projectDir, 'node_modules', 'typeorm-timescaledb', 'dist', 'index.d.ts'),
+    'utf8',
+  );
+  for (const name of typeExports) {
+    assert(
+      new RegExp(`\\b${name}\\b`).test(installedDts),
+      `installed typeorm-timescaledb/dist/index.d.ts does not re-export type ${name} (#228)`,
+    );
+  }
 
   console.log('Package smoke test passed.');
 } finally {

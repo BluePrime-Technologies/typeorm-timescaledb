@@ -219,7 +219,7 @@ Every plan is linted, and findings print with the preview:
 Or programmatically:
 
 ```ts
-import { lintPlan, formatLintFindings, ANALYZERS } from '@blueprime/timescaledb-core';
+import { lintPlan, formatLintFindings, ANALYZERS } from 'typeorm-timescaledb';
 
 const findings = lintPlan(plan); // pure — no database, usable in CI
 console.log(formatLintFindings(findings));
@@ -314,7 +314,7 @@ before you run it:
 
 ```ts
 import { introspect, compileDesiredState, applyDirect } from 'typeorm-timescaledb';
-import { diffSchemaState, isEmptyPlan } from '@blueprime/timescaledb-core';
+import { diffSchemaState, isEmptyPlan } from 'typeorm-timescaledb';
 
 const plan = diffSchemaState(await introspect(dataSource), compileDesiredState(dataSource));
 

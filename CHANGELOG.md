@@ -11,6 +11,16 @@ and released in lockstep.
 
 ### Added
 
+- **The rest of the plan/lint surface is exported from `typeorm-timescaledb`** — `ANALYZERS`,
+  `isEmptyPlan`, and the `Analyzer` / `PlanStep` / `PlanAdvisory` types. The previous release moved
+  `lintPlan`, `formatLintFindings` and `assertSafeFragment`, which split the documented linter
+  example across two packages: `ANALYZERS` sat in the _same import statement_ and still resolved
+  only from `@blueprime/timescaledb-core`, a transitive dependency consumers never declare.
+  `PlanAdvisory` matters most — `Plan` was already re-exported, but `Plan.advisories` is what makes
+  `check` exit **2**, so a deploy gate inspecting it could not name the type. Low-level SQL builders
+  (`statsAgg1DExpr` and friends) and engine internals (`compilePlan`, `classifyOperation`) stay in
+  core by design. (#228)
+
 - **Continuous-aggregate definitions are now compared structurally.** `check` previously answered
   "I did not look" for every existing aggregate, raising a blanket `not-compared` advisory. Both
   sides are now parsed into the facets that define the aggregate — bucket width and time column,

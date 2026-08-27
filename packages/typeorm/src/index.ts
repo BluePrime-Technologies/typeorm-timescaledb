@@ -184,8 +184,36 @@ export type {
 // so they resolve from the package you actually install (see #222). `assertSafeFragment` especially
 // is a security helper (it guards hand-built aggregate fragments), so reaching it only via an
 // undeclared dependency was the least acceptable gap.
-export { lintPlan, formatLintFindings, assertSafeFragment } from '@blueprime/timescaledb-core';
+export {
+  lintPlan,
+  formatLintFindings,
+  assertSafeFragment,
+  // `ANALYZERS` completes the linter surface (#228). It was left behind by the first pass, which
+  // split `docs/migration-guide.md`'s single import across two packages — `lintPlan` and
+  // `formatLintFindings` resolved here while `ANALYZERS`, on the same line, did not. It is
+  // deliberately public: "an analyzer suite whose contents are opaque invites you to assume a check
+  // exists that does not".
+  ANALYZERS,
+  // Half of the documented preview-vs-converged idiom, whose other half (`pushSchema`) is already
+  // exported from this package. `PushResult.applied === false` covers both "preview" and "already
+  // converged"; `isEmptyPlan(plan)` is what tells them apart.
+  isEmptyPlan,
+} from '@blueprime/timescaledb-core';
 // `lintPlan(plan)` runs over a `Plan` — the same object carried by `PushResult.plan` — and returns
 // `LintFinding[]`; re-export those types so the linter surface is usable without a second import
 // from core.
-export type { LintFinding, LintSeverity, Plan } from '@blueprime/timescaledb-core';
+//
+// `Plan`'s own member types come with it, or a caller can hold a `Plan` without being able to name
+// what is inside it:
+//   interface Plan { steps: readonly PlanStep[]; advisories?: readonly PlanAdvisory[] }
+// `PlanAdvisory` is the load-bearing one — since structural CAGG diffing landed, a
+// `not-expressible` advisory is what makes `check` exit 2, so any deploy gate that inspects
+// `plan.advisories` needs to name it.
+export type {
+  LintFinding,
+  LintSeverity,
+  Analyzer,
+  Plan,
+  PlanStep,
+  PlanAdvisory,
+} from '@blueprime/timescaledb-core';
