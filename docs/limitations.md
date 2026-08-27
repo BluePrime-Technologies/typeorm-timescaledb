@@ -20,10 +20,10 @@ The following features are planned or future scope, not shipped functionality:
   surfaced as stable constructs.
 - Stable Toolkit aggregates not yet covered by the typed query layer. (T-Digest
   percentiles shipped in 0.4.0.)
-- Structural diffing of continuous aggregates. (Their PRESENCE is diffed: a
-  declared aggregate the database lacks is created, and a missing refresh policy
-  is attached. An existing one is never recreated and its definition is not
-  compared — `check` names it under `Not compared:`.)
+- Automatic CONVERGENCE of a changed continuous-aggregate definition. (Presence,
+  refresh policies AND the definition itself are all diffed; an existing
+  aggregate is never recreated automatically, because converging a changed
+  definition means DROP + CREATE and discards materialized rows.)
 - In-place reconciliation of space (hash) dimensions.
 - Validated cross-store references.
 - Complete TimescaleDB feature coverage.
@@ -51,8 +51,10 @@ A hand-written migration is still required for:
 - Dropping a hypertable or disabling a columnstore (never auto-generated).
 - Adding, removing, or re-partitioning a space (hash) dimension — a divergence
   here is reported as an error naming the remedy, not silently ignored.
-- Structural changes to an EXISTING continuous aggregate (its definition is not
-  compared; `check` lists it as not compared rather than implying otherwise).
+- Structural changes to an EXISTING continuous aggregate. The definition IS
+  compared and a difference is REPORTED as drift naming the changed facet, but
+  applying it needs a hand-written migration: TimescaleDB cannot `ALTER` a
+  continuous aggregate's SELECT, so converging means DROP + CREATE.
 - Changing a continuous aggregate's refresh threshold (reported as drift, not
   auto-converged).
 - Any reversal of TimescaleDB configuration that could affect live data.

@@ -1,8 +1,8 @@
 # Feature status
 
 This page is the public source of truth for what `typeorm-timescaledb` ships in
-the current published release line, what is in the 0.3.0 and 0.4.0 release scopes,
-and what is explicitly not supported yet.
+the current published release line (0.7.x), what each release added, and what is
+explicitly not supported yet.
 
 Use this page when updating README copy, npm-facing descriptions, release notes,
 issue templates, launch copy, and public examples.
@@ -22,7 +22,7 @@ issue templates, launch copy, and public examples.
 
 ## Shipped in 0.2.x
 
-The following features may be described as shipped for the current 0.4.x scope:
+Established in the 0.2.x line and shipped in every release since:
 
 - TypeORM-first TimescaleDB integration.
 - Unified import surface for TypeORM symbols and TimescaleDB extensions.
@@ -95,7 +95,62 @@ introspection, and T-Digest percentiles:
   (toolkit `tdigest`), with mean/min/max/count.
 
 All of the above are covered by unit tests and real-TimescaleDB integration on the CI matrix
-(TimescaleDB 2.18 + latest, Node 20/22/24, TypeORM 0.3.20/1.0.0).
+(TimescaleDB 2.18.0 / 2.19.0 / 2.26.0 / 2.29.1 across PostgreSQL 16, 17 and 18; Node 20/22/24;
+TypeORM 0.3.20/1.0.0).
+
+## Shipped in 0.5.0
+
+- **Async/deferred NestJS configuration** — `TimescaleModule.forRootAsync` (`useFactory` +
+  `inject` + `imports`), with an optional no-op mode for environments where TimescaleDB is
+  not configured.
+- **Fail-fast presence check** — `assertSchema()` throws `TSDB_TIMESCALEDB_MISSING` when the
+  `timescaledb` extension is absent, instead of surfacing a raw catalog error.
+
+## Shipped in 0.6.0
+
+0.6.0 ships the **unified migration engine** — it reads the live database, diffs it against
+your entities, and converges it, with every step safety-classified:
+
+- **Introspection** — `introspect(dataSource)` reduces a running TimescaleDB to a canonical
+  `SchemaStateIR`, normalized so Postgres interval reformatting and engine-filled defaults
+  never read as drift.
+- **Diff engine** — `diffSchemaState(current, desired, opts?)` returns an ordered `Plan` whose
+  every step carries a safety class (`online-safe` · `needs-recompress` · `refuse-by-default` ·
+  `one-way`) and a reason.
+- **`check` verb** — a readable drift preview that exits non-zero on drift, for use as a CI
+  schema gate.
+- **Rename support** — `@Hypertable({ renamedFrom })` resolves to one `ALTER TABLE ... RENAME`
+  rather than a drop-then-create.
+- **Guarded drops** (opt-in, `allowDrops`) — removes a retention/compression policy present in
+  the database but absent from your entities. Reversible; destructive drops are never emitted.
+- **Emitters** — `generate --output <ts|sql>`, `planToMigration(plan)`, `compilePlan(plan)`.
+- **`TimescaleSchemaBuilder`** — a fluent hand-authoring surface that runs inside an ordinary
+  TypeORM migration via `queryRunner`.
+- **`applyDirect(dataSource, plan, opts?)`** — apply a plan to a live database in one
+  transaction, refusing `refuse-by-default` operations unless explicitly opted in.
+
+## Shipped in 0.7.0
+
+0.7.0 puts one command in front of the engine and audits the whole surface:
+
+- **`push`** — converge the live database to your entities. Previews by default; mutates only
+  with `--apply`.
+- **`pull`** — adopt an existing database into a migration, reporting per object whatever it
+  could not reproduce.
+- **`mix`** — pull then push, for adopting a database you did not create.
+- **`timescaledb.config.json`** — `dataSource` / `outDir` / `output` in a file. The safety
+  flags (`--apply`, `--allow-drops`, `--allow-refused`) are deliberately **not** configurable.
+- **Continuous aggregates in the diff** — compiled into the desired state and diffed
+  additively, wired into `check`/`push`, with an explicit advisory for what was not compared.
+- **Recompress planner** — a columnstore change against compressed chunks is planned as
+  decompress → alter → recompress instead of applying to future chunks only.
+- **Plan linter** — `lintPlan(plan)` statically flags destructive and lock-taking steps
+  (`TSDB001`…), with `formatLintFindings` for CLI output.
+- **Audit** — 41 numbered findings plus 6 found by reviewing the fixes. See the
+  [CHANGELOG](../CHANGELOG.md).
+
+**⚠️ Breaking in 0.7.0:** `check` exits `2` on drift, not `1` — exit `1` collided with "the
+command failed", so an unreachable database was indistinguishable from real drift.
 
 ## Supported platform claims
 
@@ -124,10 +179,14 @@ The following items are product direction, not shipped functionality:
   constructs.
 - Other stable Toolkit aggregates not listed in the 0.3.0 / 0.4.0 release scope.
 - Destructive auto-migrations (dropping a hypertable, disabling a columnstore).
-- Structural diffing of continuous aggregates (presence and refresh policies are
-  diffed; an existing aggregate's definition is not compared).
+- Automatic CONVERGENCE of a changed continuous-aggregate definition. (The
+  definition IS now compared structurally and a difference is reported as drift;
+  converging it means DROP + CREATE, which discards materialized rows, so it is
+  never auto-generated.)
 - Automatic reconciliation of space (hash) dimensions.
-- Validated cross-store references.
+- Validated cross-store references **inside this package**. They ship separately as
+  `@blueprime/cross-store` (versioned independently) — see the packages table in the README;
+  they are not part of `typeorm-timescaledb`'s own surface.
 - Complete coverage of every TimescaleDB feature.
 
 These may be described as planned, next, future, or not yet supported. They
@@ -146,9 +205,12 @@ and compression policies (both reversible).
 It deliberately does NOT perform destructive changes: dropping a hypertable or
 disabling a columnstore is never emitted. Continuous aggregates are diffed
 ADDITIVELY — a declared aggregate the database lacks is created and a missing
-refresh policy attached, but an existing one is never dropped or recreated and
-its definition is not compared. Space (hash) dimensions cannot be reconciled in
-place. Every such gap is named in the command's output (`Not compared:` /
+refresh policy attached, but an existing one is never dropped or recreated. Its
+definition IS compared structurally — a changed bucket width, group-key set,
+aggregate list, output-column name or source relation is reported as drift and
+makes `check` exit non-zero, while a definition the parser cannot read falls back
+to `Not compared:` rather than guessing. Space (hash) dimensions cannot be
+reconciled in place. Every such gap is named in the command's output (`Not compared:` /
 `Not auto-converged:`) rather than silently ignored, and an unconvergeable
 divergence still makes `check` exit non-zero.
 

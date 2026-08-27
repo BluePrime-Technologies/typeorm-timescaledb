@@ -137,14 +137,18 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
     //    text — the catalog returns '1 mon' for the declared '1 month'.
     const after = await pushSchema(ds, { continuousAggregates: [ReadingHourly] });
     expect(after.plan.steps).toEqual([]);
-    expect(after.plan.advisories?.filter((a) => a.kind === 'not-expressible')).toEqual([]);
+    // Nothing blocking after convergence. Note `advisories` is now absent entirely rather than
+    // carrying a blanket `not-compared` for the existing aggregate: its definition is COMPARED now,
+    // and it matches. This is the regression guard for the whole feature — a false positive here
+    // means `check` fails on a database that push just converged.
+    expect((after.plan.advisories ?? []).filter((a) => a.kind === 'not-expressible')).toEqual([]);
   }, 300_000);
 
-  it('names the existing CAGG as not-compared rather than implying it was verified', async () => {
+  it('compares an existing CAGG structurally instead of reporting it as unexamined', async () => {
     const { plan } = await pushSchema(ds, { continuousAggregates: [ReadingHourly] });
-    expect(plan.advisories).toContainEqual(
-      expect.objectContaining({ kind: 'not-compared', object: 'public.reading_hourly' }),
-    );
+    // WAS: a blanket `not-compared`, because definitions were never examined. Now the facets are
+    // extracted from both sides and match, so there is nothing to say about this aggregate.
+    expect((plan.advisories ?? []).filter((a) => a.object === 'public.reading_hourly')).toEqual([]);
   }, 120_000);
 
   it('warns that nothing was compared when the CAGG list is omitted', async () => {
@@ -155,10 +159,11 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
     );
   }, 120_000);
 
-  it('does NOT report drift when the definition is changed out-of-band — the documented limit', async () => {
-    // Locks in the limitation so nobody later mistakes it for a bug. Structural comparison needs the
-    // IR enriched with parsed facets; until then presence is all that is honest, and the advisory
-    // above is what tells the user so. Verified here against a REAL altered view, not a stub.
+  it('DOES report drift when the definition is changed out-of-band', async () => {
+    // This test previously locked in the OPPOSITE — "the documented limit" — because definitions
+    // were never compared. That limitation is gone: facets are extracted from both sides, so an
+    // aggregate changed behind the engine's back is now caught. Verified against a REAL altered
+    // view, not a stub, which is what makes it evidence rather than a restatement of the code.
     await ds.query('DROP MATERIALIZED VIEW reading_hourly');
     await ds.query(`
       CREATE MATERIALIZED VIEW reading_hourly
@@ -169,11 +174,16 @@ describe.skipIf(!IMAGE)('CAGG desired state — live check/push', () => {
     `);
 
     const { plan } = await pushSchema(ds, { continuousAggregates: [ReadingHourly] });
-    // avg() became max() — genuinely different, and deliberately NOT detected.
+
+    // Still not a plan STEP: altering a CAGG's SELECT is not expressible, and converging it means
+    // DROP + CREATE, which would discard the materialized rows.
     expect(plan.steps.map((s) => s.operation.kind)).not.toContain('createContinuousAggregateRaw');
-    expect(plan.advisories).toContainEqual(
-      expect.objectContaining({ kind: 'not-compared', object: 'public.reading_hourly' }),
-    );
+
+    // But it IS reported, as blocking drift naming the facet that moved — avg() became max().
+    const advisory = (plan.advisories ?? []).find((a) => a.object === 'public.reading_hourly');
+    expect(advisory?.kind).toBe('not-expressible');
+    expect(advisory?.detail).toContain('aggregates');
+    expect(advisory?.detail).toMatch(/max\(value\)/);
   }, 300_000);
 
   it('attaches a declared refresh policy to an existing CAGG that lacks one', async () => {

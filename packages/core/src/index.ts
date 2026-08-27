@@ -190,3 +190,10 @@ export type { SafetyClass, OperationSafety } from './safety.js';
 export { stateToOperations } from './reproduce.js';
 export type { ReproduceResult, SkippedObject, SkipReason, SkippedFacet } from './reproduce.js';
 export { findUnquotedToken, type LexResult } from './sql-lex.js';
+export {
+  extractCaggFacets,
+  caggFacetsEqual,
+  type CaggFacets,
+  type CaggAggregateFacet,
+  type CaggGroupFacet,
+} from './cagg-facets.js';

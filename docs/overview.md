@@ -6,7 +6,7 @@ It lets you describe supported TimescaleDB behavior with typed entity metadata, 
 
 ## What it supports today
 
-The 0.1.x foundation release focuses on:
+The current release line (0.7.x) supports:
 
 - TimescaleDB hypertables.
 - Time columns.
