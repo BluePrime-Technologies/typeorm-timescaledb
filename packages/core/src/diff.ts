@@ -205,11 +205,31 @@ function describeCaggDelta(current: CaggFacets, desired: CaggFacets): string {
   if (current.timeColumn !== desired.timeColumn) {
     parts.push(`time column "${current.timeColumn}" vs "${desired.timeColumn}"`);
   }
-  if (current.source !== desired.source) {
+  // Renaming an output column is drift — the view's public shape changed — so the message has to be
+  // able to say so, or a renamed bucket falls through to the useless "the facets differ".
+  if ((current.bucketAlias ?? undefined) !== (desired.bucketAlias ?? undefined)) {
+    parts.push(
+      `bucket column "${current.bucketAlias ?? '(unnamed)'}" vs "${desired.bucketAlias ?? '(unnamed)'}"`,
+    );
+  }
+  // Mirrors caggFacetsEqual's asymmetric source rule exactly. Comparing the qualified form
+  // unconditionally would make this message assert a source difference for a relation that
+  // caggFacetsEqual considers the same — a message contradicting its own verdict — whenever some
+  // OTHER facet is what actually moved.
+  const sourceDiffers =
+    current.sourceSchemaExplicit && desired.sourceSchemaExplicit
+      ? current.source !== desired.source
+      : current.sourceName !== desired.sourceName;
+  if (sourceDiffers) {
     parts.push(`source ${current.source} vs ${desired.source}`);
   }
-  if (current.groupBy.join(',') !== desired.groupBy.join(',')) {
-    parts.push(`group keys [${current.groupBy.join(', ')}] vs [${desired.groupBy.join(', ')}]`);
+  // `groupBy` is an array of {column, as} objects. `.join()` on it yields "[object Object]" for
+  // every element — identical on both sides — so this silently reported NO group-key difference for
+  // any change, and TypeScript permits `.join()` on object arrays so nothing failed to compile.
+  const keys = (f: CaggFacets): string =>
+    f.groupBy.map((g) => (g.as === undefined ? g.column : `${g.column} AS ${g.as}`)).join(', ');
+  if (keys(current) !== keys(desired)) {
+    parts.push(`group keys [${keys(current)}] vs [${keys(desired)}]`);
   }
   const agg = (f: CaggFacets): string =>
     f.aggregates.map((a) => `${a.fn}(${a.column ?? '*'}) AS ${a.as}`).join(', ');

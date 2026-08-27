@@ -184,14 +184,27 @@ produces no warning.
 **What is compared, and what is not.** An aggregate you declare that the database
 lacks is created (with its refresh policy), and a declared refresh policy missing
 from an existing aggregate is attached. An aggregate that **already exists** is
-never dropped and never recreated, and its definition is not compared — the
-catalog reports a parse-tree deparse (`INTERVAL '1 hour'` reads back as
-`'01:00:00'::interval`, identifiers lose their quoting), so an unchanged
-aggregate would not textually match and `push --apply` would recreate it,
-destroying materialized rows. Every existing aggregate is therefore listed under
-`Not compared:` — change one, and you change it by hand. A refresh policy whose
-threshold has changed is reported under `Not auto-converged:` and **counts as
-drift**, so `check` still exits non-zero.
+never dropped and never recreated, but its definition **is** compared — structurally,
+not textually. The catalog reports a parse-tree deparse (`INTERVAL '1 hour'` reads
+back as `'01:00:00'::interval`, identifiers lose their quoting, `GROUP BY 1, 2` is
+expanded into full expressions), so a text comparison would report drift on an
+aggregate nobody touched. Instead both sides are parsed into the facets that
+define the aggregate — bucket width and time column, the group-key set, the
+aggregate list, the output-column names, and the source relation — and those are
+compared.
+
+A difference in any of them is reported as drift naming the facet that moved, and
+**`check` exits non-zero**. It is not auto-converged: TimescaleDB cannot `ALTER` a
+continuous aggregate's SELECT, so converging means DROP + CREATE, which discards
+materialized rows that may be the only surviving copy of data whose source chunks
+retention has already dropped. Change one, and you change it by hand.
+
+A definition the parser cannot read — a `WHERE` clause, a join, a nested
+expression, a table alias in `FROM` — is still listed under `Not compared:`.
+That fallback is deliberate: an aggregate we cannot read is no worse off than
+before, and refusing to guess is what keeps the gate from firing on a converged
+database. A refresh policy whose threshold has changed is reported under
+`Not auto-converged:` and **counts as drift**, so `check` still exits non-zero.
 
 ### Linting a plan for destructive and lock-taking changes
 
