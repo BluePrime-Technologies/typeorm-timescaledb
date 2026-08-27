@@ -146,16 +146,44 @@ export interface CaggFacets {
    * SELECT list carried no `AS` at all, which the server does not emit.
    */
   readonly bucketAlias?: string;
-  /** Source relation, unquoted. */
+  /** Source relation as `schema.name`, schema defaulted to `public`. Use for display, not equality. */
   readonly source: string;
+  /** The source relation's name alone — what equality falls back to when a schema was not written. */
+  readonly sourceName: string;
+  /**
+   * Whether the definition actually wrote the schema. See {@link RelationParts.schemaExplicit}: a
+   * bare `FROM readings` must NOT be assumed to mean `public.readings`, because PostgreSQL omits any
+   * schema on the `search_path`.
+   */
+  readonly sourceSchemaExplicit: boolean;
   /** GROUP BY keys BESIDES the time bucket, as an unordered set. */
   readonly groupBy: readonly CaggGroupFacet[];
   /** Aggregate output columns, ordered by alias so ordering is not spurious drift. */
   readonly aggregates: readonly CaggAggregateFacet[];
 }
 
+/** A relation split into the parts comparison needs, plus whether the schema was actually written. */
+interface RelationParts {
+  /** Canonical `schema.name`, schema defaulted to `public`. For messages and display. */
+  readonly canonical: string;
+  /** The relation name alone, folded. */
+  readonly name: string;
+  /**
+   * Whether the definition QUALIFIED the relation. False for a bare `FROM readings`.
+   *
+   * This is the crux of the non-public-schema false positive. PostgreSQL omits a schema that is on
+   * the `search_path` — not only `public`. With a hypertable in schema `metrics` and
+   * `search_path = metrics, public` (an ordinary deployment), the server renders
+   * `FROM sensor_reading` while the declared side always renders `"metrics"."sensor_reading"`
+   * (`sql/hypertable.ts` `parseTable`). Defaulting the bare form to `public` made those
+   * `public.sensor_reading` vs `metrics.sensor_reading` — both parse, so there is no fallback to
+   * `not-compared`, and step 2 emits a BLOCKING advisory on a database `push` just converged.
+   */
+  readonly schemaExplicit: boolean;
+}
+
 /**
- * Canonicalise a possibly-qualified relation to `schema.name`, defaulting the schema to `public`.
+ * Canonicalise a possibly-qualified relation, keeping enough information to compare it safely.
  *
  * Two bugs lived here. `unquote` alone treats `"public"."readings"` as ONE quoted token and yields
  * the garbage `public"."readings`. And even unquoted correctly, `public.readings` does not equal the
@@ -166,7 +194,7 @@ export interface CaggFacets {
  * Same lesson as `normalizeObject` in `lint.ts` — comparing object names needs ONE normalisation,
  * applied to both sides.
  */
-function normalizeRelation(raw: string): string {
+function normalizeRelation(raw: string): RelationParts {
   const parts: string[] = [];
   // Parallel to `parts`: whether THAT part carried a double quote. Tracked during the walk because
   // the quotes are stripped as we go and cannot be recovered afterwards.
@@ -205,7 +233,10 @@ function normalizeRelation(raw: string): string {
   const kept = parts
     .map((p, i) => ({ text: p.trim(), wasQuoted: quoted[i] === true }))
     .filter((p) => p.text.length > 0);
-  if (kept.length === 0) return raw.trim();
+  if (kept.length === 0) {
+    const bare = raw.trim();
+    return { canonical: bare, name: bare, schemaExplicit: false };
+  }
   const cleaned = kept.map((p) => p.text);
   const quotedParts = kept.map((p) => p.wasQuoted);
   // Quoting is decided PER PART, not over the whole string. A single `wasQuoted` flag over `raw`
@@ -219,11 +250,11 @@ function normalizeRelation(raw: string): string {
   const nameIdx = cleaned.length - 1;
   const schemaIdx = cleaned.length - 2;
   const name = fold(cleaned[nameIdx] ?? '', quotedParts[nameIdx] === true);
-  const schema =
-    cleaned.length > 1
-      ? fold(cleaned[schemaIdx] ?? 'public', quotedParts[schemaIdx] === true)
-      : 'public';
-  return `${schema}.${name}`;
+  const schemaExplicit = cleaned.length > 1;
+  const schema = schemaExplicit
+    ? fold(cleaned[schemaIdx] ?? 'public', quotedParts[schemaIdx] === true)
+    : 'public';
+  return { canonical: `${schema}.${name}`, name, schemaExplicit };
 }
 
 /**
@@ -407,7 +438,9 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
     bucketWidth: canonicalizeBucketWidth(bucketWidth),
     timeColumn: normaliseIdent(timeColumnRaw),
     ...(bucketAliasRaw === undefined ? {} : { bucketAlias: normaliseIdent(bucketAliasRaw) }),
-    source,
+    source: source.canonical,
+    sourceName: source.name,
+    sourceSchemaExplicit: source.schemaExplicit,
     groupBy: [...groupBy].sort(
       (a, b) => a.column.localeCompare(b.column) || (a.as ?? '').localeCompare(b.as ?? ''),
     ),
@@ -426,11 +459,26 @@ export function extractCaggFacets(definition: string): CaggFacets | undefined {
  * "explicitly undefined" are one value.
  */
 export function caggFacetsEqual(a: CaggFacets, b: CaggFacets): boolean {
+  // Source equality is asymmetric on purpose. Compare the FULL `schema.name` only when BOTH sides
+  // wrote a schema; if either is bare, compare the relation name alone. PostgreSQL omits any schema
+  // on the `search_path`, so a bare `FROM sensor_reading` from the server against a declared
+  // `"metrics"."sensor_reading"` is the SAME relation rendered two ways — and defaulting the bare
+  // form to `public` made that a blocking advisory on a just-converged database.
+  //
+  // The residual cost is a false NEGATIVE: moving a relation between schemas is missed when one side
+  // is unqualified. That trade is deliberate and the right way round — this module's contract is that
+  // a spurious failure on a converged database is the one outcome worse than admitting we did not
+  // look, because a gate that cries wolf gets switched off.
+  const sourceEqual =
+    a.sourceSchemaExplicit && b.sourceSchemaExplicit
+      ? a.source === b.source
+      : a.sourceName === b.sourceName;
+
   if (
     a.bucketWidth !== b.bucketWidth ||
     a.timeColumn !== b.timeColumn ||
     (a.bucketAlias ?? undefined) !== (b.bucketAlias ?? undefined) ||
-    a.source !== b.source ||
+    !sourceEqual ||
     a.groupBy.length !== b.groupBy.length ||
     a.aggregates.length !== b.aggregates.length
   ) {

@@ -31,7 +31,9 @@ describe('extractCaggFacets — the declared and stored forms must agree', () =>
       bucketWidth: 'us:3600000000', // canonicalised, not raw text
       timeColumn: 'time',
       bucketAlias: 'bucket', // part of the view's public shape, so renaming it is drift
-      source: 'public.sensor_reading', // canonicalised: the server omits the schema, the declared side qualifies it
+      source: 'public.sensor_reading', // display form; schema defaulted because none was written
+      sourceName: 'sensor_reading',
+      sourceSchemaExplicit: false, // neither fixture qualifies it — equality falls back to the name
       groupBy: [{ column: 'sensor_id' }],
       aggregates: [{ fn: 'avg', column: 'value', as: 'avg_value' }],
     });
@@ -286,6 +288,8 @@ describe('caggFacetsEqual — public API, so hand-built literals must behave', (
       aggregates: [{ as: 'n', column: undefined, fn: 'count' }],
       groupBy: [{ as: undefined, column: 'sensor_id' }],
       source: 'public.readings',
+      sourceName: 'readings',
+      sourceSchemaExplicit: false,
       bucketAlias: 'bucket',
       timeColumn: 'ts',
       bucketWidth: 'us:3600000000',
@@ -293,5 +297,49 @@ describe('caggFacetsEqual — public API, so hand-built literals must behave', (
 
     expect(caggFacetsEqual(parsed, handBuilt)).toBe(true);
     expect(JSON.stringify(parsed) === JSON.stringify(handBuilt)).toBe(false);
+  });
+});
+
+/**
+ * BLOCKING 1 from the #220 panel: a converged database in a NON-PUBLIC schema reported drift.
+ *
+ * Every fixture above uses `public`, which is exactly why CI was green while this was broken.
+ */
+describe('extractCaggFacets — non-public schema on the search_path', () => {
+  const agg = (from: string): string =>
+    `SELECT time_bucket('1 hour'::interval, ts) AS bucket, sensor_id, avg(value) AS avg_value FROM ${from} GROUP BY 1, 2`;
+
+  it('does NOT report drift when the server omits a schema the declaration qualifies', () => {
+    // Server side: `search_path = metrics, public`, so PostgreSQL renders the relation bare.
+    // Declared side: parseTable always fully-qualifies. Same relation, two renderings.
+    const server = extractCaggFacets(agg('sensor_reading'));
+    const declared = extractCaggFacets(agg('"metrics"."sensor_reading"'));
+    expect(server).toBeDefined();
+    expect(declared).toBeDefined();
+    if (server === undefined || declared === undefined) return;
+
+    expect(server.sourceSchemaExplicit).toBe(false);
+    expect(declared.sourceSchemaExplicit).toBe(true);
+    expect(declared.source).toBe('metrics.sensor_reading');
+    // The assertion that matters: this must not be drift.
+    expect(caggFacetsEqual(server, declared)).toBe(true);
+  });
+
+  it('still reports a genuine schema move when BOTH sides are qualified', () => {
+    const a = extractCaggFacets(agg('"metrics"."sensor_reading"'));
+    const b = extractCaggFacets(agg('"archive"."sensor_reading"'));
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    if (a === undefined || b === undefined) return;
+    expect(caggFacetsEqual(a, b)).toBe(false);
+  });
+
+  it('still reports a different RELATION even when unqualified', () => {
+    const a = extractCaggFacets(agg('sensor_reading'));
+    const b = extractCaggFacets(agg('other_table'));
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    if (a === undefined || b === undefined) return;
+    expect(caggFacetsEqual(a, b)).toBe(false);
   });
 });
