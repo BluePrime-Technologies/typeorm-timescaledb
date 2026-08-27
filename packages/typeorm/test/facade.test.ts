@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { describe, expect, it } from 'vitest';
 import * as pkg from '../src/index.js';
 import * as typeorm from 'typeorm';
+import * as core from '@blueprime/timescaledb-core';
 
 describe('unified schema DSL (facade)', () => {
   it('re-exports TypeORM modeling symbols as the SAME references (no dual instance)', () => {
@@ -75,6 +76,29 @@ describe('unified schema DSL (facade)', () => {
     expect(typeof pkg.HypertablePrimaryKey).toBe('function');
     expect(typeof pkg.createTimescale).toBe('function');
     expect(typeof pkg.validateHypertableMetadata).toBe('function');
+  });
+
+  it('re-exports the 0.7.0 lint + fragment-guard helpers from the installed package (#222)', () => {
+    // The 0.7.0 changelog lists these three under "Added" without naming a package. They lived only
+    // on `@blueprime/timescaledb-core` (a transitive dep consumers don't declare), so a consumer
+    // following the changelog got `undefined`. They must resolve from `typeorm-timescaledb` itself,
+    // and be the SAME references as core (no dual instance) — exactly like the TypeORM re-exports.
+    expect(typeof pkg.lintPlan).toBe('function');
+    expect(typeof pkg.assertSafeFragment).toBe('function');
+    expect(typeof pkg.formatLintFindings).toBe('function');
+    expect(pkg.lintPlan).toBe(core.lintPlan);
+    expect(pkg.assertSafeFragment).toBe(core.assertSafeFragment);
+    expect(pkg.formatLintFindings).toBe(core.formatLintFindings);
+  });
+
+  it('the re-exported lint + fragment-guard helpers actually work through the facade', () => {
+    // A behavioural check, not just presence: the re-export is only useful if the functions run.
+    // `assertSafeFragment` returns a safe fragment unchanged and rejects a statement separator;
+    // `lintPlan` runs over an empty `Plan`; `formatLintFindings` renders the empty result.
+    expect(pkg.assertSafeFragment('price', 'aggExpr')).toBe('price');
+    expect(() => pkg.assertSafeFragment('1; DROP TABLE trades', 'aggExpr')).toThrow();
+    expect(pkg.lintPlan({ steps: [] })).toEqual([]);
+    expect(pkg.formatLintFindings([])).toBe('No lint findings.');
   });
 
   it('lets a full schema (columns + hypertable) be defined from ONE import', () => {

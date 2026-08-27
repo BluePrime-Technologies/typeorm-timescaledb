@@ -154,6 +154,9 @@ try {
       if (typeof pkg.TimeColumn !== 'function') throw new Error('missing TimeColumn export');
       if (typeof pkg.assertSchema !== 'function') throw new Error('missing assertSchema export');
       if (typeof pkg.toNumber !== 'function') throw new Error('missing query result helper export');
+      if (typeof pkg.lintPlan !== 'function') throw new Error('missing lintPlan re-export (#222)');
+      if (typeof pkg.assertSafeFragment !== 'function') throw new Error('missing assertSafeFragment re-export (#222)');
+      if (typeof pkg.formatLintFindings !== 'function') throw new Error('missing formatLintFindings re-export (#222)');
       if (typeof nest.TimescaleModule !== 'function') throw new Error('missing NestJS module export');
       if (typeof core.createHypertableSQL !== 'function') throw new Error('missing core SQL export');
     `,
@@ -171,6 +174,9 @@ try {
       if (typeof pkg.TimeColumn !== 'function') throw new Error('missing TimeColumn export');
       if (typeof pkg.assertSchema !== 'function') throw new Error('missing assertSchema export');
       if (typeof pkg.toNumber !== 'function') throw new Error('missing query result helper export');
+      if (typeof pkg.lintPlan !== 'function') throw new Error('missing lintPlan re-export (#222)');
+      if (typeof pkg.assertSafeFragment !== 'function') throw new Error('missing assertSafeFragment re-export (#222)');
+      if (typeof pkg.formatLintFindings !== 'function') throw new Error('missing formatLintFindings re-export (#222)');
       if (typeof nest.TimescaleModule !== 'function') throw new Error('missing NestJS module export');
       if (typeof core.createHypertableSQL !== 'function') throw new Error('missing core SQL export');
     `,

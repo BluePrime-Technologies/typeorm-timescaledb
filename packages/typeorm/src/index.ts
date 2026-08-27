@@ -177,3 +177,15 @@ export type {
   ContinuousAggregateFn,
   ContinuousAggregatePolicyInput,
 } from '@blueprime/timescaledb-core';
+
+// Static plan linter + the pass-through fragment guard. All three landed in the core in 0.7.0 and
+// were listed under "Added" in the 0.7.0 changelog, but they were only ever reachable from
+// `@blueprime/timescaledb-core` — a transitive dependency consumers do not declare. Re-exported here
+// so they resolve from the package you actually install (see #222). `assertSafeFragment` especially
+// is a security helper (it guards hand-built aggregate fragments), so reaching it only via an
+// undeclared dependency was the least acceptable gap.
+export { lintPlan, formatLintFindings, assertSafeFragment } from '@blueprime/timescaledb-core';
+// `lintPlan(plan)` runs over a `Plan` — the same object carried by `PushResult.plan` — and returns
+// `LintFinding[]`; re-export those types so the linter surface is usable without a second import
+// from core.
+export type { LintFinding, LintSeverity, Plan } from '@blueprime/timescaledb-core';

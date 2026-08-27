@@ -19,6 +19,17 @@ and released in lockstep.
   deparses the definition (`INTERVAL '1 hour'` reads back as `'01:00:00'::interval`, quoting is
   stripped, `GROUP BY 1, 2` is expanded into full expressions), so it would report drift on an
   aggregate nobody touched.
+- **`lintPlan`, `formatLintFindings` and `assertSafeFragment` are now exported from
+  `typeorm-timescaledb`.** The 0.7.0 changelog listed all three under **Added** without naming a
+  package, but they were only ever reachable from `@blueprime/timescaledb-core` — a transitive
+  dependency consumers do not declare. A consumer following the changelog with
+  `import { lintPlan } from 'typeorm-timescaledb'` got `undefined`, and the obvious workaround
+  (importing from `@blueprime/timescaledb-core` directly) depends on a package not in their
+  `package.json`. All three — plus the `LintFinding` / `LintSeverity` / `Plan` types the linter
+  surface uses — are now re-exported from the package you install. `assertSafeFragment` guards a
+  hand-built expression fragment against statement/comment breakout — it rejects a top-level `;`,
+  `--` or `/*` — and is **not** a general injection sanitiser, so it is not a licence to pass
+  untrusted input. (#222)
 
 ### Changed
 
