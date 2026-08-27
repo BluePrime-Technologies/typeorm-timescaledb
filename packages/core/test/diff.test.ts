@@ -1224,3 +1224,106 @@ describe('diffSchemaState — materialized_only is reported, not silently ignore
     expect((plan.advisories ?? []).filter((a) => a.kind === 'not-expressible')).toEqual([]);
   });
 });
+
+describe('diffSchemaState — CAGG definitions are now compared structurally', () => {
+  // Real server rendering vs the declared form of the SAME aggregate. Five textual divergences,
+  // one aggregate — this must produce NO advisory at all, which is the whole point.
+  const SERVER = ` SELECT time_bucket('01:00:00'::interval, "time") AS bucket,\n    sensor_id,\n    avg(value) AS avg_value\n   FROM sensor_reading\n  GROUP BY (time_bucket('01:00:00'::interval, "time")), sensor_id;`;
+  const DECLARED =
+    'SELECT time_bucket(INTERVAL \'1 hour\', "time") AS "bucket", "sensor_id", avg(value) AS "avg_value" FROM sensor_reading GROUP BY 1, 2';
+
+  const cagg = (definition: string) => ({
+    viewName: 'public.reading_hourly',
+    source: 'public.sensor_reading',
+    hierarchical: false,
+    materializedOnly: false,
+    definition,
+  });
+  const ir = (definition: string) => ({
+    hypertables: [],
+    continuousAggregates: [cagg(definition)],
+  });
+
+  it('raises NO advisory when the stored and declared definitions are the same aggregate', () => {
+    const plan = diffSchemaState(ir(SERVER), ir(DECLARED));
+    // Previously every existing CAGG got a blanket `not-compared`. Now an unchanged one is silent.
+    expect(plan.advisories ?? []).toEqual([]);
+  });
+
+  it('raises a BLOCKING not-expressible naming the changed facet', () => {
+    const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+    const plan = diffSchemaState(ir(SERVER), ir(widened));
+    const advisories = plan.advisories ?? [];
+    expect(advisories).toHaveLength(1);
+    expect(advisories[0]?.kind).toBe('not-expressible'); // blocking — `check` must not exit clean
+    expect(advisories[0]?.detail).toContain('bucket width');
+    // It says WHAT moved, not merely that something did.
+    expect(advisories[0]?.detail).toContain('us:3600000000');
+    expect(advisories[0]?.detail).toContain('us:86400000000');
+  });
+
+  it('names a changed group-key set', () => {
+    const regrouped =
+      'SELECT time_bucket(INTERVAL \'1 hour\', "time") AS "bucket", "sensor_id", "region", avg(value) AS "avg_value" FROM sensor_reading GROUP BY 1, 2, 3';
+    const plan = diffSchemaState(ir(SERVER), ir(regrouped));
+    expect(plan.advisories?.[0]?.detail).toContain('group keys');
+  });
+
+  it('falls back to not-compared — never a guess — when a definition will not parse', () => {
+    const exotic =
+      'SELECT time_bucket(INTERVAL \'1 hour\', "time") AS "b", avg(value * 2) AS "v" FROM r GROUP BY 1';
+    const plan = diffSchemaState(ir(SERVER), ir(exotic));
+    expect(plan.advisories?.[0]?.kind).toBe('not-compared');
+  });
+
+  // One case per finding the review panel raised, asserted at THIS level — the layer that renders
+  // the verdict a user actually sees. The four cases above each asserted a facet the code already
+  // handled, so none of them could fail on an inherited defect.
+
+  it('names a RENAMED BUCKET column instead of reporting no drift', () => {
+    const renamed = DECLARED.replace('AS "bucket"', 'AS "ts_bucket"');
+    const advisories = diffSchemaState(ir(SERVER), ir(renamed)).advisories ?? [];
+    expect(advisories).toHaveLength(1);
+    expect(advisories[0]?.kind).toBe('not-expressible');
+    expect(advisories[0]?.detail).toContain('bucket column');
+  });
+
+  it('names a RENAMED GROUPED column instead of reporting no drift', () => {
+    const renamed = DECLARED.replace('"sensor_id",', '"sensor_id" AS "sid",');
+    const advisories = diffSchemaState(ir(SERVER), ir(renamed)).advisories ?? [];
+    expect(advisories).toHaveLength(1);
+    expect(advisories[0]?.kind).toBe('not-expressible');
+    // Regression guard for `groupBy.join(',')`, which rendered "[object Object]" on BOTH sides and
+    // therefore reported every group-key change as identical.
+    expect(advisories[0]?.detail).toContain('group keys');
+    expect(advisories[0]?.detail).not.toContain('[object Object]');
+  });
+
+  it('treats a MONTH bucket as different from a 30-day bucket', () => {
+    const monthly = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 mon'");
+    const thirtyDays = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '30 days'");
+    const advisories = diffSchemaState(ir(monthly), ir(thirtyDays)).advisories ?? [];
+    expect(advisories).toHaveLength(1);
+    expect(advisories[0]?.kind).toBe('not-expressible');
+    expect(advisories[0]?.detail).toContain('bucket width');
+  });
+
+  it('refuses a FROM with a table alias rather than reddening a converged database', () => {
+    // Parsing this fabricated the relation `public.sensor_reading r`, which no server rendering can
+    // equal — and mapped to a BLOCKING advisory it made `check` permanently red with no way to
+    // converge. not-compared is the honest answer.
+    const aliased = DECLARED.replace('FROM sensor_reading', 'FROM sensor_reading r');
+    const advisories = diffSchemaState(ir(SERVER), ir(aliased)).advisories ?? [];
+    expect(advisories).toHaveLength(1);
+    expect(advisories[0]?.kind).toBe('not-compared');
+  });
+
+  it('raises NO advisory for a converged aggregate in a NON-PUBLIC schema', () => {
+    // The server omits any schema on the search_path; the declared side always qualifies. Both
+    // parse, so there is no not-compared fallback — this used to emit a blocking advisory on a
+    // database `push` had just converged.
+    const qualified = DECLARED.replace('FROM sensor_reading', 'FROM "metrics"."sensor_reading"');
+    const plan = diffSchemaState(ir(SERVER), ir(qualified));
+    expect(plan.advisories ?? []).toEqual([]);
+  });
+});

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both packages (`typeorm-timescaledb` and `@blueprime/timescaledb-core`) are versioned
 and released in lockstep.
 
+## [Unreleased]
+
+### Added
+
+- **Continuous-aggregate definitions are now compared structurally.** `check` previously answered
+  "I did not look" for every existing aggregate, raising a blanket `not-compared` advisory. Both
+  sides are now parsed into the facets that define the aggregate — bucket width and time column,
+  the group-key set, the aggregate list, the output-column names, and the source relation — and
+  those are compared. Text comparison was not a cheaper option but a broken one: the catalog
+  deparses the definition (`INTERVAL '1 hour'` reads back as `'01:00:00'::interval`, quoting is
+  stripped, `GROUP BY 1, 2` is expanded into full expressions), so it would report drift on an
+  aggregate nobody touched.
+
+### Changed
+
+- **BREAKING for CI: `check` can now exit non-zero on a continuous aggregate it previously ignored.**
+  A detected definition difference is reported as a blocking `not-expressible` advisory. It is
+  deliberately NOT auto-converged — TimescaleDB cannot `ALTER` a continuous aggregate's SELECT, so
+  converging means DROP + CREATE, discarding materialized rows that may be the only surviving copy
+  of data whose source chunks retention has already dropped. No plan step is emitted; only the exit
+  code changes.
+
+  If you have an aggregate whose live definition has drifted from your declaration, `check` will
+  now tell you instead of staying silent. A definition the parser cannot read — a `WHERE` clause, a
+  join, a nested expression, a table alias in `FROM` — still falls back to `Not compared:`.
+
+- Docs corrected accordingly: `docs/feature-status.md`, `docs/limitations.md` and
+  `docs/migration-guide.md` each stated that an existing aggregate's definition "is not compared",
+  which this release falsifies.
+
 ## [0.7.1] - 2026-08-13
 
 Documentation-only patch. **No source changes** — published so the npm package pages describe what

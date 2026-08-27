@@ -179,8 +179,10 @@ The following items are product direction, not shipped functionality:
   constructs.
 - Other stable Toolkit aggregates not listed in the 0.3.0 / 0.4.0 release scope.
 - Destructive auto-migrations (dropping a hypertable, disabling a columnstore).
-- Structural diffing of continuous aggregates (presence and refresh policies are
-  diffed; an existing aggregate's definition is not compared).
+- Automatic CONVERGENCE of a changed continuous-aggregate definition. (The
+  definition IS now compared structurally and a difference is reported as drift;
+  converging it means DROP + CREATE, which discards materialized rows, so it is
+  never auto-generated.)
 - Automatic reconciliation of space (hash) dimensions.
 - Validated cross-store references **inside this package**. They ship separately as
   `@blueprime/cross-store` (versioned independently) — see the packages table in the README;
@@ -203,9 +205,12 @@ and compression policies (both reversible).
 It deliberately does NOT perform destructive changes: dropping a hypertable or
 disabling a columnstore is never emitted. Continuous aggregates are diffed
 ADDITIVELY — a declared aggregate the database lacks is created and a missing
-refresh policy attached, but an existing one is never dropped or recreated and
-its definition is not compared. Space (hash) dimensions cannot be reconciled in
-place. Every such gap is named in the command's output (`Not compared:` /
+refresh policy attached, but an existing one is never dropped or recreated. Its
+definition IS compared structurally — a changed bucket width, group-key set,
+aggregate list, output-column name or source relation is reported as drift and
+makes `check` exit non-zero, while a definition the parser cannot read falls back
+to `Not compared:` rather than guessing. Space (hash) dimensions cannot be
+reconciled in place. Every such gap is named in the command's output (`Not compared:` /
 `Not auto-converged:`) rather than silently ignored, and an unconvergeable
 divergence still makes `check` exit non-zero.
 
