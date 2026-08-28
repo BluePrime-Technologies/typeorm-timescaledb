@@ -11,6 +11,7 @@ import {
   removeCompressionPolicySQL,
   createContinuousAggregateSQL,
   createContinuousAggregateRawSQL,
+  recreateContinuousAggregateSQL,
   compressChunkSQL,
   decompressChunkSQL,
   createHypertableSQL,
@@ -92,6 +93,31 @@ export interface CreateContinuousAggregateRawOperation extends CreateContinuousA
   readonly kind: 'createContinuousAggregateRaw';
 }
 
+/**
+ * Converge an EXISTING continuous aggregate whose definition has drifted from the declaration, by
+ * DROP + CREATE.
+ *
+ * TimescaleDB cannot `ALTER` a continuous aggregate's `SELECT`, so this is the only convergence path
+ * there is — and it **discards the materialized rows**, which may be the only surviving copy of data
+ * whose source chunks a retention policy has already dropped. Hence `refuse-by-default`, and hence
+ * it is emitted only when the caller opts in via
+ * {@link DiffOptions.continuousAggregateRecreate} (`'plan'` or `'apply'`); the default `'advise'`
+ * keeps the non-executable advisory that 0.7.x shipped.
+ *
+ * `down()` deliberately does NOT drop the recreated view — see `createContinuousAggregateRawSQL`'s
+ * `intent: 'reproduce'` reasoning. Reverting cannot restore the discarded rows, and dropping the
+ * replacement as well would leave the user with neither.
+ */
+export interface RecreateContinuousAggregateOperation extends CreateContinuousAggregateRawInput {
+  readonly kind: 'recreateContinuousAggregate';
+  /**
+   * Human-readable summary of WHICH facets moved, from the diff's `describeCaggDelta`. Carried on the
+   * operation so the plan preview and the refusal message can name the change rather than saying
+   * only that something differs.
+   */
+  readonly delta: string;
+}
+
 /** Add ONLY the compression policy job to a hypertable whose columnstore is already enabled
  * (closes the "columnstore enabled but no compression policy" drift; no `ALTER TABLE SET` re-assert). */
 /**
@@ -158,6 +184,7 @@ export type Operation =
   | AddRetentionPolicyOperation
   | CreateContinuousAggregateOperation
   | CreateContinuousAggregateRawOperation
+  | RecreateContinuousAggregateOperation
   | AddContinuousAggregatePolicyOperation
   | DecompressChunkOperation
   | CompressChunkOperation
@@ -192,6 +219,8 @@ export function compileOperation(operation: Operation): MigrationStatement {
       return createContinuousAggregateSQL(operation);
     case 'createContinuousAggregateRaw':
       return createContinuousAggregateRawSQL(operation);
+    case 'recreateContinuousAggregate':
+      return recreateContinuousAggregateSQL(operation);
     case 'addContinuousAggregatePolicy':
       return addContinuousAggregatePolicySQL(operation);
     case 'decompressChunk':

@@ -15,6 +15,7 @@ export {
 export {
   createContinuousAggregateSQL,
   createContinuousAggregateRawSQL,
+  recreateContinuousAggregateSQL,
   renderContinuousAggregateSelect,
   extractSelectBodyForTest,
   refreshContinuousAggregateSQL,

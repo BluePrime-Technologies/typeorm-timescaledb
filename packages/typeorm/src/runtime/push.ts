@@ -2,8 +2,11 @@ import type { DataSource } from 'typeorm';
 import {
   diffSchemaState,
   isEmptyPlan,
+  TimescaleError,
+  TimescaleErrorCode,
   type Plan,
   type PlanAdvisory,
+  type PlanStep,
 } from '@blueprime/timescaledb-core';
 import { introspect } from './introspect.js';
 import { compileDesiredState } from './desired-state.js';
@@ -25,6 +28,17 @@ export interface PushOptions {
    * different risks, and one flag must not silently grant both.
    */
   readonly allowRefused?: boolean;
+  /**
+   * What to do about a continuous aggregate whose definition has drifted — passed through to
+   * {@link DiffOptions.continuousAggregateRecreate}. Default `'advise'`.
+   *
+   * - `'advise'` — blocking advisory, no step, nothing to apply. Unchanged 0.7.x behaviour.
+   * - `'plan'` — the step appears in the plan (so `check`/`generate` show it) but `push` NEVER
+   *   applies it: it is held back and reported in {@link PushResult.heldBack}, and the rest of the
+   *   plan applies normally.
+   * - `'apply'` — the step applies, but only with {@link allowRefused} as well.
+   */
+  readonly continuousAggregateRecreate?: 'advise' | 'plan' | 'apply';
   /**
    * The `@ContinuousAggregate` classes to compare, exactly as `generateTimescaleMigration` takes
    * them. CAGG metadata lives in a module-private WeakMap and CAGG classes are not TypeORM entities,
@@ -67,6 +81,15 @@ export interface PushResult {
   readonly applied: boolean;
   /** The SQL statements that were executed (empty for a preview or an empty plan). */
   readonly statements: readonly string[];
+  /**
+   * Steps deliberately NOT applied, with the reason. Populated in
+   * `continuousAggregateRecreate: 'plan'` mode, where the recreate step exists to be SEEN and never
+   * run — the rest of the plan still applies, so a drifted aggregate does not block a user's
+   * unrelated retention and columnstore changes.
+   *
+   * Non-empty here with `applied: true` is normal and not an error; the CLI reports it.
+   */
+  readonly heldBack: readonly { readonly step: PlanStep; readonly reason: string }[];
 }
 
 /**
@@ -95,6 +118,7 @@ export async function pushSchema(
   const diffed = diffSchemaState(current, desired, {
     renames,
     allowDrops: options.allowDrops ?? false,
+    continuousAggregateRecreate: options.continuousAggregateRecreate ?? 'advise',
   });
 
   // An OMITTED list means no aggregate was compared — which the diff cannot detect, since an empty
@@ -116,11 +140,59 @@ export async function pushSchema(
   const plan: Plan = { ...diffed, ...(advisories.length > 0 && { advisories }) };
 
   if (options.apply !== true || isEmptyPlan(plan)) {
-    return { plan, applied: false, statements: [] };
+    return { plan, applied: false, statements: [], heldBack: [] };
   }
 
-  const result = await applyDirect(dataSource, plan, {
+  // `applyDirect` refuses the WHOLE plan if any step is `refuse-by-default`. That gate is right for
+  // `'apply'` mode and wrong for `'plan'` mode, whose entire point is that the recreate step is
+  // visible but never run — refusing the user's unrelated steps because of it would be a bug, not
+  // caution. So partition here rather than letting the all-or-nothing gate decide.
+  const mode = options.continuousAggregateRecreate ?? 'advise';
+  const heldBack =
+    mode === 'plan'
+      ? plan.steps
+          .filter((s) => s.operation.kind === 'recreateContinuousAggregate')
+          .map((step) => ({
+            step,
+            reason:
+              "continuousAggregateRecreate: 'plan' shows this step but never applies it. To apply " +
+              "it, use 'apply' mode together with allowRefused (--allow-refused); it DROPs and " +
+              'recreates the aggregate, discarding its materialized rows.',
+          }))
+      : [];
+
+  // A failure the user's own configuration caused must name the choice that caused it and what to
+  // choose instead — `applyDirect`'s generic "refused N operations classified refuse-by-default"
+  // cannot be connected back to a mode set in a config file weeks ago.
+  if (mode === 'apply' && options.allowRefused !== true) {
+    const recreates = plan.steps.filter((s) => s.operation.kind === 'recreateContinuousAggregate');
+    if (recreates.length > 0) {
+      const views = recreates.map((s) => (s.operation as { view: string }).view).join(', ');
+      throw new TimescaleError(
+        TimescaleErrorCode.INVALID_ARGUMENT,
+        `continuousAggregateRecreate: 'apply' emitted ${recreates.length} continuous-aggregate ` +
+          `recreate step(s) (${views}), which DROP and recreate the aggregate and discard its ` +
+          'materialized rows. That needs a second, explicit opt-in and it is missing.\n' +
+          '  • to apply it: also pass allowRefused (CLI: --allow-refused)\n' +
+          "  • to apply everything ELSE and only be SHOWN this step: use 'plan' mode\n" +
+          "  • to go back to an advisory with no step at all: use 'advise' mode (the default)",
+        { views, mode },
+      );
+    }
+  }
+
+  const applicable: Plan =
+    heldBack.length === 0
+      ? plan
+      : { ...plan, steps: plan.steps.filter((s) => !heldBack.some((h) => h.step === s)) };
+
+  // Everything held back, nothing left to do: report it rather than opening a transaction.
+  if (applicable.steps.length === 0) {
+    return { plan, applied: false, statements: [], heldBack };
+  }
+
+  const result = await applyDirect(dataSource, applicable, {
     ...(options.allowRefused === true && { allowRefuseByDefault: true }),
   });
-  return { plan, applied: true, statements: result.statements };
+  return { plan, applied: true, statements: result.statements, heldBack };
 }

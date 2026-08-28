@@ -16,7 +16,7 @@ import {
 import type { OutputFormat } from './args.js';
 import { pushSchema, type PushOptions } from '../runtime/push.js';
 import { pullSchema, formatPullCoverage } from '../runtime/pull.js';
-import { formatPlanPreview } from './format-plan.js';
+import { formatPlanPreview, describeOperation } from './format-plan.js';
 
 /** Minimal output sink — injectable so commands are testable without touching the console. */
 export interface Logger {
@@ -186,7 +186,7 @@ function formatAdvisories(advisories: readonly PlanAdvisory[]): string {
 export async function checkCommand(
   dataSource: DataSource,
   logger: Logger,
-  options: Pick<PushOptions, 'continuousAggregates'> = {},
+  options: Pick<PushOptions, 'continuousAggregates' | 'continuousAggregateRecreate'> = {},
 ): Promise<boolean> {
   // Delegate to `pushSchema` in preview mode rather than re-composing introspect → compile → diff
   // here. The two used to be parallel implementations, which is how `check` and `push` could drift
@@ -254,6 +254,17 @@ export async function pushCommand(
 
   logger.log(formatPlanWithLint(plan));
   if (advisories.length > 0) logger.log(formatAdvisories(advisories));
+
+  // Steps deliberately not applied. This has to be reported even on the success path: the plan
+  // above LISTS the step, so silence here would read as "it ran".
+  if (result.heldBack.length > 0) {
+    logger.log(
+      `\nHELD BACK — ${result.heldBack.length} step(s) shown above were NOT applied:\n` +
+        result.heldBack
+          .map((h) => `  • ${describeOperation(h.step.operation)}\n    ${h.reason}`)
+          .join('\n'),
+    );
+  }
 
   if (!applied) {
     logger.log(

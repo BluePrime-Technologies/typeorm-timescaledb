@@ -194,10 +194,43 @@ aggregate list, the output-column names, and the source relation — and those a
 compared.
 
 A difference in any of them is reported as drift naming the facet that moved, and
-**`check` exits non-zero**. It is not auto-converged: TimescaleDB cannot `ALTER` a
-continuous aggregate's SELECT, so converging means DROP + CREATE, which discards
-materialized rows that may be the only surviving copy of data whose source chunks
-retention has already dropped. Change one, and you change it by hand.
+**`check` exits non-zero**. By default it is not converged: TimescaleDB cannot
+`ALTER` a continuous aggregate's SELECT, so converging means DROP + CREATE, which
+discards materialized rows that may be the only surviving copy of data whose
+source chunks retention has already dropped.
+
+#### Converging it anyway: `--cagg-recreate`
+
+Because that trade is yours and not the engine's, convergence is a mode rather
+than something the engine decides:
+
+| mode               | reports the drift | shows the recreate step        | runs it                         |
+| ------------------ | ----------------- | ------------------------------ | ------------------------------- |
+| `advise` (default) | yes               | no                             | no                              |
+| `plan`             | —                 | yes, in `check` and `generate` | **never**                       |
+| `apply`            | —                 | yes                            | only with `--allow-refused` too |
+
+```sh
+# see exactly what convergence would take, without any risk of running it
+npx typeorm-timescaledb check -d ./src/data-source.ts --cagg-recreate plan
+
+# actually recreate it — TWO opt-ins, because this discards the materialized rows
+npx typeorm-timescaledb push -d ./src/data-source.ts --apply \
+  --cagg-recreate apply --allow-refused
+```
+
+Two independent gates on purpose: `--allow-refused` is a flag you may already
+pass to shorten a retention window, and it must not by itself authorise
+discarding an aggregate's history.
+
+**`plan` mode never blocks your other changes.** `push --apply` applies the rest
+of the plan and reports the recreate step it held back — a drifted aggregate does
+not stop an unrelated retention or columnstore change from landing.
+
+`'apply'` is deliberately **not** settable in `timescaledb.config.json`. A file
+committed to the repository must never pre-authorise a destructive run for
+everyone who later types the command; `advise` and `plan` are non-destructive and
+may live there.
 
 A definition the parser cannot read — a `WHERE` clause, a join, a nested
 expression, a table alias in `FROM` — is still listed under `Not compared:`.

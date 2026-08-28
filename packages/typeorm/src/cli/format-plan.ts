@@ -6,7 +6,7 @@ import type { Operation, Plan } from '@blueprime/timescaledb-core';
  * its essential fields. This never renders SQL (see `compileOperation` for that); it exists only to
  * make the `check` verb's drift preview legible without pretty-printing a full migration.
  */
-function describeOperation(operation: Operation): string {
+export function describeOperation(operation: Operation): string {
   switch (operation.kind) {
     case 'createHypertable':
       return (
@@ -29,6 +29,14 @@ function describeOperation(operation: Operation): string {
       // Deliberately does NOT echo the definition: it is arbitrary SQL from the catalog and can be
       // long enough to bury the rest of the plan. The generated migration is where to read it.
       return `create continuous aggregate ${operation.view} (reproduced from the database's own definition)`;
+    case 'recreateContinuousAggregate':
+      // Names the DELTA and the consequence, not the definition. This is the one step in the plan
+      // that discards data, so the preview a user skims must say so on its own line rather than
+      // relying on them to read the safety class.
+      return (
+        `RECREATE continuous aggregate ${operation.view} — ${operation.delta} ` +
+        `(DROP + CREATE: discards its materialized rows)`
+      );
     case 'addContinuousAggregatePolicy':
       return `add refresh policy on ${operation.view}`;
     case 'addCompressionPolicy':

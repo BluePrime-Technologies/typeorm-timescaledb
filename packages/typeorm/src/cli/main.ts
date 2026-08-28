@@ -66,7 +66,13 @@ async function main(argv: readonly string[]): Promise<void> {
         await statusCommand(dataSource, logger);
         break;
       case 'check': {
-        const drift = await checkCommand(dataSource, logger, caggs);
+        const drift = await checkCommand(dataSource, logger, {
+          ...caggs,
+          // `check` shares pushSchema, so the mode has to reach it too — otherwise `plan` mode
+          // would show the recreate step on `push` and hide it on `check`, which is the verb
+          // people actually run in CI.
+          continuousAggregateRecreate: args.continuousAggregateRecreate,
+        });
         // 2, not 1. `push`/`pull`/`mix` already use 2 for "there is drift" precisely so that 1 can
         // keep meaning "the command itself failed" — which is also what the top-level catch sets on
         // ANY error. `check` is the verb documented as the CI drift gate, and it was the one verb
@@ -83,6 +89,7 @@ async function main(argv: readonly string[]): Promise<void> {
           apply: args.apply,
           allowDrops: args.allowDrops,
           allowRefused: args.allowRefused,
+          continuousAggregateRecreate: args.continuousAggregateRecreate,
           ...caggs,
         });
         process.exitCode = exitCodeForPush(outcome);

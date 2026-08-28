@@ -476,3 +476,58 @@ export function createContinuousAggregateRawSQL(
 
   return { up, down, inspect };
 }
+
+/**
+ * DROP + CREATE an existing continuous aggregate whose definition has drifted from the declaration.
+ *
+ * **This discards the aggregate's materialized rows.** TimescaleDB cannot `ALTER` a continuous
+ * aggregate's `SELECT`, so there is no other convergence path; the operation is classified
+ * `refuse-by-default` and is emitted only behind an explicit opt-in.
+ *
+ * Two deliberate choices in the emitted SQL:
+ *
+ * - **`up` drops before creating**, with `IF EXISTS` so a re-run after a partial failure is not
+ *   itself a failure. The recreate is `WITH NO DATA`, matching {@link createContinuousAggregateRawSQL}
+ *   — materializing history inside a migration makes the statement's cost unbounded, which is the
+ *   caller's decision (a `refresh`), not this builder's.
+ * - **`down` does NOT drop the recreated view.** Reverting cannot bring back the rows `up` discarded,
+ *   so dropping the replacement as well would leave the user with neither the old aggregate nor the
+ *   new one. Same reasoning as `intent: 'reproduce'` above: the destructive act has already happened
+ *   and is not undoable, so `down` limits the damage rather than doubling it.
+ */
+export function recreateContinuousAggregateSQL(
+  input: CreateContinuousAggregateRawInput,
+): MigrationStatement {
+  const view = parseTable(input.view);
+  const materializedOnly = input.materializedOnly ?? false;
+
+  // Same guard as the raw create: the definition is passed through UNPARSED, so it must first be
+  // proven free of anything that could terminate the statement or comment out the appended clause.
+  const body = normalizeCaggDefinitionBody(input.definition);
+  const verdict = classifyDefinitionBody(body);
+  if (verdict !== 'usable') {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `continuous aggregate ${input.view}: ${DEFINITION_REJECTION[verdict]}`,
+      { view: input.view },
+    );
+  }
+
+  const up = [
+    `DROP MATERIALIZED VIEW IF EXISTS ${view.ident};`,
+    `CREATE MATERIALIZED VIEW ${view.ident} ` +
+      `WITH (timescaledb.continuous, timescaledb.materialized_only = ${materializedOnly ? 'TRUE' : 'FALSE'}) AS ` +
+      // NEWLINE, not a space — a definition ending in a `--` line comment would otherwise swallow
+      // `WITH NO DATA` and the terminator, and Postgres accepts an unterminated single statement, so
+      // it would SUCCEED while materializing the entire history.
+      `${body}\nWITH NO DATA;`,
+  ];
+
+  const down = [nonDestructiveNotice('continuous aggregate', view.ident)];
+
+  const inspect =
+    `SELECT view_schema, view_name, materialized_only FROM timescaledb_information.continuous_aggregates ` +
+    `WHERE view_schema = ${quoteLiteral(view.schema)} AND view_name = ${quoteLiteral(view.name)};`;
+
+  return { up, down, inspect };
+}

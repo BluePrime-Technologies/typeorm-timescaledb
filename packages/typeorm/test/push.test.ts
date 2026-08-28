@@ -18,6 +18,7 @@ import {
   HypertablePrimaryKey,
   ContinuousAggregate,
   BucketColumn,
+  GroupColumn,
   TimescaleError,
   TimescaleErrorCode,
   AggregateColumn,
@@ -722,5 +723,141 @@ describe('pushCommand — the original failure is never replaced by the diagnost
     await expect(pushCommand(ds, logger, { apply: true })).rejects.toThrow(
       'the real failure: permission denied for schema public',
     );
+  });
+});
+
+describe('pushSchema — drifted continuous aggregate: advise | plan | apply', () => {
+  // A DataSource stub whose CAGG catalog row carries a definition that does NOT match the
+  // declaration below (1 day in the database vs 1 hour declared), plus one hypertable of unrelated
+  // drift so we can prove the rest of the plan still applies.
+  function stubDs(): { ds: DataSource; queries: string[] } {
+    const queries: string[] = [];
+    const rows = (sql: string): unknown[] => {
+      if (sql.includes('pg_extension')) return [{ extversion: '2.29.1' }];
+      if (sql.includes('timescaledb_information.hypertables') && sql.includes('ORDER BY')) {
+        // `reading` EXISTS (so the cagg's source resolves) but `other` does not -> unrelated drift.
+        return [{ hypertable_schema: 'public', hypertable_name: 'reading' }];
+      }
+      if (sql.includes('timescaledb_information.continuous_aggregates')) {
+        return [
+          {
+            view_schema: 'public',
+            view_name: 'reading_hourly',
+            materialized_only: false,
+            // DRIFTED: a 1-day bucket where the declaration says 1 hour.
+            view_definition:
+              ' SELECT time_bucket(\'1 day\'::interval, "time") AS bucket,\n    sensor_id,\n    avg(value) AS avg_value\n   FROM reading\n  GROUP BY (time_bucket(\'1 day\'::interval, "time")), sensor_id;',
+            mat_hypertable_id: 1,
+            parent_schema: null,
+            parent_view: null,
+            raw_schema: 'public',
+            raw_table: 'reading',
+          },
+        ];
+      }
+      return [];
+    };
+    const runner = {
+      connect: async () => {},
+      startTransaction: async () => {},
+      commitTransaction: async () => {},
+      rollbackTransaction: async () => {},
+      release: async () => {},
+      get isTransactionActive() {
+        return false;
+      },
+      query: async (sql: string) => {
+        queries.push(sql);
+        return rows(sql);
+      },
+    };
+    const ds = {
+      isInitialized: true,
+      options: {},
+      entityMetadatas: [
+        { target: Reading, tableName: 'reading', columns: [] },
+        { target: Other, tableName: 'other', columns: [] },
+      ],
+      createQueryRunner: () => runner,
+    } as unknown as DataSource;
+    return { ds, queries };
+  }
+
+  class Reading {}
+  Hypertable({ chunkInterval: '1 day' })(Reading);
+  TimeColumn()(Reading.prototype, 'time');
+  HypertablePrimaryKey()(Reading.prototype, 'time');
+
+  // Unrelated drift: this hypertable is absent from the database, so its create step must still
+  // apply even when the cagg step is held back.
+  class Other {}
+  Hypertable({ chunkInterval: '1 day' })(Other);
+  TimeColumn()(Other.prototype, 'ts');
+  HypertablePrimaryKey()(Other.prototype, 'ts');
+
+  class ReadingHourly {}
+  ContinuousAggregate({ name: 'reading_hourly', source: Reading, bucket: '1 hour' })(ReadingHourly);
+  BucketColumn()(ReadingHourly.prototype, 'bucket');
+  GroupColumn()(ReadingHourly.prototype, 'sensorId');
+  AggregateColumn({ fn: 'avg', column: 'value' })(ReadingHourly.prototype, 'avgValue');
+
+  const caggs = { continuousAggregates: [ReadingHourly] };
+
+  it("'advise' (default) emits no recreate step — unchanged 0.7.x behaviour", async () => {
+    const { ds } = stubDs();
+    const result = await pushSchema(ds, caggs);
+    expect(result.plan.steps.some((s) => s.operation.kind === 'recreateContinuousAggregate')).toBe(
+      false,
+    );
+    expect(result.plan.advisories?.some((a) => a.kind === 'not-expressible')).toBe(true);
+  });
+
+  it("'plan' APPLIES the rest of the plan and holds ONLY the recreate back", async () => {
+    // The point of the mode, and the reason it does not just reuse applyDirect's all-or-nothing
+    // gate: a drifted aggregate must not block the user's unrelated changes.
+    const { ds, queries } = stubDs();
+    const result = await pushSchema(ds, {
+      ...caggs,
+      apply: true,
+      continuousAggregateRecreate: 'plan',
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.heldBack).toHaveLength(1);
+    expect(result.heldBack[0]?.step.operation.kind).toBe('recreateContinuousAggregate');
+    expect(result.heldBack[0]?.reason).toContain("'plan' shows this step but never applies it");
+
+    // The unrelated hypertable DID get created...
+    expect(queries.some((q) => q.includes('create_hypertable'))).toBe(true);
+    // ...and the aggregate was NOT dropped.
+    expect(queries.some((q) => /DROP\s+MATERIALIZED\s+VIEW/i.test(q))).toBe(false);
+  });
+
+  it("'apply' WITHOUT allowRefused refuses, and the message says which choice caused it", async () => {
+    // A failure the user's own configuration caused must name that choice and the ways forward —
+    // applyDirect's generic "refused N operations" cannot be traced back to a mode.
+    const { ds, queries } = stubDs();
+    await expect(
+      pushSchema(ds, { ...caggs, apply: true, continuousAggregateRecreate: 'apply' }),
+    ).rejects.toThrow(/continuousAggregateRecreate: 'apply'/);
+
+    // and nothing was mutated on the way to refusing
+    expect(queries.some((q) => /DROP\s+MATERIALIZED\s+VIEW|create_hypertable/i.test(q))).toBe(
+      false,
+    );
+  });
+
+  it("'apply' WITH allowRefused performs the DROP + CREATE", async () => {
+    const { ds, queries } = stubDs();
+    const result = await pushSchema(ds, {
+      ...caggs,
+      apply: true,
+      continuousAggregateRecreate: 'apply',
+      allowRefused: true,
+    });
+    expect(result.applied).toBe(true);
+    expect(result.heldBack).toEqual([]);
+    expect(queries.some((q) => /DROP MATERIALIZED VIEW IF EXISTS/i.test(q))).toBe(true);
+    expect(queries.some((q) => /CREATE MATERIALIZED VIEW/i.test(q))).toBe(true);
   });
 });

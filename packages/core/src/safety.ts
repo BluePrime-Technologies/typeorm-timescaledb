@@ -21,9 +21,12 @@ import { isShortening } from './normalize.js';
  * - **`refuse-by-default`** — destructive / data-losing; never emitted without an explicit opt-in.
  *   (Dropping a hypertable, disabling the columnstore, dropping a column.)
  *
- * NOTE: `alterColumnstoreConfig` is `needs-recompress`; `refuse-by-default` remains forward-looking
- * vocabulary for the drops slice (no current {@link Operation} variant returns it except the
- * unknown-kind fallback below).
+ * NOTE: `alterColumnstoreConfig` is `needs-recompress`. Two variants really do return
+ * `refuse-by-default` — `alterRetentionPolicy` when it SHORTENS `drop_after`, and
+ * `recreateContinuousAggregate` — plus the unknown-kind fallback below. (This note previously claimed
+ * none did, which was stale and actively misleading: it invites the conclusion that reusing the
+ * `allowRefuseByDefault` gate is free, when in fact a user already passes it to shorten a retention
+ * window.)
  */
 export type SafetyClass = 'online-safe' | 'needs-recompress' | 'refuse-by-default' | 'one-way';
 
@@ -109,6 +112,15 @@ export function classifyOperation(operation: Operation): OperationSafety {
         safety: 'online-safe',
         reason:
           'changes when compression runs (remove-then-add of a background job) — rewrites no data; down() restores the prior threshold',
+      };
+    case 'recreateContinuousAggregate':
+      return {
+        safety: 'refuse-by-default',
+        reason:
+          `its definition drifted (${operation.delta}) and TimescaleDB cannot ALTER a continuous ` +
+          "aggregate's SELECT, so converging means DROP + CREATE — this DISCARDS the materialized " +
+          'rows, which may be the only surviving copy of data whose source chunks a retention ' +
+          'policy has already dropped; down() cannot restore them',
       };
     case 'alterRetentionPolicy': {
       // SHORTENING drop_after is the one policy alter with a real data effect: the apply itself

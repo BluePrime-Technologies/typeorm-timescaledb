@@ -32,6 +32,10 @@ export class CliError extends Error {
 export const OUTPUT_FORMATS = ['ts', 'sql'] as const;
 export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 
+/** How `push`/`check` handle a continuous aggregate whose definition has drifted. */
+export const CAGG_RECREATE_MODES = ['advise', 'plan', 'apply'] as const;
+export type CaggRecreateMode = (typeof CAGG_RECREATE_MODES)[number];
+
 export interface ParsedArgs {
   readonly command: Command;
   /** Path to a module exporting a `DataSource`, as a default or named export. */
@@ -54,6 +58,12 @@ export interface ParsedArgs {
   readonly allowDrops: boolean;
   /** `push` only: opt in to applying steps classified `refuse-by-default`. */
   readonly allowRefused: boolean;
+  /**
+   * `push`/`check`: what to do about a continuous aggregate whose definition has drifted.
+   * `'advise'` (default) reports it, `'plan'` also SHOWS the recreate step without ever running it,
+   * `'apply'` allows it to run — and only together with `--allow-refused`.
+   */
+  readonly continuousAggregateRecreate: CaggRecreateMode;
   /** Emit format for `generate`: `ts` (TypeORM class, default) or `sql` (raw `.sql`). */
   readonly output: OutputFormat;
 }
@@ -81,23 +91,30 @@ Options:
       --apply               'push': actually converge the database (default: preview only)
       --allow-drops         'push': also apply reversible policy removals
       --allow-refused       'push': also apply steps classified refuse-by-default
+      --cagg-recreate <m>   drifted continuous aggregate: advise (default) | plan | apply
+                            advise = report only; plan = also SHOW the recreate step but never
+                            run it; apply = allow it to run (needs --allow-refused too, and it
+                            DISCARDS the aggregate's materialized rows)
                             (--allowDrops / --allowRefused are accepted too)
   -h, --help                Show this help`;
 
-export const FLAG_ALIASES: Record<string, 'dataSource' | 'outDir' | 'name' | 'output' | 'config'> =
-  {
-    '-d': 'dataSource',
-    // Recognised so it is not "Unknown option". Its VALUE is consumed earlier by `resolveConfig`
-    // (the config has to be loaded before this parse, since it supplies defaults to it), so the
-    // value captured here is deliberately unused.
-    '--config': 'config',
-    '--dataSource': 'dataSource',
-    '-o': 'outDir',
-    '--outDir': 'outDir',
-    '-n': 'name',
-    '--name': 'name',
-    '--output': 'output',
-  };
+export const FLAG_ALIASES: Record<
+  string,
+  'dataSource' | 'outDir' | 'name' | 'output' | 'config' | 'continuousAggregateRecreate'
+> = {
+  '-d': 'dataSource',
+  // Recognised so it is not "Unknown option". Its VALUE is consumed earlier by `resolveConfig`
+  // (the config has to be loaded before this parse, since it supplies defaults to it), so the
+  // value captured here is deliberately unused.
+  '--config': 'config',
+  '--dataSource': 'dataSource',
+  '-o': 'outDir',
+  '--outDir': 'outDir',
+  '-n': 'name',
+  '--name': 'name',
+  '--output': 'output',
+  '--cagg-recreate': 'continuousAggregateRecreate',
+};
 
 /** Flags that take NO value. Listing them explicitly stops the value-flag loop from consuming the
  * following token (`--apply -d ds.ts` must not read `-d` as the value of `--apply`). */
@@ -136,6 +153,7 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
     outDir?: string;
     name?: string;
     output?: string;
+    continuousAggregateRecreate?: string;
   } = {};
   const flags = { apply: false, allowDrops: false, allowRefused: false };
 
@@ -234,5 +252,27 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
     allowRefused: flags.allowRefused,
     ...(values.name !== undefined && { name: values.name }),
     output: output !== undefined && isOutputFormat(output) ? output : 'ts',
+    continuousAggregateRecreate: resolveCaggRecreate(
+      values.continuousAggregateRecreate ?? config.continuousAggregateRecreate,
+    ),
   };
+}
+
+/**
+ * Resolve `--cagg-recreate` / the config key, THROWING on an unrecognised value.
+ *
+ * Deliberately stricter than `--output`, which silently falls back to `ts`. This flag decides whether
+ * a data-discarding step may be emitted at all, so `--cagg-recreate aply` quietly meaning "advise" is
+ * the same class of failure the config loader already refuses to tolerate for a typo'd key: the user
+ * believes they configured something and did not.
+ */
+function resolveCaggRecreate(value: string | undefined): CaggRecreateMode {
+  if (value === undefined) return 'advise';
+  if ((CAGG_RECREATE_MODES as readonly string[]).includes(value)) {
+    return value as CaggRecreateMode;
+  }
+  throw new CliError(
+    `Unknown --cagg-recreate value ${JSON.stringify(value)} ` +
+      `(expected one of: ${CAGG_RECREATE_MODES.join(', ')}).`,
+  );
 }

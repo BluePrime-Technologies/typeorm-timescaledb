@@ -92,3 +92,24 @@ describe('parseArgs — file-output flags are refused on verbs that write no fil
     expect(() => parseArgs(['check', '-d', 'ds.ts'], { outDir: 'migrations' })).not.toThrow();
   });
 });
+
+describe('--cagg-recreate', () => {
+  it('defaults to advise', () => {
+    expect(parseArgs(['check', '-d', 'ds.ts']).continuousAggregateRecreate).toBe('advise');
+  });
+
+  it.each(['advise', 'plan', 'apply'])('accepts %s', (mode) => {
+    expect(
+      parseArgs(['push', '-d', 'ds.ts', '--cagg-recreate', mode]).continuousAggregateRecreate,
+    ).toBe(mode);
+  });
+
+  it('THROWS on a typo rather than silently meaning advise', () => {
+    // Deliberately stricter than --output, which falls back to `ts`. This flag decides whether a
+    // data-discarding step may be emitted, so `--cagg-recreate aply` quietly doing nothing is the
+    // failure where the user believes they configured something and did not.
+    expect(() => parseArgs(['push', '-d', 'ds.ts', '--cagg-recreate', 'aply'])).toThrow(
+      /Unknown --cagg-recreate value/,
+    );
+  });
+});

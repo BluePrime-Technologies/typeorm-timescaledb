@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyOperation,
   compileOperations,
   compilePlan,
   diffSchemaState,
@@ -1316,6 +1317,71 @@ describe('diffSchemaState — CAGG definitions are now compared structurally', (
     const advisories = diffSchemaState(ir(SERVER), ir(aliased)).advisories ?? [];
     expect(advisories).toHaveLength(1);
     expect(advisories[0]?.kind).toBe('not-compared');
+  });
+
+  // ---- step 3: the recreate step, behind DiffOptions.continuousAggregateRecreate ----
+
+  it("emits NO step by default — 'advise' is byte-identical to 0.7.x", () => {
+    const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+    const plan = diffSchemaState(ir(SERVER), ir(widened));
+    expect(plan.steps).toEqual([]);
+    expect(plan.advisories?.[0]?.kind).toBe('not-expressible');
+  });
+
+  it.each([['plan'], ['apply']] as const)(
+    "emits a recreate STEP in '%s' mode, and drops the advisory that replaced it",
+    (mode) => {
+      const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+      const plan = diffSchemaState(ir(SERVER), ir(widened), {
+        continuousAggregateRecreate: mode,
+      });
+      expect(plan.steps).toHaveLength(1);
+      const op = plan.steps[0]?.operation;
+      expect(op?.kind).toBe('recreateContinuousAggregate');
+      // The DESIRED definition is what gets recreated — converging means matching the declaration.
+      expect((op as { definition: string }).definition).toBe(widened);
+      // The delta rides along so the preview and the refusal can name what moved.
+      expect((op as { delta: string }).delta).toContain('bucket width');
+      // No duplicate reporting: the advisory is replaced BY the step, not raised alongside it.
+      expect(plan.advisories ?? []).toEqual([]);
+    },
+  );
+
+  it('classifies the recreate step refuse-by-default, naming the data loss', () => {
+    const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+    const plan = diffSchemaState(ir(SERVER), ir(widened), {
+      continuousAggregateRecreate: 'plan',
+    });
+    const op = plan.steps[0]?.operation;
+    expect(op).toBeDefined();
+    if (op === undefined) return;
+    const safety = classifyOperation(op);
+    expect(safety.safety).toBe('refuse-by-default');
+    expect(safety.reason).toContain('DISCARDS the materialized rows');
+  });
+
+  it.each([['advise'], ['plan'], ['apply']] as const)(
+    "a CONVERGED aggregate stays clean in '%s' mode — no step, no advisory",
+    (mode) => {
+      const plan = diffSchemaState(ir(SERVER), ir(DECLARED), {
+        continuousAggregateRecreate: mode,
+      });
+      expect(plan.steps).toEqual([]);
+      expect(plan.advisories ?? []).toEqual([]);
+    },
+  );
+
+  it('an UNPARSEABLE definition still falls back to not-compared in every mode', () => {
+    // The opt-in must not turn "I cannot read this" into a destructive step — that would be a guess.
+    const exotic =
+      'SELECT time_bucket(INTERVAL \'1 hour\', "time") AS "b", avg(value * 2) AS "v" FROM r GROUP BY 1';
+    for (const mode of ['advise', 'plan', 'apply'] as const) {
+      const plan = diffSchemaState(ir(SERVER), ir(exotic), {
+        continuousAggregateRecreate: mode,
+      });
+      expect(plan.steps, `mode ${mode} must emit no step`).toEqual([]);
+      expect(plan.advisories?.[0]?.kind).toBe('not-compared');
+    }
   });
 
   it('raises NO advisory for a converged aggregate in a NON-PUBLIC schema', () => {

@@ -6,7 +6,10 @@ import {
   TimescaleError,
 } from '../src/index.js';
 // Not re-exported from the package root (deliberately internal), so import the module directly.
-import { classifyDefinitionBody } from '../src/sql/continuous-aggregate.js';
+import {
+  classifyDefinitionBody,
+  recreateContinuousAggregateSQL,
+} from '../src/sql/continuous-aggregate.js';
 
 describe('createContinuousAggregateSQL', () => {
   const base = {
@@ -287,5 +290,57 @@ describe('classifyDefinitionBody — a dollar-quote tag cannot begin with a digi
     expect(classifyDefinitionBody('SELECT $tag$ ; $tag$ FROM t')).toBe('usable');
     expect(classifyDefinitionBody('SELECT $$ ; $$ FROM t')).toBe('usable');
     expect(classifyDefinitionBody('SELECT $_a1$ ; $_a1$ FROM t')).toBe('usable');
+  });
+});
+
+describe('recreateContinuousAggregateSQL — the only path that converges a drifted aggregate', () => {
+  const input = {
+    view: 'public.reading_hourly',
+    definition:
+      "SELECT time_bucket('1 hour'::interval, ts) AS bucket, sensor_id, avg(value) AS avg_value FROM readings GROUP BY 1, 2",
+  };
+
+  it('DROPs before creating, and creates WITH NO DATA', () => {
+    const stmt = recreateContinuousAggregateSQL(input);
+    expect(stmt.up).toHaveLength(2);
+    // IF EXISTS so a re-run after a partial failure is not itself a failure.
+    expect(stmt.up[0]).toBe('DROP MATERIALIZED VIEW IF EXISTS "public"."reading_hourly";');
+    expect(stmt.up[1]).toContain('CREATE MATERIALIZED VIEW "public"."reading_hourly"');
+    expect(stmt.up[1]).toContain('timescaledb.continuous');
+    // WITH NO DATA: materializing the history inside a migration would make its cost unbounded.
+    expect(stmt.up[1]).toContain('WITH NO DATA;');
+  });
+
+  it('appends WITH NO DATA after a NEWLINE, so a trailing line comment cannot swallow it', () => {
+    const stmt = recreateContinuousAggregateSQL(input);
+    expect(stmt.up[1]).toContain('\nWITH NO DATA;');
+  });
+
+  it('down() does NOT drop the recreated view — the destructive act already happened', () => {
+    // up() discarded the materialized rows and down() cannot bring them back. Dropping the
+    // REPLACEMENT as well would leave the user with neither the old aggregate nor the new one.
+    const stmt = recreateContinuousAggregateSQL(input);
+    expect(stmt.down.join(' ')).not.toMatch(/DROP\s+MATERIALIZED\s+VIEW/i);
+    expect(stmt.down.join(' ')).toMatch(/continuous aggregate/i);
+  });
+
+  it('honours materializedOnly', () => {
+    expect(recreateContinuousAggregateSQL({ ...input, materializedOnly: true }).up[1]).toContain(
+      'timescaledb.materialized_only = TRUE',
+    );
+    expect(recreateContinuousAggregateSQL(input).up[1]).toContain(
+      'timescaledb.materialized_only = FALSE',
+    );
+  });
+
+  it('refuses a definition carrying a statement separator, like the raw create does', () => {
+    // The definition is passed through UNPARSED, so the same guard must apply — otherwise the
+    // opt-in becomes an injection vector that the non-opt-in path does not have.
+    expect(() =>
+      recreateContinuousAggregateSQL({
+        ...input,
+        definition: `${input.definition}; DROP TABLE readings`,
+      }),
+    ).toThrow(TimescaleError);
   });
 });

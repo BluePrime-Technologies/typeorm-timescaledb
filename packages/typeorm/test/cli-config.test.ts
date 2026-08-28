@@ -83,6 +83,30 @@ describe('loadConfigFile — validation', () => {
     expect(() => loadConfigFile(path)).toThrow(/Unknown key "datasource"/);
   });
 
+  it.each(['advise', 'plan'])(
+    'ACCEPTS continuousAggregateRecreate: %s — non-destructive, so a project may commit it',
+    (mode) => {
+      const path = writeConfig(dir(), { continuousAggregateRecreate: mode });
+      expect(loadConfigFile(path).continuousAggregateRecreate).toBe(mode);
+    },
+  );
+
+  it("REJECTS continuousAggregateRecreate: 'apply', and says what to do instead", () => {
+    // The KEY is legitimate; only this VALUE is not — so the key-level SAFETY_KEYS ban cannot
+    // express it. 'apply' authorises DROP + CREATE of an aggregate, discarding its materialized
+    // rows, which belongs to the same class as --apply: chosen per invocation, never committed.
+    const path = writeConfig(dir(), { continuousAggregateRecreate: 'apply' });
+    expect(() => loadConfigFile(path)).toThrow(/not settable from a file/);
+    // The message must offer the way forward, not just refuse.
+    expect(() => loadConfigFile(path)).toThrow(/--cagg-recreate apply --allow-refused/);
+    expect(() => loadConfigFile(path)).toThrow(/use "plan" here/);
+  });
+
+  it('REJECTS an unrecognised continuousAggregateRecreate value', () => {
+    const path = writeConfig(dir(), { continuousAggregateRecreate: 'aply' });
+    expect(() => loadConfigFile(path)).toThrow(/not settable from a file/);
+  });
+
   it.each(['apply', 'allowDrops', 'allowRefused'])(
     'REJECTS the safety flag %s, and explains why',
     (key) => {
