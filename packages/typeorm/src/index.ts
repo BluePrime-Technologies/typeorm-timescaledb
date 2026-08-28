@@ -184,8 +184,67 @@ export type {
 // so they resolve from the package you actually install (see #222). `assertSafeFragment` especially
 // is a security helper (it guards hand-built aggregate fragments), so reaching it only via an
 // undeclared dependency was the least acceptable gap.
-export { lintPlan, formatLintFindings, assertSafeFragment } from '@blueprime/timescaledb-core';
+export {
+  lintPlan,
+  formatLintFindings,
+  assertSafeFragment,
+  // `ANALYZERS` completes the linter surface (#228). It was left behind by the first pass, which
+  // split `docs/migration-guide.md`'s single import across two packages — `lintPlan` and
+  // `formatLintFindings` resolved here while `ANALYZERS`, on the same line, did not. It is
+  // deliberately public: "an analyzer suite whose contents are opaque invites you to assume a check
+  // exists that does not".
+  ANALYZERS,
+  // Half of the documented preview-vs-converged idiom, whose other half (`pushSchema`) is already
+  // exported from this package. `PushResult.applied === false` covers both "preview" and "already
+  // converged"; `isEmptyPlan(plan)` is what tells them apart.
+  isEmptyPlan,
+  // The rest of the documented migration-engine surface, so the whole
+  // introspect -> diff -> classify -> compile -> lint workflow is reachable from the ONE package a
+  // user installs. Each is documented as public API in `docs/api-reference.md`; splitting them
+  // across two packages made the reference's own example need a second import for no reason a
+  // reader could see.
+  compilePlan,
+  classifyOperation,
+  // `diffSchemaState` is the ENTRY POINT of that workflow and was never re-exported at all — the
+  // only mention of it in this file was a comment, which is exactly why it went unnoticed. Both
+  // `docs/api-reference.md` and `docs/migration-guide.md` document calling it, so a reader had no
+  // way to reach the one function the whole engine is named after without a second dependency.
+  diffSchemaState,
+} from '@blueprime/timescaledb-core';
 // `lintPlan(plan)` runs over a `Plan` — the same object carried by `PushResult.plan` — and returns
 // `LintFinding[]`; re-export those types so the linter surface is usable without a second import
 // from core.
-export type { LintFinding, LintSeverity, Plan } from '@blueprime/timescaledb-core';
+//
+// `Plan`'s own member types come with it, or a caller can hold a `Plan` without being able to name
+// what is inside it:
+//   interface Plan { steps: readonly PlanStep[]; advisories?: readonly PlanAdvisory[] }
+// `PlanAdvisory` is the load-bearing one — since structural CAGG diffing landed, a
+// `not-expressible` advisory is what makes `check` exit 2, so any deploy gate that inspects
+// `plan.advisories` needs to name it.
+export type {
+  LintFinding,
+  LintSeverity,
+  Analyzer,
+  Plan,
+  PlanStep,
+  PlanAdvisory,
+  // Types the documented engine functions above take and return. A function reachable from one
+  // import whose parameter or return type is NOT is only half-exported: the caller can invoke it
+  // but cannot annotate anything it touches.
+  DiffOptions,
+  CompiledPlan,
+  OperationSafety,
+  SafetyClass,
+  // The transitive closure, without which the above are only half-exported — the exact complaint
+  // this issue was filed about, one level deeper. `SchemaStateIR` is `diffSchemaState`'s first TWO
+  // parameters; `Operation` is what `classifyOperation` takes and what `PlanStep.operation` is, so
+  // without it a caller can name `PlanStep` but not `plan.steps[0].operation`.
+  //
+  // A compile fixture in the package smoke test now annotates the whole documented workflow against
+  // the installed package, so "exported but unusable" fails the build rather than surfacing in a
+  // user's editor. A token-presence check over the .d.ts could not catch this, and twice during
+  // this work a grep for a symbol matched a COMMENT and was misread as an export.
+  SchemaStateIR,
+  Operation,
+  OperationKind,
+} from '@blueprime/timescaledb-core';

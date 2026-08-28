@@ -11,6 +11,26 @@ and released in lockstep.
 
 ### Added
 
+- **The rest of the plan/lint surface is exported from `typeorm-timescaledb`** — `ANALYZERS`,
+  `isEmptyPlan`, and the `Analyzer` / `PlanStep` / `PlanAdvisory` types. The previous release moved
+  `lintPlan`, `formatLintFindings` and `assertSafeFragment`, which split the documented linter
+  example across two packages: `ANALYZERS` sat in the _same import statement_ and still resolved
+  only from `@blueprime/timescaledb-core`, a transitive dependency consumers never declare.
+  `PlanAdvisory` matters most — `Plan` was already re-exported, but `Plan.advisories` is what makes
+  `check` exit **2**, so a deploy gate inspecting it could not name the type. Low-level SQL builders
+  (`statsAgg1DExpr` and friends) stay in core by design — see the next entry, which deliberately
+  reverses the original scope for the engine functions. (#228)
+
+- **The whole migration-engine workflow now resolves from `typeorm-timescaledb` alone.** This
+  DELIBERATELY REVERSES #228's original "engine internals stay in core" scope, on the package's
+  stated premise that a user should import few things and be able to do a great deal. The exports are
+  `diffSchemaState`, `compilePlan`, `classifyOperation`, plus the `DiffOptions`, `CompiledPlan`,
+  `OperationSafety` and `SafetyClass` types. `diffSchemaState` — the entry point the engine is named
+  after, and one both `docs/api-reference.md` and `docs/migration-guide.md` document calling — had
+  never been re-exported at all; the only mention of it in the facade was a comment. A user could
+  therefore not run introspect → diff → classify → compile → lint without adding a second, undeclared
+  dependency to their `package.json`. (#228)
+
 - **Continuous-aggregate definitions are now compared structurally.** `check` previously answered
   "I did not look" for every existing aggregate, raising a blanket `not-compared` advisory. Both
   sides are now parsed into the facets that define the aggregate — bucket width and time column,
