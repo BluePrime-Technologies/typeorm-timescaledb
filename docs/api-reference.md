@@ -466,10 +466,10 @@ for the end-to-end workflow; this section is the API surface.
   `@Hypertable({ renamedFrom })` declarations into the desired-table → old-table
   map that `diffSchemaState`'s `renames` option consumes.
 
-### Diffing: `diffSchemaState` (`@blueprime/timescaledb-core`)
+### Diffing: `diffSchemaState`
 
 ```ts
-import { diffSchemaState, isEmptyPlan, compilePlan } from '@blueprime/timescaledb-core';
+import { diffSchemaState, isEmptyPlan, compilePlan } from 'typeorm-timescaledb';
 
 function diffSchemaState(
   current: SchemaStateIR,

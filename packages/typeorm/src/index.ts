@@ -198,6 +198,18 @@ export {
   // exported from this package. `PushResult.applied === false` covers both "preview" and "already
   // converged"; `isEmptyPlan(plan)` is what tells them apart.
   isEmptyPlan,
+  // The rest of the documented migration-engine surface, so the whole
+  // introspect -> diff -> classify -> compile -> lint workflow is reachable from the ONE package a
+  // user installs. Each is documented as public API in `docs/api-reference.md`; splitting them
+  // across two packages made the reference's own example need a second import for no reason a
+  // reader could see.
+  compilePlan,
+  classifyOperation,
+  // `diffSchemaState` is the ENTRY POINT of that workflow and was never re-exported at all — the
+  // only mention of it in this file was a comment, which is exactly why it went unnoticed. Both
+  // `docs/api-reference.md` and `docs/migration-guide.md` document calling it, so a reader had no
+  // way to reach the one function the whole engine is named after without a second dependency.
+  diffSchemaState,
 } from '@blueprime/timescaledb-core';
 // `lintPlan(plan)` runs over a `Plan` — the same object carried by `PushResult.plan` — and returns
 // `LintFinding[]`; re-export those types so the linter surface is usable without a second import
@@ -216,4 +228,11 @@ export type {
   Plan,
   PlanStep,
   PlanAdvisory,
+  // Types the documented engine functions above take and return. A function reachable from one
+  // import whose parameter or return type is NOT is only half-exported: the caller can invoke it
+  // but cannot annotate anything it touches.
+  DiffOptions,
+  CompiledPlan,
+  OperationSafety,
+  SafetyClass,
 } from '@blueprime/timescaledb-core';

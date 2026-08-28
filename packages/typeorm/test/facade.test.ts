@@ -108,6 +108,32 @@ describe('unified schema DSL (facade)', () => {
     expect(Array.isArray(pkg.ANALYZERS)).toBe(true);
     expect(pkg.isEmptyPlan).toBe(core.isEmptyPlan);
     expect(pkg.ANALYZERS).toBe(core.ANALYZERS);
+    expect(pkg.compilePlan).toBe(core.compilePlan);
+    expect(pkg.classifyOperation).toBe(core.classifyOperation);
+  });
+
+  it('exposes the WHOLE migration-engine workflow from one import (#228)', () => {
+    // The package's premise is few imports, many capabilities. This asserts the entire
+    // introspect -> diff -> classify -> compile -> lint chain is reachable from `typeorm-timescaledb`
+    // alone, because a workflow that is 90% single-import still forces a second dependency on the
+    // user's package.json.
+    for (const name of [
+      'introspect',
+      'compileDesiredState',
+      'diffSchemaState',
+      'isEmptyPlan',
+      'classifyOperation',
+      'compilePlan',
+      'lintPlan',
+      'formatLintFindings',
+      'pushSchema',
+      'pullSchema',
+    ]) {
+      expect(
+        typeof (pkg as Record<string, unknown>)[name],
+        `${name} must resolve from the package`,
+      ).toBe('function');
+    }
   });
 
   it('the re-exported plan helpers actually work through the facade', () => {

@@ -159,6 +159,9 @@ try {
       if (typeof pkg.formatLintFindings !== 'function') throw new Error('missing formatLintFindings re-export (#222)');
       if (typeof pkg.isEmptyPlan !== 'function') throw new Error('missing isEmptyPlan re-export (#228)');
       if (!Array.isArray(pkg.ANALYZERS)) throw new Error('missing ANALYZERS re-export (#228)');
+      if (typeof pkg.compilePlan !== 'function') throw new Error('missing compilePlan re-export (#228)');
+      if (typeof pkg.classifyOperation !== 'function') throw new Error('missing classifyOperation re-export (#228)');
+      if (typeof pkg.diffSchemaState !== 'function') throw new Error('missing diffSchemaState re-export (#228)');
       if (pkg.ANALYZERS.length === 0) throw new Error('ANALYZERS re-export is empty (#228)');
       if (typeof nest.TimescaleModule !== 'function') throw new Error('missing NestJS module export');
       if (typeof core.createHypertableSQL !== 'function') throw new Error('missing core SQL export');
@@ -182,6 +185,9 @@ try {
       if (typeof pkg.formatLintFindings !== 'function') throw new Error('missing formatLintFindings re-export (#222)');
       if (typeof pkg.isEmptyPlan !== 'function') throw new Error('missing isEmptyPlan re-export (#228)');
       if (!Array.isArray(pkg.ANALYZERS)) throw new Error('missing ANALYZERS re-export (#228)');
+      if (typeof pkg.compilePlan !== 'function') throw new Error('missing compilePlan re-export (#228)');
+      if (typeof pkg.classifyOperation !== 'function') throw new Error('missing classifyOperation re-export (#228)');
+      if (typeof pkg.diffSchemaState !== 'function') throw new Error('missing diffSchemaState re-export (#228)');
       if (pkg.ANALYZERS.length === 0) throw new Error('ANALYZERS re-export is empty (#228)');
       if (typeof nest.TimescaleModule !== 'function') throw new Error('missing NestJS module export');
       if (typeof core.createHypertableSQL !== 'function') throw new Error('missing core SQL export');
@@ -219,6 +225,10 @@ try {
     'LintFinding',
     'LintSeverity',
     'Analyzer',
+    'DiffOptions',
+    'CompiledPlan',
+    'OperationSafety',
+    'SafetyClass',
   ];
   const installedDts = readFileSync(
     join(projectDir, 'node_modules', 'typeorm-timescaledb', 'dist', 'index.d.ts'),
