@@ -18,10 +18,12 @@ and released in lockstep.
   only from `@blueprime/timescaledb-core`, a transitive dependency consumers never declare.
   `PlanAdvisory` matters most — `Plan` was already re-exported, but `Plan.advisories` is what makes
   `check` exit **2**, so a deploy gate inspecting it could not name the type. Low-level SQL builders
-  (`statsAgg1DExpr` and friends) and engine internals (`compilePlan`, `classifyOperation`) stay in
-  core by design. (#228)
+  (`statsAgg1DExpr` and friends) stay in core by design — see the next entry, which deliberately
+  reverses the original scope for the engine functions. (#228)
 
-- **The whole migration-engine workflow now resolves from `typeorm-timescaledb` alone** —
+- **The whole migration-engine workflow now resolves from `typeorm-timescaledb` alone.** This
+  DELIBERATELY REVERSES #228's original "engine internals stay in core" scope, on the package's
+  stated premise that a user should import few things and be able to do a great deal. The exports are
   `diffSchemaState`, `compilePlan`, `classifyOperation`, plus the `DiffOptions`, `CompiledPlan`,
   `OperationSafety` and `SafetyClass` types. `diffSchemaState` — the entry point the engine is named
   after, and one both `docs/api-reference.md` and `docs/migration-guide.md` document calling — had

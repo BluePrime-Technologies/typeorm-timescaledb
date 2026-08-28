@@ -235,4 +235,16 @@ export type {
   CompiledPlan,
   OperationSafety,
   SafetyClass,
+  // The transitive closure, without which the above are only half-exported — the exact complaint
+  // this issue was filed about, one level deeper. `SchemaStateIR` is `diffSchemaState`'s first TWO
+  // parameters; `Operation` is what `classifyOperation` takes and what `PlanStep.operation` is, so
+  // without it a caller can name `PlanStep` but not `plan.steps[0].operation`.
+  //
+  // A compile fixture in the package smoke test now annotates the whole documented workflow against
+  // the installed package, so "exported but unusable" fails the build rather than surfacing in a
+  // user's editor. A token-presence check over the .d.ts could not catch this, and twice during
+  // this work a grep for a symbol matched a COMMENT and was misread as an export.
+  SchemaStateIR,
+  Operation,
+  OperationKind,
 } from '@blueprime/timescaledb-core';

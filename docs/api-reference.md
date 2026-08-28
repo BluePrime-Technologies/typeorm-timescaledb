@@ -533,7 +533,7 @@ interface OperationSafety {
   readonly reason: string;
 }
 
-function classifyOperation(operation: Operation): OperationSafety; // @blueprime/timescaledb-core
+function classifyOperation(operation: Operation): OperationSafety; // typeorm-timescaledb
 ```
 
 - **`online-safe`** — applies without rewriting data or a notable lock, and is
@@ -704,8 +704,11 @@ also public as `RefreshPolicyOptions`, see
 [Decorators and metadata helpers](#continuous-aggregate-decorators-040) above).
 
 The migration engine's own types — `SchemaStateIR`, `Plan`, `PlanStep`,
-`DiffOptions`, `CompiledPlan`, `SafetyClass`, `OperationSafety`, `Operation`
-and its per-kind variants — are exported from `@blueprime/timescaledb-core`;
+`PlanAdvisory`, `DiffOptions`, `CompiledPlan`, `SafetyClass`, `OperationSafety`
+and `Operation` — are re-exported from `typeorm-timescaledb`, so the documented
+introspect → diff → classify → compile → lint workflow can be written in typed
+code without a second dependency. `Operation`'s per-kind variants and the
+low-level SQL builders remain core-only;
 see [Migration engine](#migration-engine) above.
 
 ## Validation and errors

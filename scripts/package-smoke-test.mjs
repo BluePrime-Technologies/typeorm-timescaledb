@@ -229,17 +229,99 @@ try {
     'CompiledPlan',
     'OperationSafety',
     'SafetyClass',
+    'SchemaStateIR',
+    'Operation',
+    'OperationKind',
   ];
-  const installedDts = readFileSync(
-    join(projectDir, 'node_modules', 'typeorm-timescaledb', 'dist', 'index.d.ts'),
-    'utf8',
-  );
-  for (const name of typeExports) {
-    assert(
-      new RegExp(`\\b${name}\\b`).test(installedDts),
-      `installed typeorm-timescaledb/dist/index.d.ts does not re-export type ${name} (#228)`,
-    );
+  // BOTH declarations: package.json routes `require` types to dist/cjs/index.d.ts, which this gate
+  // previously never inspected — so a drift between the ESM and CJS declarations would have gone
+  // unnoticed even though both ship.
+  for (const rel of [join('dist', 'index.d.ts'), join('dist', 'cjs', 'index.d.ts')]) {
+    const dts = readFileSync(join(projectDir, 'node_modules', 'typeorm-timescaledb', rel), 'utf8');
+    for (const name of typeExports) {
+      assert(
+        new RegExp(`\\b${name}\\b`).test(dts),
+        `installed typeorm-timescaledb/${rel} does not re-export type ${name} (#228)`,
+      );
+    }
   }
+
+  // COMPILE FIXTURE — the gate that proves exports are USABLE, not merely present.
+  //
+  // The .d.ts token check above proves a name appears. It cannot prove a consumer can actually
+  // annotate the workflow, and that distinction is not academic: `SchemaStateIR` and `Operation`
+  // shipped "exported" while `diffSchemaState`'s own parameters and `PlanStep.operation` remained
+  // unnameable from this package. Twice during this work a grep for a symbol matched a COMMENT in
+  // index.ts and was misread as an export. Only a compiler settles it.
+  //
+  // This typechecks a consumer that imports ONLY the facade — never @blueprime/timescaledb-core —
+  // so any symbol still needing the transitive dependency is a build failure here.
+  run('npm', ['install', '--silent', '--no-audit', '--no-fund', 'typescript@5'], {
+    cwd: projectDir,
+  });
+
+  writeSmokeFile(
+    join(projectDir, 'tsconfig.smoke.json'),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          skipLibCheck: true,
+          module: 'nodenext',
+          moduleResolution: 'nodenext',
+          target: 'es2022',
+          experimentalDecorators: true,
+          emitDecoratorMetadata: true,
+        },
+        files: ['type-smoke.ts'],
+      },
+      null,
+      2,
+    ),
+  );
+
+  writeSmokeFile(
+    join(projectDir, 'type-smoke.ts'),
+    `
+      // Every symbol below MUST come from the one package a user installs.
+      import type {
+        SchemaStateIR, Plan, PlanStep, PlanAdvisory, DiffOptions, CompiledPlan,
+        Operation, OperationKind, OperationSafety, SafetyClass,
+        LintFinding, LintSeverity, Analyzer,
+      } from 'typeorm-timescaledb';
+      import { diffSchemaState, isEmptyPlan, classifyOperation, compilePlan, lintPlan, ANALYZERS } from 'typeorm-timescaledb';
+
+      // The documented introspect -> diff -> classify -> compile -> lint workflow, fully annotated.
+      declare const current: SchemaStateIR;
+      declare const desired: SchemaStateIR;
+      const options: DiffOptions = {};
+
+      const plan: Plan = diffSchemaState(current, desired, options);
+      const empty: boolean = isEmptyPlan(plan);
+
+      // The sharp edge: naming what is INSIDE a Plan, one level deeper than Plan itself.
+      const step: PlanStep | undefined = plan.steps[0];
+      const op: Operation | undefined = step?.operation;
+      const kind: OperationKind | undefined = op?.kind;
+      const safety: OperationSafety | undefined = op ? classifyOperation(op) : undefined;
+      const cls: SafetyClass | undefined = safety?.safety;
+
+      // Advisories drive the exit code, so a deploy gate must be able to type them.
+      const advisories: readonly PlanAdvisory[] = plan.advisories ?? [];
+      const blocking = advisories.filter((a) => a.kind === 'not-expressible');
+
+      const compiled: CompiledPlan = compilePlan(plan);
+      const findings: LintFinding[] = lintPlan(plan);
+      const sev: LintSeverity | undefined = findings[0]?.severity;
+      const rules: readonly Analyzer[] = ANALYZERS;
+
+      void empty; void kind; void cls; void blocking; void compiled; void sev; void rules;
+    `,
+  );
+
+  run('npx', ['tsc', '-p', 'tsconfig.smoke.json'], { cwd: projectDir });
+  console.log('Type-level compile fixture passed (facade-only imports).');
 
   console.log('Package smoke test passed.');
 } finally {
