@@ -83,6 +83,15 @@ const SURFACES = [
     ],
   },
   { file: 'docs/overview.md', staleCurrentClaim: [staleLine('', ' foundation release')] },
+  {
+    // The quickstart is the first thing a newcomer runs, and it is the ONE surface nothing else can
+    // notice rotting: `pnpm-workspace.yaml` excludes it (`- '!examples/quickstart'`), so it is never
+    // installed, built, type-checked or exercised by CI. It sat on `^0.1.1` — six minor releases
+    // behind, predating the migration engine its own scripts invoke — until a human happened to read
+    // it. A prose check is the wrong instrument here; what matters is the dependency RANGE.
+    file: 'examples/quickstart/package.json',
+    requireDependencyRange: 'typeorm-timescaledb',
+  },
 ];
 
 const failures = [];
@@ -113,6 +122,33 @@ for (const surface of SURFACES) {
 
   if (surface.requireHeading && !surface.requireHeading.test(text)) {
     failures.push(`${surface.file}: has no "## [${version}]" entry for the version being released`);
+  }
+
+  if (surface.requireDependencyRange !== undefined) {
+    const name = surface.requireDependencyRange;
+    let range;
+    try {
+      const pkg = JSON.parse(text);
+      range = { ...pkg.dependencies, ...pkg.devDependencies }[name];
+    } catch {
+      failures.push(`${surface.file}: is not valid JSON, so its ${name} range cannot be checked`);
+      continue;
+    }
+    if (range === undefined) {
+      failures.push(`${surface.file}: declares no dependency on ${name}`);
+    } else {
+      // Compare the range's OWN major.minor rather than substring-matching the line. `"^0.11.0"
+      // contains "0.1"` is true, and that false negative is exactly the kind of near-miss this
+      // gate exists to refuse.
+      const m = /(\d+)\.(\d+)/.exec(range);
+      if (m === null || m[1] !== major || m[2] !== minor) {
+        failures.push(
+          `${surface.file}: depends on ${name} ${JSON.stringify(range)}, which is not the current ` +
+            `release line ${line}.x — anyone following the quickstart installs a version that ` +
+            `predates most of what the docs describe`,
+        );
+      }
+    }
   }
 }
 
