@@ -42,6 +42,25 @@ function escapeRegExp(literal) {
 }
 
 /**
+ * The ONLY dependency-range forms {@link SURFACES}' `requireDependencyRange` will vouch for:
+ * `^X.Y.Z`, `~X.Y.Z`, or a bare `X.Y.Z`.
+ *
+ * This replaced "read the first numeric pair out of the range", which passed `<0.7.0`: that string
+ * contains `0.7`, so it read as current while npm could only install 0.6.x — the gate reporting
+ * success on exactly the staleness it exists to catch. Comparators, unions (`>=0.7.0 <0.9.0`) and
+ * dist-tags are now REFUSED rather than interpreted.
+ *
+ * Refusing is the right call over parsing. Deciding what `>=0.6.0 <0.8.0` "really means" for a
+ * current-line claim is a judgement the gate should not be making silently, and there is no
+ * legitimate reason for this repo's own example to depend on its own library through a comparator.
+ *
+ * Deliberately NOT using `semver`: it resolves here, but only as an undeclared hoisted transitive.
+ * Depending on one from a script CI runs is the same defect this repo spent #222 and #228 removing,
+ * and a lockfile change could take it away without warning.
+ */
+const PINNED_RANGE = /^([\^~]?)(\d+)\.(\d+)\.(\d+)$/;
+
+/**
  * Build a pattern that matches "<prefix>0.N.x<suffix>" for any N that is NOT the current minor.
  *
  * The negative lookahead is DERIVED, never written in. Hardcoding `(?!7)` worked at 0.7 and would
@@ -137,11 +156,13 @@ for (const surface of SURFACES) {
     if (range === undefined) {
       failures.push(`${surface.file}: declares no dependency on ${name}`);
     } else {
-      // Compare the range's OWN major.minor rather than substring-matching the line. `"^0.11.0"
-      // contains "0.1"` is true, and that false negative is exactly the kind of near-miss this
-      // gate exists to refuse.
-      const m = /(\d+)\.(\d+)/.exec(range);
-      if (m === null || m[1] !== major || m[2] !== minor) {
+      const m = PINNED_RANGE.exec(range.trim());
+      if (m === null) {
+        failures.push(
+          `${surface.file}: depends on ${name} ${JSON.stringify(range)}, which is not a form this ` +
+            `gate will vouch for. Use ^${version}, ~${version} or ${version} — see PINNED_RANGE`,
+        );
+      } else if (m[2] !== major || m[3] !== minor) {
         failures.push(
           `${surface.file}: depends on ${name} ${JSON.stringify(range)}, which is not the current ` +
             `release line ${line}.x — anyone following the quickstart installs a version that ` +
