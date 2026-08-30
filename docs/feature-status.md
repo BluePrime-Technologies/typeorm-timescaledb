@@ -179,10 +179,11 @@ The following items are product direction, not shipped functionality:
   constructs.
 - Other stable Toolkit aggregates not listed in the 0.3.0 / 0.4.0 release scope.
 - Destructive auto-migrations (dropping a hypertable, disabling a columnstore).
-- Automatic CONVERGENCE of a changed continuous-aggregate definition. (The
-  definition IS now compared structurally and a difference is reported as drift;
-  converging it means DROP + CREATE, which discards materialized rows, so it is
-  never auto-generated.)
+- Automatic, UNPROMPTED convergence of a changed continuous-aggregate definition.
+  The definition IS compared structurally and a difference is reported as drift.
+  Converging it is available behind an explicit opt-in
+  (`--cagg-recreate plan|apply`) — never by default, because it means DROP +
+  CREATE and discards the aggregate's materialized rows.
 - Automatic reconciliation of space (hash) dimensions.
 - Validated cross-store references **inside this package**. They ship separately as
   `@blueprime/cross-store` (versioned independently) — see the packages table in the README;

@@ -11,6 +11,29 @@ and released in lockstep.
 
 ### Added
 
+- **A changed continuous-aggregate definition can now be CONVERGED, behind an explicit opt-in**
+  (`--cagg-recreate`, `DiffOptions.continuousAggregateRecreate`). Structural diffing (0.7.x) could
+  only _report_ the drift; TimescaleDB cannot `ALTER` a continuous aggregate's `SELECT`, so
+  converging means DROP + CREATE and discards the materialized rows — which may be the only
+  surviving copy of data whose source chunks retention has already dropped.
+
+  Three modes, defaulting to today's behaviour: `advise` (report only — **unchanged**), `plan` (also
+  SHOW the recreate step in `check` and `mix`, but never run it), `apply` (run it, and only with
+  `--allow-refused` as well). Two independent gates, so the flag you may already pass to shorten a
+  retention window cannot by itself discard an aggregate's history.
+
+  `plan` mode does not block anything else: `push --apply` applies the rest of the plan and reports
+  the step it held back. And `apply` is not settable from `timescaledb.config.json` — a committed
+  file must never pre-authorise a destructive run for whoever types the command next. (#216)
+
+  The recreate re-attaches the declared refresh policy (dropping an aggregate drops its refresh job
+  with it, so otherwise it returns empty AND unmaintained), refuses outright for a parent of a
+  hierarchical aggregate (a non-`CASCADE` drop cannot succeed and `CASCADE` would destroy the
+  children), and does NOT preserve the view's owner or GRANTs — re-grant afterwards. A `plan`-mode
+  plan throws if compiled, so a generated migration cannot run the `DROP` having passed neither
+  gate. Generated `.sql` sections are now wrapped in a transaction, so a `CREATE` that fails after
+  its `DROP` rolls back instead of leaving the aggregate permanently gone. (#216)
+
 - **The rest of the plan/lint surface is exported from `typeorm-timescaledb`** — `ANALYZERS`,
   `isEmptyPlan`, and the `Analyzer` / `PlanStep` / `PlanAdvisory` types. The previous release moved
   `lintPlan`, `formatLintFindings` and `assertSafeFragment`, which split the documented linter

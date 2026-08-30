@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyOperation,
   compileOperations,
   compilePlan,
   diffSchemaState,
@@ -1316,6 +1317,150 @@ describe('diffSchemaState — CAGG definitions are now compared structurally', (
     const advisories = diffSchemaState(ir(SERVER), ir(aliased)).advisories ?? [];
     expect(advisories).toHaveLength(1);
     expect(advisories[0]?.kind).toBe('not-compared');
+  });
+
+  // ---- step 3: the recreate step, behind DiffOptions.continuousAggregateRecreate ----
+
+  it("emits NO step by default — 'advise' is byte-identical to 0.7.x", () => {
+    const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+    const plan = diffSchemaState(ir(SERVER), ir(widened));
+    expect(plan.steps).toEqual([]);
+    expect(plan.advisories?.[0]?.kind).toBe('not-expressible');
+  });
+
+  it.each([['plan'], ['apply']] as const)(
+    "emits a recreate STEP in '%s' mode, and drops the advisory that replaced it",
+    (mode) => {
+      const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+      const plan = diffSchemaState(ir(SERVER), ir(widened), {
+        continuousAggregateRecreate: mode,
+      });
+      expect(plan.steps).toHaveLength(1);
+      const op = plan.steps[0]?.operation;
+      expect(op?.kind).toBe('recreateContinuousAggregate');
+      // The DESIRED definition is what gets recreated — converging means matching the declaration.
+      expect((op as { definition: string }).definition).toBe(widened);
+      // The delta rides along so the preview and the refusal can name what moved.
+      expect((op as { delta: string }).delta).toContain('bucket width');
+      // No duplicate reporting: the advisory is replaced BY the step, not raised alongside it.
+      expect(plan.advisories ?? []).toEqual([]);
+    },
+  );
+
+  it('classifies the recreate step refuse-by-default, naming the data loss', () => {
+    const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+    const plan = diffSchemaState(ir(SERVER), ir(widened), {
+      continuousAggregateRecreate: 'plan',
+    });
+    const op = plan.steps[0]?.operation;
+    expect(op).toBeDefined();
+    if (op === undefined) return;
+    const safety = classifyOperation(op);
+    expect(safety.safety).toBe('refuse-by-default');
+    expect(safety.reason).toContain('DISCARDS the materialized rows');
+  });
+
+  it.each([['advise'], ['plan'], ['apply']] as const)(
+    "a CONVERGED aggregate stays clean in '%s' mode — no step, no advisory",
+    (mode) => {
+      const plan = diffSchemaState(ir(SERVER), ir(DECLARED), {
+        continuousAggregateRecreate: mode,
+      });
+      expect(plan.steps).toEqual([]);
+      expect(plan.advisories ?? []).toEqual([]);
+    },
+  );
+
+  it('RE-ATTACHES the declared refresh policy after a recreate (#230 review, finding 1)', () => {
+    // Dropping a continuous aggregate drops its refresh job with it. The recreate branch used to
+    // `continue` past the policy reconciliation, so an applied recreate produced an aggregate that
+    // was not just empty but UNMAINTAINED — and with the default materialized_only=FALSE that is
+    // invisible, because real-time aggregation keeps answering correctly right up until retention
+    // drops the source chunks.
+    const withPolicy = (definition: string) => ({
+      hypertables: [],
+      continuousAggregates: [
+        {
+          ...cagg(definition),
+          refresh: {
+            kind: 'refresh' as const,
+            startOffset: '1 month',
+            endOffset: '1 hour',
+            scheduleInterval: '30 minutes',
+          },
+        },
+      ],
+    });
+    const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+    const plan = diffSchemaState(ir(SERVER), withPolicy(widened), {
+      continuousAggregateRecreate: 'apply',
+    });
+
+    const kinds = plan.steps.map((s) => s.operation.kind);
+    expect(kinds).toEqual(['recreateContinuousAggregate', 'addContinuousAggregatePolicy']);
+    // Order matters: the policy cannot attach to a view that does not exist yet.
+    expect(kinds.indexOf('addContinuousAggregatePolicy')).toBeGreaterThan(
+      kinds.indexOf('recreateContinuousAggregate'),
+    );
+  });
+
+  it('REFUSES to recreate a parent that hierarchical aggregates depend on (#230 review)', () => {
+    // PostgreSQL records each child as dependent on the parent's materialized view, so a
+    // non-CASCADE DROP fails outright — and CASCADE would destroy the children. A step that cannot
+    // succeed is worse than no step, so this falls back to the advisory.
+    const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+    const currentWithChild = {
+      hypertables: [],
+      continuousAggregates: [
+        cagg(SERVER),
+        {
+          viewName: 'public.reading_daily',
+          source: 'public.reading_hourly',
+          hierarchical: true,
+          materializedOnly: false,
+          definition: 'SELECT 1',
+        },
+      ],
+    };
+    const plan = diffSchemaState(currentWithChild, ir(widened), {
+      continuousAggregateRecreate: 'apply',
+    });
+
+    expect(plan.steps).toEqual([]);
+    expect(plan.advisories?.[0]?.kind).toBe('not-expressible');
+    expect(plan.advisories?.[0]?.detail).toContain('public.reading_daily');
+    expect(plan.advisories?.[0]?.detail).toContain('CASCADE');
+  });
+
+  it("a 'plan'-mode step CANNOT be compiled to runnable SQL (#230 review)", () => {
+    // The guarantee is "shows the step, never runs it". Without the mode on the operation, handing
+    // a plan-mode plan to planToMigration/compilePlan emitted exactly the destructive SQL 'apply'
+    // does, so a generated migration would run the DROP having passed neither gate.
+    const widened = DECLARED.replace("INTERVAL '1 hour'", "INTERVAL '1 day'");
+    const planned = diffSchemaState(ir(SERVER), ir(widened), {
+      continuousAggregateRecreate: 'plan',
+    });
+    expect(planned.steps[0]?.operation.kind).toBe('recreateContinuousAggregate');
+    expect(() => compilePlan(planned)).toThrow(/never runs it, so it cannot be compiled/);
+
+    // ...while 'apply' compiles, so the refusal is about the MODE and not the operation.
+    const applied = diffSchemaState(ir(SERVER), ir(widened), {
+      continuousAggregateRecreate: 'apply',
+    });
+    expect(() => compilePlan(applied)).not.toThrow();
+  });
+
+  it('an UNPARSEABLE definition still falls back to not-compared in every mode', () => {
+    // The opt-in must not turn "I cannot read this" into a destructive step — that would be a guess.
+    const exotic =
+      'SELECT time_bucket(INTERVAL \'1 hour\', "time") AS "b", avg(value * 2) AS "v" FROM r GROUP BY 1';
+    for (const mode of ['advise', 'plan', 'apply'] as const) {
+      const plan = diffSchemaState(ir(SERVER), ir(exotic), {
+        continuousAggregateRecreate: mode,
+      });
+      expect(plan.steps, `mode ${mode} must emit no step`).toEqual([]);
+      expect(plan.advisories?.[0]?.kind).toBe('not-compared');
+    }
   });
 
   it('raises NO advisory for a converged aggregate in a NON-PUBLIC schema', () => {

@@ -83,6 +83,34 @@ describe('loadConfigFile — validation', () => {
     expect(() => loadConfigFile(path)).toThrow(/Unknown key "datasource"/);
   });
 
+  it.each(['advise', 'plan'])(
+    'ACCEPTS continuousAggregateRecreate: %s — non-destructive, so a project may commit it',
+    (mode) => {
+      const path = writeConfig(dir(), { continuousAggregateRecreate: mode });
+      expect(loadConfigFile(path).continuousAggregateRecreate).toBe(mode);
+    },
+  );
+
+  it("REJECTS continuousAggregateRecreate: 'apply', and says what to do instead", () => {
+    // The KEY is legitimate; only this VALUE is not — so the key-level SAFETY_KEYS ban cannot
+    // express it. 'apply' authorises DROP + CREATE of an aggregate, discarding its materialized
+    // rows, which belongs to the same class as --apply: chosen per invocation, never committed.
+    const path = writeConfig(dir(), { continuousAggregateRecreate: 'apply' });
+    expect(() => loadConfigFile(path)).toThrow(/not settable from a file/);
+    // The message must offer the way forward, not just refuse.
+    expect(() => loadConfigFile(path)).toThrow(/--cagg-recreate apply --allow-refused/);
+    expect(() => loadConfigFile(path)).toThrow(/use "plan" here/);
+  });
+
+  it('reports a TYPO as a typo, not as the deliberate ban on "apply"', () => {
+    // These are different mistakes and deserve different messages. Reporting "aply" as "not
+    // settable from a file" sends the reader looking for a policy decision that has nothing to do
+    // with what they got wrong.
+    const path = writeConfig(dir(), { continuousAggregateRecreate: 'aply' });
+    expect(() => loadConfigFile(path)).toThrow(/Unknown "continuousAggregateRecreate" value/);
+    expect(() => loadConfigFile(path)).not.toThrow(/not settable from a file/);
+  });
+
   it.each(['apply', 'allowDrops', 'allowRefused'])(
     'REJECTS the safety flag %s, and explains why',
     (key) => {

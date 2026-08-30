@@ -22,12 +22,15 @@ import { extractCaggFacets, caggFacetsEqual, type CaggFacets } from './cagg-face
  * canonical {@link SchemaStateIR} — and returns an ordered {@link Plan}: the operations needed to
  * converge current → desired. An unchanged schema yields an **empty plan** (no drift).
  *
- * **Continuous aggregates are ADDITIVE-ONLY**: a desired CAGG absent from the database is created
- * (plus its declared refresh policy), and a declared refresh policy missing from an existing CAGG is
- * attached. An EXISTING CAGG is never dropped, never recreated, and its definition is never compared
- * — the catalog's `view_definition` is a parse-tree deparse that an unchanged aggregate does not
- * textually match. Every such CAGG raises a `not-compared` {@link PlanAdvisory} so a clean `check`
- * never implies more than it verified. See {@link diffContinuousAggregates}.
+ * **Continuous aggregates: additive creates, plus a STRUCTURAL definition comparison.** A desired
+ * CAGG absent from the database is created (plus its declared refresh policy), and a declared refresh
+ * policy missing from an existing CAGG is attached. An existing CAGG is never DROPPED. Its definition
+ * IS compared — not textually (the catalog's `view_definition` is a parse-tree deparse an unchanged
+ * aggregate does not match) but by parsing both sides into facets; see {@link extractCaggFacets}.
+ * A definition the parser cannot read still raises `not-compared`, so a clean `check` never implies
+ * more than it verified. A difference raises a blocking `not-expressible` advisory by default, or —
+ * with {@link DiffOptions.continuousAggregateRecreate} — a `refuse-by-default` recreate step.
+ * See {@link diffContinuousAggregates}.
  *
  * **Scope: additive creates + POLICY alters.** It emits:
  *   - a hypertable in `desired` not in `current` → the full create sequence (create_hypertable +
@@ -65,9 +68,10 @@ import { extractCaggFacets, caggFacetsEqual, type CaggFacets } from './cagg-face
  * **Step order is significant.** Steps are emitted in dependency order (e.g. a `renameHypertable`
  * precedes any policy op that targets the new name) and `compileOperations` preserves it. Consumers
  * must execute `Plan.steps` in order and MUST NOT re-sort them (e.g. by safety class).
- *   - **dropping or recreating a continuous aggregate** — see the CAGG pass below. A CAGG present in
- *     the database but absent from `desired` is left alone even under `allowDrops`: its materialized
- *     rows may be the only surviving copy of data whose source chunks retention has dropped.
+ *   - **dropping a continuous aggregate** — a CAGG present in the database but absent from `desired`
+ *     is left alone even under `allowDrops`: its materialized rows may be the only surviving copy of
+ *     data whose source chunks retention has dropped. RECREATING one whose definition drifted is
+ *     emitted only behind {@link DiffOptions.continuousAggregateRecreate}, for the same reason.
  *   - **clearing a columnstore facet** — an EMPTY desired `segmentBy`/`orderBy` means "unmanaged / accept
  *     the engine default", not "remove"; the IR can't distinguish unset from explicitly-empty, so the diff
  *     never emits an alter to clear a facet the current DB has set. Also: **NULLS placement is unmanaged**
@@ -112,6 +116,27 @@ export interface DiffOptions {
    * `renameHypertable` op instead of a drop-then-create.
    */
   readonly renames?: ReadonlyMap<string, string>;
+  /**
+   * What to do about a continuous aggregate whose DEFINITION has drifted from the declaration.
+   *
+   * TimescaleDB cannot `ALTER` a continuous aggregate's `SELECT`, so converging one means DROP +
+   * CREATE, which discards its materialized rows — possibly the only surviving copy of data whose
+   * source chunks retention has already dropped. That is too destructive to be automatic, and too
+   * useful to omit, so it is a mode rather than a boolean:
+   *
+   * - `'advise'` (**default**) — raise the blocking `not-expressible` advisory 0.7.x shipped and emit
+   *   NO step. `check` still fails on the drift; nothing can converge it automatically.
+   * - `'plan'` — emit a {@link RecreateContinuousAggregateOperation} step, so `check` and `mix`
+   *   show exactly what convergence would take. It is still never applied: `pushSchema` holds it back
+   *   and applies the rest of the plan, reporting what it skipped.
+   * - `'apply'` — emit the step AND allow it to run, but only with `allowRefuseByDefault` on top.
+   *   Two independent gates, so the flag a user already passes to shorten a retention window cannot
+   *   by itself discard an aggregate's history.
+   *
+   * `'apply'` is deliberately NOT readable from `timescaledb.config.json`: a file committed to the
+   * repository must never pre-authorise a destructive run for everyone who later types the command.
+   */
+  readonly continuousAggregateRecreate?: 'advise' | 'plan' | 'apply';
   /**
    * Opt-in to emitting DROP operations for objects present in `current` but absent from `desired`.
    * Default `false` (drops are never emitted, so omitting a decorator option is not silently
@@ -739,7 +764,12 @@ export function diffSchemaState(
   }
 
   // ── Continuous aggregates — ADDITIVE ONLY ──────────────────────────────────────────────────
-  const advisories = diffContinuousAggregates(current, desired, operations);
+  const advisories = diffContinuousAggregates(
+    current,
+    desired,
+    operations,
+    options.continuousAggregateRecreate ?? 'advise',
+  );
 
   return {
     steps: operations.map((operation) => ({ operation, ...classifyOperation(operation) })),
@@ -776,6 +806,7 @@ function diffContinuousAggregates(
   current: SchemaStateIR,
   desired: SchemaStateIR,
   operations: Operation[],
+  recreate: 'advise' | 'plan' | 'apply',
 ): PlanAdvisory[] {
   const advisories: PlanAdvisory[] = [];
 
@@ -851,6 +882,65 @@ function diffContinuousAggregates(
           'changes to this aggregate by hand.',
       });
     } else if (!caggFacetsEqual(currentFacets, desiredFacets)) {
+      const delta = describeCaggDelta(currentFacets, desiredFacets);
+
+      // A parent of a hierarchical aggregate CANNOT be recreated by DROP + CREATE. PostgreSQL
+      // records each child as dependent on the parent's materialized view, so a non-CASCADE DROP
+      // fails outright and CASCADE would silently destroy the children too. Emitting a step that
+      // cannot succeed is worse than not offering one, so this falls back to the advisory.
+      const dependents = current.continuousAggregates
+        .filter((other) => other.hierarchical && other.source === c.viewName)
+        .map((other) => other.viewName);
+
+      if (recreate !== 'advise' && dependents.length === 0) {
+        // OPTED IN: emit a real step, so `check` shows what convergence takes instead of only
+        // asserting that it is needed. Classified `refuse-by-default` (`classifyOperation`), so
+        // nothing applies it by accident — and in `'plan'` mode `pushSchema` holds it back entirely
+        // while still applying the rest of the plan.
+        //
+        // `intent` carries the MODE onto the operation. Without it a `'plan'` plan handed to
+        // `planToMigration`/`compilePlan` compiled to the same destructive SQL as `'apply'`, so a
+        // generated migration would run the DROP having passed neither gate — breaking the one
+        // guarantee `'plan'` makes. `recreateContinuousAggregateSQL` refuses to compile
+        // `intent: 'plan'`, which enforces it at the single SQL choke point rather than in each
+        // caller.
+        //
+        // The DESIRED definition is what gets recreated: the declaration is the intended state, and
+        // the whole point of converging is to make the database match it.
+        operations.push({
+          kind: 'recreateContinuousAggregate',
+          view: d.viewName,
+          definition: d.definition,
+          ...(d.materializedOnly !== undefined && { materializedOnly: d.materializedOnly }),
+          delta,
+          mode: recreate,
+        });
+
+        // Re-attach the declared refresh policy, mirroring the CREATE branch above. Dropping a
+        // continuous aggregate drops its refresh job with it, and the old `continue` here jumped
+        // past the policy reconciliation below — so an applied recreate produced an aggregate that
+        // was not only empty but UNMAINTAINED, while the run reported success. With the default
+        // `materialized_only = FALSE` that is invisible (real-time aggregation keeps answering
+        // correctly) right up until retention drops the source chunks.
+        if (desiredRefresh !== undefined) {
+          operations.push(refreshPolicyOperation(d.viewName, desiredRefresh));
+        }
+        continue;
+      }
+
+      if (recreate !== 'advise' && dependents.length > 0) {
+        advisories.push({
+          kind: 'not-expressible',
+          object: d.viewName,
+          detail:
+            `its definition differs from the declaration — ${delta}. It CANNOT be recreated ` +
+            `automatically because ${dependents.length} hierarchical aggregate(s) depend on it ` +
+            `(${dependents.join(', ')}): PostgreSQL refuses a non-CASCADE DROP of a view they read, ` +
+            'and CASCADE would destroy them too. Recreate the hierarchy by hand, child-first.',
+        });
+        continue;
+      }
+
       // `not-expressible`, deliberately: this IS drift, and it BLOCKS `check` (commands.ts filters
       // this kind as blocking). Reporting it as `not-compared` would be a false statement — we did
       // compare, and we found a difference — and a gate that under-reports what it knows is the

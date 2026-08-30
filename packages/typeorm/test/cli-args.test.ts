@@ -92,3 +92,47 @@ describe('parseArgs — file-output flags are refused on verbs that write no fil
     expect(() => parseArgs(['check', '-d', 'ds.ts'], { outDir: 'migrations' })).not.toThrow();
   });
 });
+
+describe('--cagg-recreate', () => {
+  it('defaults to advise', () => {
+    expect(parseArgs(['check', '-d', 'ds.ts']).continuousAggregateRecreate).toBe('advise');
+  });
+
+  it.each(['advise', 'plan', 'apply'])('accepts %s', (mode) => {
+    expect(
+      parseArgs(['push', '-d', 'ds.ts', '--cagg-recreate', mode]).continuousAggregateRecreate,
+    ).toBe(mode);
+  });
+
+  it('THROWS on a typo rather than silently meaning advise', () => {
+    // Deliberately stricter than --output, which falls back to `ts`. This flag decides whether a
+    // data-discarding step may be emitted, so `--cagg-recreate aply` quietly doing nothing is the
+    // failure where the user believes they configured something and did not.
+    expect(() => parseArgs(['push', '-d', 'ds.ts', '--cagg-recreate', 'aply'])).toThrow(
+      /Unknown --cagg-recreate value/,
+    );
+  });
+});
+
+describe('--cagg-recreate: verbs that ignore it (#230 review)', () => {
+  it.each(['generate', 'run', 'revert', 'status', 'pull'])(
+    'REJECTS the flag on %s rather than silently ignoring it',
+    (cmd) => {
+      expect(() => parseArgs([cmd, '-d', 'ds.ts', '--cagg-recreate', 'plan'])).toThrow(
+        /--cagg-recreate is not used by/,
+      );
+    },
+  );
+
+  it.each(['check', 'push', 'mix'])('accepts it on %s, which does consult it', (cmd) => {
+    expect(
+      parseArgs([cmd, '-d', 'ds.ts', '--cagg-recreate', 'plan']).continuousAggregateRecreate,
+    ).toBe('plan');
+  });
+
+  it('names generate explicitly, since the docs used to claim it could show the step', () => {
+    expect(() => parseArgs(['generate', '-d', 'ds.ts', '--cagg-recreate', 'plan'])).toThrow(
+      /desired-state-only and never diffs/,
+    );
+  });
+});

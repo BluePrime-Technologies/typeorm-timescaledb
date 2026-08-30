@@ -20,10 +20,12 @@ The following features are planned or future scope, not shipped functionality:
   surfaced as stable constructs.
 - Stable Toolkit aggregates not yet covered by the typed query layer. (T-Digest
   percentiles shipped in 0.4.0.)
-- Automatic CONVERGENCE of a changed continuous-aggregate definition. (Presence,
-  refresh policies AND the definition itself are all diffed; an existing
-  aggregate is never recreated automatically, because converging a changed
-  definition means DROP + CREATE and discards materialized rows.)
+- Automatic, UNPROMPTED convergence of a changed continuous-aggregate definition.
+  Presence, refresh policies and the definition itself are all diffed, and a
+  changed definition can now be converged — but only behind an explicit opt-in
+  (`--cagg-recreate`, `DiffOptions.continuousAggregateRecreate`), because
+  converging means DROP + CREATE and discards the aggregate's materialized rows.
+  Default behaviour still reports the drift and changes nothing.
 - In-place reconciliation of space (hash) dimensions.
 - Validated cross-store references.
 - Complete TimescaleDB feature coverage.

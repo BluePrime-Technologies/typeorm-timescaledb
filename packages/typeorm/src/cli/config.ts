@@ -23,9 +23,30 @@ export interface TimescaleConfig {
   readonly outDir?: string;
   /** Emit format for `generate`: `ts` or `sql`. */
   readonly output?: string;
+  /**
+   * Drifted-continuous-aggregate handling: `'advise'` (default) or `'plan'`.
+   *
+   * `'apply'` is deliberately NOT settable here — see {@link FILE_SETTABLE_CAGG_RECREATE}.
+   */
+  readonly continuousAggregateRecreate?: string;
 }
 
-const CONFIG_KEYS = ['dataSource', 'outDir', 'output'] as const;
+const CONFIG_KEYS = ['dataSource', 'outDir', 'output', 'continuousAggregateRecreate'] as const;
+
+/**
+ * Values of `continuousAggregateRecreate` a FILE may set.
+ *
+ * `'advise'` and `'plan'` are non-destructive — they change what is reported, never what runs, so a
+ * project may reasonably commit them. `'apply'` authorises DROP + CREATE of a continuous aggregate,
+ * discarding its materialized rows, and belongs to the same class as `--apply` above: per
+ * invocation, never pre-authorised for whoever types the command next.
+ *
+ * A key-level ban is not enough here because the KEY is legitimate and only one of its VALUES is not.
+ */
+const FILE_SETTABLE_CAGG_RECREATE = ['advise', 'plan'] as const;
+
+/** Every valid mode, so a TYPO is reported as a typo rather than as the deliberate ban. */
+const CAGG_RECREATE_VALUES: readonly string[] = ['advise', 'plan', 'apply'];
 
 /**
  * Options a config file must NEVER set.
@@ -133,6 +154,30 @@ export function loadConfigFile(path: string): TimescaleConfig {
     }
     if (typeof value !== 'string') {
       throw new CliError(`Config key "${key}" in ${path} must be a string, got ${typeof value}.`);
+    }
+    if (key === 'continuousAggregateRecreate' && !CAGG_RECREATE_VALUES.includes(value)) {
+      // An unrecognised value is a TYPO, not an attempt to set the banned one. Reporting "aply" as
+      // "not settable from a file" conflates the two and sends the reader looking for a policy
+      // decision that has nothing to do with their mistake.
+      throw new CliError(
+        `Unknown "continuousAggregateRecreate" value ${JSON.stringify(value)} in ${path} ` +
+          `(expected one of: ${CAGG_RECREATE_VALUES.join(', ')}).`,
+      );
+    }
+    if (
+      key === 'continuousAggregateRecreate' &&
+      !(FILE_SETTABLE_CAGG_RECREATE as readonly string[]).includes(value)
+    ) {
+      throw new CliError(
+        `Config file ${path} sets "continuousAggregateRecreate": ${JSON.stringify(value)}, ` +
+          `which is not settable from a file.\n\n` +
+          `"advise" and "plan" only change what is REPORTED and may be committed. "apply" authorises ` +
+          `DROP + CREATE of a continuous aggregate, discarding its materialized rows — which may be ` +
+          `the only surviving copy of data whose source chunks retention has already dropped. Like ` +
+          `--apply, that has to be chosen per invocation:\n` +
+          `  • to see the step without ever running it: use "plan" here\n` +
+          `  • to actually run it: pass --cagg-recreate apply --allow-refused on the command line`,
+      );
     }
     config[key] = value;
   }
