@@ -98,13 +98,27 @@ describe.skipIf(!IMAGE)('CAGG recreate — live DROP + CREATE', () => {
 
   /** Count the refresh jobs attached to the aggregate — the policy the DROP takes with it. */
   const refreshJobCount = async (): Promise<number> => {
-    // `jobs.hypertable_name` carries the VIEW name for a cagg policy, not the materialization
-    // hypertable (`_materialized_hypertable_N`). Joining on the latter matches nothing, which is
-    // how the first draft of this file reported 0 policies against a database that plainly had one.
+    // `jobs.hypertable_name` means DIFFERENT things across the support matrix, so this matches
+    // either. Measured, not guessed:
+    //
+    //   2.18.0-pg16 -> `_materialized_hypertable_2`  (the materialization hypertable)
+    //   latest-pg17 -> `reading_rollup`              (the user-facing view)
+    //
+    // The first draft used only the materialization form and passed nothing on latest; "fixing" it
+    // to the view name then failed every 2.18 and 2.19 leg in CI. Pinning either one is a test that
+    // silently measures nothing on half the matrix — which is worse than a red build, because the
+    // assertion it guards is the blocking finding this file exists to cover.
     const rows: { n: string }[] = await ds.query(
-      `SELECT count(*)::text AS n FROM timescaledb_information.jobs
-        WHERE proc_name = 'policy_refresh_continuous_aggregate'
-          AND hypertable_name = 'reading_rollup'`,
+      `SELECT count(*)::text AS n
+         FROM timescaledb_information.jobs j
+        WHERE j.proc_name = 'policy_refresh_continuous_aggregate'
+          AND (
+            j.hypertable_name = 'reading_rollup'
+            OR j.hypertable_name IN (
+              SELECT c.materialization_hypertable_name
+                FROM timescaledb_information.continuous_aggregates c
+               WHERE c.view_name = 'reading_rollup')
+          )`,
     );
     return Number(rows[0]?.n ?? '0');
   };
