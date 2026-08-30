@@ -801,6 +801,19 @@ describe('pushSchema — drifted continuous aggregate: advise | plan | apply', (
   GroupColumn()(ReadingHourly.prototype, 'sensorId');
   AggregateColumn({ fn: 'avg', column: 'value' })(ReadingHourly.prototype, 'avgValue');
 
+  // Same aggregate, but the DECLARATION carries a refresh policy — the case where a recreate must
+  // re-attach the job it dropped along with the view.
+  class ReadingHourlyWithPolicy {}
+  ContinuousAggregate({
+    name: 'reading_hourly',
+    source: Reading,
+    bucket: '1 hour',
+    refresh: { startOffset: '1 month', endOffset: '1 hour', scheduleInterval: '30 minutes' },
+  })(ReadingHourlyWithPolicy);
+  BucketColumn()(ReadingHourlyWithPolicy.prototype, 'bucket');
+  GroupColumn()(ReadingHourlyWithPolicy.prototype, 'sensorId');
+  AggregateColumn({ fn: 'avg', column: 'value' })(ReadingHourlyWithPolicy.prototype, 'avgValue');
+
   const caggs = { continuousAggregates: [ReadingHourly] };
 
   it("'advise' (default) emits no recreate step — unchanged 0.7.x behaviour", async () => {
@@ -845,6 +858,35 @@ describe('pushSchema — drifted continuous aggregate: advise | plan | apply', (
     expect(queries.some((q) => /DROP\s+MATERIALIZED\s+VIEW|create_hypertable/i.test(q))).toBe(
       false,
     );
+  });
+
+  it("'plan' re-attaches nothing but still reports the held-back step as DRIFT (#230 review)", async () => {
+    // Steps ran, but the database does NOT match the declarations. Reporting `applied` (exit 0)
+    // here would tell CI it converged while the drift shown in the preview remains.
+    const { ds } = stubDs();
+    const result = await pushSchema(ds, {
+      ...caggs,
+      apply: true,
+      continuousAggregateRecreate: 'plan',
+    });
+    expect(result.applied).toBe(true);
+    expect(result.heldBack.length).toBeGreaterThan(0);
+  });
+
+  it("'apply' mode RE-ATTACHES the refresh policy after recreating (#230 review)", async () => {
+    // The recreate drops the aggregate's refresh job with it. Without re-attachment the aggregate
+    // comes back empty AND unmaintained while the run reports success.
+    const { ds, queries } = stubDs();
+    await pushSchema(ds, {
+      continuousAggregates: [ReadingHourlyWithPolicy],
+      apply: true,
+      continuousAggregateRecreate: 'apply',
+      allowRefused: true,
+    });
+    const createAt = queries.findIndex((q) => /CREATE MATERIALIZED VIEW/i.test(q));
+    const policyAt = queries.findIndex((q) => /add_continuous_aggregate_policy/i.test(q));
+    expect(createAt).toBeGreaterThanOrEqual(0);
+    expect(policyAt).toBeGreaterThan(createAt); // attached, and AFTER the view exists
   });
 
   it("'apply' WITH allowRefused performs the DROP + CREATE", async () => {

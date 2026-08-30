@@ -497,7 +497,25 @@ export function createContinuousAggregateRawSQL(
  */
 export function recreateContinuousAggregateSQL(
   input: CreateContinuousAggregateRawInput,
+  mode: 'plan' | 'apply' = 'apply',
 ): MigrationStatement {
+  // `'plan'` mode promises the step is SHOWN and never run. That promise has to hold outside
+  // `pushSchema` too: a plan produced in `'plan'` mode and passed to `planToMigration` or
+  // `compilePlan` would otherwise emit exactly the destructive SQL `'apply'` does, and the resulting
+  // migration would run the DROP having passed neither gate. Refusing here — the single
+  // SQL-generation choke point — is what makes the guarantee structural rather than a convention
+  // each caller has to remember.
+  if (mode === 'plan') {
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `continuous aggregate ${input.view}: this plan was produced with ` +
+        `continuousAggregateRecreate: 'plan', which shows the recreate step but never runs it, so it ` +
+        `cannot be compiled to runnable SQL. Re-run the diff with 'apply' mode to generate it (and ` +
+        `pass --allow-refused to execute it), or keep 'plan' and converge this aggregate by hand.`,
+      { view: input.view, mode },
+    );
+  }
+
   const view = parseTable(input.view);
   const materializedOnly = input.materializedOnly ?? false;
 

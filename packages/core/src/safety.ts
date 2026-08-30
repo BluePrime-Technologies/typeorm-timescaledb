@@ -120,7 +120,10 @@ export function classifyOperation(operation: Operation): OperationSafety {
           `its definition drifted (${operation.delta}) and TimescaleDB cannot ALTER a continuous ` +
           "aggregate's SELECT, so converging means DROP + CREATE — this DISCARDS the materialized " +
           'rows, which may be the only surviving copy of data whose source chunks a retention ' +
-          'policy has already dropped; down() cannot restore them',
+          'policy has already dropped; down() cannot restore them. It also does NOT preserve the ' +
+          "view's OWNER or GRANTs: the DROP removes them and the CREATE assigns ownership to the " +
+          'migration role with default privileges, so application roles reading it may start ' +
+          'failing with permission errors. Re-grant afterwards',
       };
     case 'alterRetentionPolicy': {
       // SHORTENING drop_after is the one policy alter with a real data effect: the apply itself

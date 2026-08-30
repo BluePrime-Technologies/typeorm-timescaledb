@@ -114,6 +114,11 @@ async function main(argv: readonly string[]): Promise<void> {
             apply: args.apply,
             allowDrops: args.allowDrops,
             allowRefused: args.allowRefused,
+            // `mix` is pull-then-PUSH, so its push half can recreate an aggregate. Omitting this
+            // made `mix --cagg-recreate plan` run silently as `advise` — a flag the user set being
+            // dropped without a word, which is the failure `resolveCaggRecreate`'s throw-on-typo
+            // exists to prevent.
+            continuousAggregateRecreate: args.continuousAggregateRecreate,
             ...caggs,
           },
         );

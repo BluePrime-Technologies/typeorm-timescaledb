@@ -33,7 +33,7 @@ export interface PushOptions {
    * {@link DiffOptions.continuousAggregateRecreate}. Default `'advise'`.
    *
    * - `'advise'` — blocking advisory, no step, nothing to apply. Unchanged 0.7.x behaviour.
-   * - `'plan'` — the step appears in the plan (so `check`/`generate` show it) but `push` NEVER
+   * - `'plan'` — the step appears in the plan (so `check` and `mix` show it) but `push` NEVER
    *   applies it: it is held back and reported in {@link PushResult.heldBack}, and the rest of the
    *   plan applies normally.
    * - `'apply'` — the step applies, but only with {@link allowRefused} as well.

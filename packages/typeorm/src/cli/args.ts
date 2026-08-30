@@ -254,6 +254,8 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
     output: output !== undefined && isOutputFormat(output) ? output : 'ts',
     continuousAggregateRecreate: resolveCaggRecreate(
       values.continuousAggregateRecreate ?? config.continuousAggregateRecreate,
+      command,
+      values.continuousAggregateRecreate !== undefined,
     ),
   };
 }
@@ -266,7 +268,31 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
  * the same class of failure the config loader already refuses to tolerate for a typo'd key: the user
  * believes they configured something and did not.
  */
-function resolveCaggRecreate(value: string | undefined): CaggRecreateMode {
+/**
+ * Verbs that actually consult `--cagg-recreate`. `generate` is NOT one of them: it is
+ * desired-state-only and never introspects, so it cannot produce a recreate step under any mode.
+ */
+const CAGG_RECREATE_COMMANDS = ['check', 'push', 'mix'] as const;
+
+function resolveCaggRecreate(
+  value: string | undefined,
+  command: Command,
+  fromFlag: boolean,
+): CaggRecreateMode {
+  // Reject the FLAG on a verb that ignores it. Accepting `generate --cagg-recreate plan` and
+  // quietly doing nothing is the same silent-drop this flag's throw-on-typo already refuses; the
+  // docs even claimed `generate` would show the step, which it never could.
+  //
+  // Only the flag is rejected, not the config key: a repo-level `timescaledb.config.json` setting
+  // applies to whichever verb you happen to run, and erroring on `status` because the file sets a
+  // push-related default would make the file unusable.
+  if (fromFlag && !(CAGG_RECREATE_COMMANDS as readonly string[]).includes(command)) {
+    throw new CliError(
+      `--cagg-recreate is not used by \`${command}\` (only ${CAGG_RECREATE_COMMANDS.join(', ')} ` +
+        `consult it). \`generate\` in particular is desired-state-only and never diffs against the ` +
+        `database, so it cannot show a recreate step under any mode.`,
+    );
+  }
   if (value === undefined) return 'advise';
   if ((CAGG_RECREATE_MODES as readonly string[]).includes(value)) {
     return value as CaggRecreateMode;

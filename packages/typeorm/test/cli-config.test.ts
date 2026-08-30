@@ -102,9 +102,13 @@ describe('loadConfigFile — validation', () => {
     expect(() => loadConfigFile(path)).toThrow(/use "plan" here/);
   });
 
-  it('REJECTS an unrecognised continuousAggregateRecreate value', () => {
+  it('reports a TYPO as a typo, not as the deliberate ban on "apply"', () => {
+    // These are different mistakes and deserve different messages. Reporting "aply" as "not
+    // settable from a file" sends the reader looking for a policy decision that has nothing to do
+    // with what they got wrong.
     const path = writeConfig(dir(), { continuousAggregateRecreate: 'aply' });
-    expect(() => loadConfigFile(path)).toThrow(/not settable from a file/);
+    expect(() => loadConfigFile(path)).toThrow(/Unknown "continuousAggregateRecreate" value/);
+    expect(() => loadConfigFile(path)).not.toThrow(/not settable from a file/);
   });
 
   it.each(['apply', 'allowDrops', 'allowRefused'])(

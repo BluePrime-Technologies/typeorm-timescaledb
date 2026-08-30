@@ -267,12 +267,35 @@ export async function pushCommand(
   }
 
   if (!applied) {
+    // Telling someone who just passed --apply to "re-run with --apply" is nonsense, and pointing
+    // them at --allow-refused is a dead end here: `plan` mode forbids the step under every flag.
+    // It also directly contradicts the HELD BACK block printed immediately above.
+    if (options.apply === true && result.heldBack.length > 0) {
+      logger.log(
+        `\nNothing was applied — every step in this plan is held back by ` +
+          `continuousAggregateRecreate: 'plan', which shows the step and never runs it.` +
+          `\nTo apply it: --cagg-recreate apply --allow-refused (it DROPs and recreates the ` +
+          `aggregate, discarding its materialized rows).`,
+      );
+      return 'previewed'; // exit 2 — the drift is real and still there
+    }
     logger.log(
       '\nPreview only — nothing was applied. Re-run with --apply to converge the database.' +
         '\nIf the plan is missing a change you expected, see --allow-drops (reversible policy ' +
         'removals) and --allow-refused (operations classified refuse-by-default).',
     );
     return 'previewed';
+  }
+
+  // Steps ran, but a held-back one means the database still does NOT match the declarations.
+  // Returning 'applied' (exit 0) here would tell CI it converged while the drift shown above
+  // remains — the same affirmative false claim the blocking-advisory branch below exists to avoid.
+  if (result.heldBack.length > 0) {
+    logger.log(
+      `\nApplied ${statements.length} statement(s), but ${result.heldBack.length} step(s) were ` +
+        `HELD BACK (see above). The database does NOT yet match your declarations.`,
+    );
+    return 'applied-with-drift';
   }
 
   if (blocking.length > 0) {

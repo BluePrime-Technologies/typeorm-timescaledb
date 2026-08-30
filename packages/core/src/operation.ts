@@ -116,6 +116,18 @@ export interface RecreateContinuousAggregateOperation extends CreateContinuousAg
    * only that something differs.
    */
   readonly delta: string;
+  /**
+   * The MODE this step was produced under — {@link DiffOptions.continuousAggregateRecreate}.
+   *
+   * Carried on the operation because `'plan'`'s guarantee ("shows the step, never runs it") has to
+   * survive leaving `pushSchema`. A plan produced in `'plan'` mode and handed to `planToMigration`
+   * or `compilePlan` otherwise compiled to exactly the same destructive SQL as `'apply'`, so a
+   * generated TypeORM migration would later execute the DROP having passed neither gate.
+   *
+   * {@link recreateContinuousAggregateSQL} REFUSES to compile `'plan'`, which enforces this at the
+   * single SQL-generation choke point instead of trusting every caller to re-check the mode.
+   */
+  readonly mode: 'plan' | 'apply';
 }
 
 /** Add ONLY the compression policy job to a hypertable whose columnstore is already enabled
@@ -220,7 +232,7 @@ export function compileOperation(operation: Operation): MigrationStatement {
     case 'createContinuousAggregateRaw':
       return createContinuousAggregateRawSQL(operation);
     case 'recreateContinuousAggregate':
-      return recreateContinuousAggregateSQL(operation);
+      return recreateContinuousAggregateSQL(operation, operation.mode);
     case 'addContinuousAggregatePolicy':
       return addContinuousAggregatePolicySQL(operation);
     case 'decompressChunk':

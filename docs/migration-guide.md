@@ -204,11 +204,11 @@ source chunks retention has already dropped.
 Because that trade is yours and not the engine's, convergence is a mode rather
 than something the engine decides:
 
-| mode               | reports the drift | shows the recreate step        | runs it                         |
-| ------------------ | ----------------- | ------------------------------ | ------------------------------- |
-| `advise` (default) | yes               | no                             | no                              |
-| `plan`             | —                 | yes, in `check` and `generate` | **never**                       |
-| `apply`            | —                 | yes                            | only with `--allow-refused` too |
+| mode               | reports the drift | shows the recreate step   | runs it                         |
+| ------------------ | ----------------- | ------------------------- | ------------------------------- |
+| `advise` (default) | yes               | no                        | no                              |
+| `plan`             | —                 | yes, in `check` and `mix` | **never**                       |
+| `apply`            | —                 | yes                       | only with `--allow-refused` too |
 
 ```sh
 # see exactly what convergence would take, without any risk of running it
@@ -222,6 +222,25 @@ npx typeorm-timescaledb push -d ./src/data-source.ts --apply \
 Two independent gates on purpose: `--allow-refused` is a flag you may already
 pass to shorten a retention window, and it must not by itself authorise
 discarding an aggregate's history.
+
+**What a recreate does and does not carry over.** The declared refresh policy is
+re-attached automatically — dropping an aggregate drops its refresh job with it,
+so without that the view would come back not just empty but unmaintained. What is
+**not** preserved is the view's **owner and GRANTs**: the `DROP` removes them and
+the `CREATE` assigns ownership to the migration role with default privileges, so
+application roles that read the aggregate may start failing with permission
+errors. Re-grant afterwards.
+
+**A parent of a hierarchical aggregate is refused, not recreated.** PostgreSQL
+records each child as dependent on the parent's materialized view, so a
+non-`CASCADE` drop fails and `CASCADE` would destroy the children. Those are
+reported as drift naming the dependents, and the hierarchy must be rebuilt by
+hand, child-first.
+
+**A `plan`-mode plan cannot be compiled.** Passing one to `compilePlan` or
+`planToMigration` throws rather than emitting the `DROP`. Without that, a
+generated migration would have run it later having passed neither gate — so the
+guarantee is enforced at the SQL choke point, not left to each caller.
 
 **`plan` mode never blocks your other changes.** `push --apply` applies the rest
 of the plan and reports the recreate step it held back — a drifted aggregate does

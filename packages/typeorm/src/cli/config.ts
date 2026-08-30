@@ -45,6 +45,9 @@ const CONFIG_KEYS = ['dataSource', 'outDir', 'output', 'continuousAggregateRecre
  */
 const FILE_SETTABLE_CAGG_RECREATE = ['advise', 'plan'] as const;
 
+/** Every valid mode, so a TYPO is reported as a typo rather than as the deliberate ban. */
+const CAGG_RECREATE_VALUES: readonly string[] = ['advise', 'plan', 'apply'];
+
 /**
  * Options a config file must NEVER set.
  *
@@ -151,6 +154,15 @@ export function loadConfigFile(path: string): TimescaleConfig {
     }
     if (typeof value !== 'string') {
       throw new CliError(`Config key "${key}" in ${path} must be a string, got ${typeof value}.`);
+    }
+    if (key === 'continuousAggregateRecreate' && !CAGG_RECREATE_VALUES.includes(value)) {
+      // An unrecognised value is a TYPO, not an attempt to set the banned one. Reporting "aply" as
+      // "not settable from a file" conflates the two and sends the reader looking for a policy
+      // decision that has nothing to do with their mistake.
+      throw new CliError(
+        `Unknown "continuousAggregateRecreate" value ${JSON.stringify(value)} in ${path} ` +
+          `(expected one of: ${CAGG_RECREATE_VALUES.join(', ')}).`,
+      );
     }
     if (
       key === 'continuousAggregateRecreate' &&

@@ -113,3 +113,26 @@ describe('--cagg-recreate', () => {
     );
   });
 });
+
+describe('--cagg-recreate: verbs that ignore it (#230 review)', () => {
+  it.each(['generate', 'run', 'revert', 'status', 'pull'])(
+    'REJECTS the flag on %s rather than silently ignoring it',
+    (cmd) => {
+      expect(() => parseArgs([cmd, '-d', 'ds.ts', '--cagg-recreate', 'plan'])).toThrow(
+        /--cagg-recreate is not used by/,
+      );
+    },
+  );
+
+  it.each(['check', 'push', 'mix'])('accepts it on %s, which does consult it', (cmd) => {
+    expect(
+      parseArgs([cmd, '-d', 'ds.ts', '--cagg-recreate', 'plan']).continuousAggregateRecreate,
+    ).toBe('plan');
+  });
+
+  it('names generate explicitly, since the docs used to claim it could show the step', () => {
+    expect(() => parseArgs(['generate', '-d', 'ds.ts', '--cagg-recreate', 'plan'])).toThrow(
+      /desired-state-only and never diffs/,
+    );
+  });
+});

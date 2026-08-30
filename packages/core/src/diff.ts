@@ -126,7 +126,7 @@ export interface DiffOptions {
    *
    * - `'advise'` (**default**) — raise the blocking `not-expressible` advisory 0.7.x shipped and emit
    *   NO step. `check` still fails on the drift; nothing can converge it automatically.
-   * - `'plan'` — emit a {@link RecreateContinuousAggregateOperation} step, so `check` and `generate`
+   * - `'plan'` — emit a {@link RecreateContinuousAggregateOperation} step, so `check` and `mix`
    *   show exactly what convergence would take. It is still never applied: `pushSchema` holds it back
    *   and applies the rest of the plan, reporting what it skipped.
    * - `'apply'` — emit the step AND allow it to run, but only with `allowRefuseByDefault` on top.
@@ -884,11 +884,26 @@ function diffContinuousAggregates(
     } else if (!caggFacetsEqual(currentFacets, desiredFacets)) {
       const delta = describeCaggDelta(currentFacets, desiredFacets);
 
-      if (recreate !== 'advise') {
-        // OPTED IN: emit a real step, so `check` and `generate` show what convergence takes instead
-        // of only asserting that it is needed. Classified `refuse-by-default`
-        // (`classifyOperation`), so nothing applies it by accident — and in `'plan'` mode
-        // `pushSchema` holds it back entirely while still applying the rest of the plan.
+      // A parent of a hierarchical aggregate CANNOT be recreated by DROP + CREATE. PostgreSQL
+      // records each child as dependent on the parent's materialized view, so a non-CASCADE DROP
+      // fails outright and CASCADE would silently destroy the children too. Emitting a step that
+      // cannot succeed is worse than not offering one, so this falls back to the advisory.
+      const dependents = current.continuousAggregates
+        .filter((other) => other.hierarchical && other.source === c.viewName)
+        .map((other) => other.viewName);
+
+      if (recreate !== 'advise' && dependents.length === 0) {
+        // OPTED IN: emit a real step, so `check` shows what convergence takes instead of only
+        // asserting that it is needed. Classified `refuse-by-default` (`classifyOperation`), so
+        // nothing applies it by accident — and in `'plan'` mode `pushSchema` holds it back entirely
+        // while still applying the rest of the plan.
+        //
+        // `intent` carries the MODE onto the operation. Without it a `'plan'` plan handed to
+        // `planToMigration`/`compilePlan` compiled to the same destructive SQL as `'apply'`, so a
+        // generated migration would run the DROP having passed neither gate — breaking the one
+        // guarantee `'plan'` makes. `recreateContinuousAggregateSQL` refuses to compile
+        // `intent: 'plan'`, which enforces it at the single SQL choke point rather than in each
+        // caller.
         //
         // The DESIRED definition is what gets recreated: the declaration is the intended state, and
         // the whole point of converging is to make the database match it.
@@ -898,6 +913,30 @@ function diffContinuousAggregates(
           definition: d.definition,
           ...(d.materializedOnly !== undefined && { materializedOnly: d.materializedOnly }),
           delta,
+          mode: recreate,
+        });
+
+        // Re-attach the declared refresh policy, mirroring the CREATE branch above. Dropping a
+        // continuous aggregate drops its refresh job with it, and the old `continue` here jumped
+        // past the policy reconciliation below — so an applied recreate produced an aggregate that
+        // was not only empty but UNMAINTAINED, while the run reported success. With the default
+        // `materialized_only = FALSE` that is invisible (real-time aggregation keeps answering
+        // correctly) right up until retention drops the source chunks.
+        if (desiredRefresh !== undefined) {
+          operations.push(refreshPolicyOperation(d.viewName, desiredRefresh));
+        }
+        continue;
+      }
+
+      if (recreate !== 'advise' && dependents.length > 0) {
+        advisories.push({
+          kind: 'not-expressible',
+          object: d.viewName,
+          detail:
+            `its definition differs from the declaration — ${delta}. It CANNOT be recreated ` +
+            `automatically because ${dependents.length} hierarchical aggregate(s) depend on it ` +
+            `(${dependents.join(', ')}): PostgreSQL refuses a non-CASCADE DROP of a view they read, ` +
+            'and CASCADE would destroy them too. Recreate the hierarchy by hand, child-first.',
         });
         continue;
       }
