@@ -358,8 +358,7 @@ const CREATE_TABLE_TARGET = new RegExp(
 );
 
 /** What kind of object a recognised statement targets. */
-type TargetKind =
-  'index' | 'table' | 'view' | 'schema' | 'extension' | 'comment-column' | 'other';
+type TargetKind = 'index' | 'table' | 'view' | 'schema' | 'extension' | 'comment-column' | 'other';
 
 const recognise = (body: string, target: TargetKind) => ({
   re: new RegExp(String.raw`^\s*${body}`, 'i'),
