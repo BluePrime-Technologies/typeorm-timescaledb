@@ -29,44 +29,122 @@ import type { TypeormDiff, TypeormStatement } from './typeorm-diff.js';
  *   unrecognised statement through risks executing something destructive against a Timescale
  *   object; dropping it risks losing legitimate user DDL. Stopping and naming it is the only
  *   option that cannot be silently wrong.
+ *
+ * Two asymmetries drive the details below, and both were learned rather than assumed:
+ *
+ * 1. **Over-filtering is worse than refusing.** A refusal is visible. Silently removing the user's
+ *    own DDL from a migration they believe is complete is not. Ownership is therefore matched on
+ *    fully schema-qualified identity and on the object KIND, never on a bare name.
+ * 2. **Failing to parse falls through to `keep`, which is the destructive direction.** An
+ *    identifier this module reads wrongly resolves to no owned object, so an owned `DROP INDEX`
+ *    would survive into the migration. Identifier parsing is exact for that reason.
  */
+
+/** Postgres truncates every identifier to this many BYTES (`NAMEDATALEN - 1`). */
+const MAX_IDENTIFIER_BYTES = 63;
+
+const utf8 = new TextEncoder();
+const fromUtf8 = new TextDecoder();
+
+/**
+ * Reproduce Postgres's identifier truncation.
+ *
+ * `create_hypertable` relies on Postgres's standard index naming, so a constructed
+ * `<table>_<timecolumn>_idx` longer than 63 bytes is stored TRUNCATED. Keeping the full string
+ * would mean `owned.autoIndexes` never matches the name TypeORM actually reports, and the
+ * destructive `DROP INDEX` this module exists to remove would survive. Truncation clips on a
+ * character boundary, as `pg_mbcliplen` does, rather than splitting a multibyte character.
+ *
+ * Not reproduced: Postgres's collision suffixes (`_idx1`, `_idx2`, ...), which it appends only when
+ * the truncated name is already taken. That case stays unhandled deliberately — guessing a suffix
+ * risks filtering a DIFFERENT index, which is the over-filtering direction. See
+ * {@link timescaleOwnedObjects} for how a caller supplies real catalog names instead.
+ */
+function truncateIdentifier(name: string): string {
+  const bytes = utf8.encode(name);
+  if (bytes.length <= MAX_IDENTIFIER_BYTES) return name;
+
+  let end = MAX_IDENTIFIER_BYTES;
+  // Back off while sitting on a UTF-8 continuation byte (0b10xxxxxx).
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return fromUtf8.decode(bytes.subarray(0, end));
+}
+
+/** A parsed, schema-qualified object name with Postgres's quoting rules already applied. */
+interface QualifiedName {
+  readonly schema?: string;
+  readonly name: string;
+}
 
 /** Objects TimescaleDB created and owns, derived from a live {@link SchemaStateIR}. */
 export interface TimescaleOwnedObjects {
-  /** Bare (unqualified) hypertable names. */
+  /** Schema-qualified hypertable names, e.g. `public.readings`. */
   readonly hypertables: ReadonlySet<string>;
-  /** Auto-created time index names, e.g. `readings_time_idx`, derived from each time dimension. */
+  /** Schema-qualified auto-created time index names, e.g. `public.readings_time_idx`. */
   readonly autoIndexes: ReadonlySet<string>;
-  /** Bare continuous-aggregate view names. */
+  /** Schema-qualified continuous-aggregate view names. */
   readonly continuousAggregates: ReadonlySet<string>;
+  /** The schema an unqualified statement resolves against. */
+  readonly defaultSchema: string;
+}
+
+/** Options for {@link timescaleOwnedObjects}. */
+export interface OwnedObjectOptions {
+  /**
+   * The schema an unqualified name resolves to. Defaults to `public`.
+   *
+   * This matters for correctness, not convenience: with bare-name matching, an `analytics.readings`
+   * hypertable would make a perfectly legitimate `DROP INDEX "public"."readings_time_idx"` look
+   * Timescale-owned and vanish from the user's migration.
+   */
+  readonly defaultSchema?: string;
+  /**
+   * Index names read from the catalog, when the caller has them.
+   *
+   * {@link truncateIdentifier} reproduces Postgres's naming for the common case, but it cannot know
+   * about collision suffixes. A caller introspecting a live database can pass the real names and
+   * skip the reconstruction entirely.
+   */
+  readonly knownAutoIndexes?: readonly string[];
 }
 
 /**
  * Derive the owned-object set from introspected state.
  *
- * The auto-index name is reconstructed rather than read from the catalog, because the composer runs
- * against the DESIRED plan too, where a hypertable may not exist yet. TimescaleDB's convention is
- * `<table>_<timecolumn>_idx`.
+ * Auto-index names are reconstructed rather than read from the catalog because the composer also
+ * runs against the DESIRED plan, where a hypertable may not exist yet. TimescaleDB's convention is
+ * `<table>_<timecolumn>_idx`, truncated to Postgres's identifier limit.
  */
-export function timescaleOwnedObjects(state: SchemaStateIR): TimescaleOwnedObjects {
+export function timescaleOwnedObjects(
+  state: SchemaStateIR,
+  options: OwnedObjectOptions = {},
+): TimescaleOwnedObjects {
+  const defaultSchema = options.defaultSchema ?? 'public';
+  const qualify = (raw: string): string => key(parseQualified(raw), defaultSchema);
+
   const hypertables = new Set<string>();
   const autoIndexes = new Set<string>();
 
   for (const ht of state.hypertables) {
-    const bare = bareName(ht.table);
-    hypertables.add(bare);
+    const parsed = parseQualified(ht.table);
+    hypertables.add(key(parsed, defaultSchema));
+
     for (const dim of ht.dimensions) {
       // Only the TIME dimension. `create_hypertable` indexes that column; a space dimension gets no
-      // such index, so deriving one would filter a user's own index that happened to share the name.
-      if (dim.kind === 'time') autoIndexes.add(`${bare}_${dim.column}_idx`);
+      // such index, so deriving one would filter a user's own index that shared the name.
+      if (dim.kind !== 'time') continue;
+      const indexName = truncateIdentifier(`${parsed.name}_${dim.column}_idx`);
+      autoIndexes.add(key({ ...parsed, name: indexName }, defaultSchema));
     }
   }
 
+  for (const known of options.knownAutoIndexes ?? []) autoIndexes.add(qualify(known));
+
   const continuousAggregates = new Set(
-    (state.continuousAggregates ?? []).map((c) => bareName(c.viewName)),
+    (state.continuousAggregates ?? []).map((c) => qualify(c.viewName)),
   );
 
-  return { hypertables, autoIndexes, continuousAggregates };
+  return { hypertables, autoIndexes, continuousAggregates, defaultSchema };
 }
 
 /** What the filter decided about one statement. */
@@ -118,18 +196,26 @@ const INTERNAL_SCHEMAS = new Set([
   'timescaledb_experimental',
 ]);
 
+/** Extensions whose lifecycle this library owns, not TypeORM's entity metadata. */
+const OWNED_EXTENSIONS = new Set(['timescaledb', 'timescaledb_toolkit']);
+
 /**
  * A possibly schema-qualified object name.
  *
- * A fully-quoted identifier is matched FIRST, so `"users"("id" ...)` and the (legal, if unusual)
- * `"readings_time_idx"ON ...` both yield the identifier alone. A space-delimited fallback covers
- * unquoted names. Getting this wrong is not merely cosmetic: an unparsed name resolves to no owned
- * object and so falls through to `keep`, which would let a `DROP INDEX` of the hypertable's time
- * index survive into the migration — precisely the failure this module exists to prevent.
+ * Quoted identifiers are matched first and understand Postgres's doubled-quote escape, so
+ * `"users"("id" ...)` yields `users` and `"a""b"` yields the single identifier `a"b` rather than
+ * stopping at the inner quote. A space-delimited fallback covers unquoted names.
  */
-const OBJ = String.raw`(?<obj>"[^"]+"(?:\."[^"]+")*|[^\s(;]+)`;
+const QUOTED = String.raw`"(?:[^"]|"")*"`;
+const OBJ = String.raw`(?<obj>${QUOTED}(?:\.${QUOTED})*|[^\s(;]+)`;
 
-const recognise = (body: string, target: 'index' | 'table' | 'view' | 'other') => ({
+/** `... RENAME TO "new_name"` — the destination of a rename, always unqualified in Postgres. */
+const RENAME_TO = new RegExp(String.raw`\bRENAME\s+TO\s+(?<dest>${QUOTED}|[^\s(;]+)`, 'i');
+
+/** What kind of object a recognised statement targets. */
+type TargetKind = 'index' | 'table' | 'view' | 'schema' | 'extension' | 'other' | 'none';
+
+const recognise = (body: string, target: TargetKind) => ({
   re: new RegExp(String.raw`^\s*${body}`, 'i'),
   target,
 });
@@ -149,6 +235,11 @@ const recognise = (body: string, target: 'index' | 'table' | 'view' | 'other') =
  * change, so omitting it would have refused composition for any entity with an enum column — an
  * allow-list gap of exactly the kind this repo has shipped twice before.
  *
+ * Every entry that names an object CAPTURES it. An earlier draft short-circuited the
+ * schema/extension verbs to `keep` without reading their target, which would have let
+ * `DROP SCHEMA "_timescaledb_internal" CASCADE` through — destroying a schema this very module
+ * declares entirely Timescale-owned.
+ *
  * Deliberately still absent, because the schema builder never emits them: `TRUNCATE TABLE` (only
  * `queryRunner.clearTable()`), and `CREATE`/`DROP DATABASE`. Those refuse, which is correct — they
  * are destructive and have no business in a generated migration.
@@ -159,7 +250,6 @@ const RECOGNISED = [
     'index',
   ),
   recognise(String.raw`DROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?${OBJ}`, 'index'),
-  // Renaming an index. Classified as an index so a rename OF the auto time index is still caught.
   recognise(String.raw`ALTER\s+INDEX\s+(?:IF\s+EXISTS\s+)?${OBJ}`, 'index'),
   recognise(String.raw`CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?${OBJ}`, 'table'),
   recognise(String.raw`DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?${OBJ}`, 'table'),
@@ -170,14 +260,21 @@ const RECOGNISED = [
   ),
   recognise(String.raw`DROP\s+(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+EXISTS\s+)?${OBJ}`, 'view'),
   recognise(String.raw`ALTER\s+(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+EXISTS\s+)?${OBJ}`, 'view'),
-  recognise(String.raw`(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+${OBJ}`, 'table'),
-  // Types, sequences, schemas, extensions, functions and triggers are never Timescale-owned objects
-  // this filter tracks, so the verb alone settles it — no target needs reading.
   recognise(
-    String.raw`(?:CREATE|DROP|ALTER)\s+(?:TYPE|SEQUENCE|SCHEMA|EXTENSION|FUNCTION|TRIGGER)\b`,
+    String.raw`(?:CREATE|DROP|ALTER)\s+SCHEMA\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?${OBJ}`,
+    'schema',
+  ),
+  recognise(
+    String.raw`(?:CREATE|DROP|ALTER)\s+EXTENSION\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?${OBJ}`,
+    'extension',
+  ),
+  recognise(
+    String.raw`(?:CREATE|DROP|ALTER)\s+(?:TYPE|SEQUENCE|FUNCTION|TRIGGER)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?${OBJ}`,
     'other',
   ),
-  recognise(String.raw`COMMENT\s+ON\b`, 'other'),
+  recognise(String.raw`(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+${OBJ}`, 'table'),
+  // Metadata only, and its target may be a column or constraint rather than a relation.
+  recognise(String.raw`COMMENT\s+ON\b`, 'none'),
 ] as const;
 
 /** Classify a single statement against the owned set. */
@@ -195,8 +292,7 @@ export function classifyTypeormStatement(
     };
   }
 
-  // Verbs with no single object (CREATE TYPE, COMMENT ON, ...) target nothing Timescale owns.
-  if (match.target === 'other') return { verdict: 'keep' };
+  if (match.target === 'none') return { verdict: 'keep' };
 
   const raw = match.re.exec(sql)?.groups?.['obj'];
   if (raw === undefined) {
@@ -206,18 +302,35 @@ export function classifyTypeormStatement(
     };
   }
 
-  const { schema, name } = splitQualified(raw);
+  const parsed = parseQualified(raw);
+  const qualified = key(parsed, owned.defaultSchema);
 
-  if (schema !== undefined && INTERNAL_SCHEMAS.has(schema)) {
+  if (parsed.schema !== undefined && INTERNAL_SCHEMAS.has(parsed.schema)) {
     return {
       verdict: 'filtered',
       object: raw,
-      reason: `lives in ${schema}, which is TimescaleDB's own schema`,
+      reason: `lives in ${parsed.schema}, which is TimescaleDB's own schema`,
+    };
+  }
+
+  if (match.target === 'schema' && INTERNAL_SCHEMAS.has(parsed.name)) {
+    return {
+      verdict: 'filtered',
+      object: raw,
+      reason: "is one of TimescaleDB's own schemas, which TypeORM must never create or destroy",
+    };
+  }
+
+  if (match.target === 'extension' && OWNED_EXTENSIONS.has(parsed.name.toLowerCase())) {
+    return {
+      verdict: 'filtered',
+      object: raw,
+      reason: 'is an extension whose lifecycle this library owns, not TypeORM entity metadata',
     };
   }
 
   for (const p of INTERNAL_PATTERNS) {
-    if (p.re.test(name)) {
+    if (p.re.test(parsed.name)) {
       return {
         verdict: 'filtered',
         object: raw,
@@ -226,7 +339,16 @@ export function classifyTypeormStatement(
     }
   }
 
-  if (match.target === 'index' && owned.autoIndexes.has(name)) {
+  // A rename must get the SAME disposition at both ends. TypeORM's down statement inverts the
+  // rename, so it names the owned object as the DESTINATION rather than the target. Classifying
+  // only the target would filter the up statement and keep the down one, leaving a down migration
+  // that references an index which was never created.
+  const renamed = renameDestination(sql, parsed, owned.defaultSchema);
+
+  if (
+    match.target === 'index' &&
+    (owned.autoIndexes.has(qualified) || hasOwned(owned.autoIndexes, renamed))
+  ) {
     return {
       verdict: 'filtered',
       object: raw,
@@ -236,7 +358,10 @@ export function classifyTypeormStatement(
     };
   }
 
-  if (match.target === 'view' && owned.continuousAggregates.has(name)) {
+  if (
+    match.target === 'view' &&
+    (owned.continuousAggregates.has(qualified) || hasOwned(owned.continuousAggregates, renamed))
+  ) {
     return {
       verdict: 'filtered',
       object: raw,
@@ -248,7 +373,11 @@ export function classifyTypeormStatement(
   // `ALTER TABLE readings ADD "note"` must survive. Dropping one is the exception: it is
   // destructive AND both engines claim it (this engine never drops a hypertable), so the
   // disagreement is refused rather than silently resolved either way.
-  if (match.target === 'table' && /^\s*DROP\s+TABLE\b/i.test(sql) && owned.hypertables.has(name)) {
+  if (
+    match.target === 'table' &&
+    /^\s*DROP\s+TABLE\b/i.test(sql) &&
+    owned.hypertables.has(qualified)
+  ) {
     return {
       verdict: 'unclassified',
       reason:
@@ -307,23 +436,69 @@ export function filterTypeormDiff(
   return { diff: { up: run(diff.up, 'up'), down: run(diff.down, 'down') }, filtered };
 }
 
+/** The qualified key of a `RENAME TO` destination, if this statement is a rename. */
+function renameDestination(
+  sql: string,
+  source: QualifiedName,
+  defaultSchema: string,
+): string | undefined {
+  const dest = RENAME_TO.exec(sql)?.groups?.['dest'];
+  if (dest === undefined) return undefined;
+  // Postgres forbids qualifying the new name, so it inherits the source's schema.
+  const name = parseQualified(dest).name;
+  return key(
+    source.schema !== undefined ? { schema: source.schema, name } : { name },
+    defaultSchema,
+  );
+}
+
+function hasOwned(set: ReadonlySet<string>, qualified: string | undefined): boolean {
+  return qualified !== undefined && set.has(qualified);
+}
+
+/** `{ schema, name }` → the `schema.name` string both sides of a comparison are keyed by. */
+function key(n: QualifiedName, defaultSchema: string): string {
+  return `${n.schema ?? defaultSchema}.${n.name}`;
+}
+
 /**
- * `"public"."readings"` / `public.readings` / `"readings"` → `{ schema?, name }`, unquoted.
+ * Parse a possibly-qualified identifier the way Postgres reads one.
  *
- * The name is the LAST part and the schema the one before it, so a three-part
- * `"db"."public"."readings"` still resolves to the schema that matters rather than the catalog.
- * Deliberately no whitespace-trimming or empty-part handling: input reaches here only from TypeORM's
- * schema builder or the introspection catalog, neither of which can produce `public . readings` or
- * `public..readings`, and mutation testing showed such guards were untestable dead weight.
+ * Quoted parts keep their case and may contain dots or doubled quotes (`"a""b"` is the single
+ * identifier `a"b`); unquoted parts fold to lower case. A naive `split('.')` gets all three wrong,
+ * and each mistake resolves to no owned object — which falls through to `keep`, the destructive
+ * direction for this module.
  */
-function splitQualified(raw: string): { schema?: string; name: string } {
-  const parts = raw.split('.').map((p) => p.replace(/^"(.*)"$/s, '$1'));
+function parseQualified(raw: string): QualifiedName {
+  const parts: string[] = [];
+  let i = 0;
+
+  while (i < raw.length) {
+    if (raw[i] === '"') {
+      let out = '';
+      let j = i + 1;
+      while (j < raw.length) {
+        if (raw[j] === '"') {
+          if (raw[j + 1] !== '"') break;
+          out += '"';
+          j += 2;
+          continue;
+        }
+        out += raw[j];
+        j++;
+      }
+      parts.push(out);
+      i = j + 1; // past the closing quote
+      if (raw[i] === '.') i++;
+    } else {
+      let j = i;
+      while (j < raw.length && raw[j] !== '.') j++;
+      parts.push(raw.slice(i, j).toLowerCase());
+      i = j + 1;
+    }
+  }
+
   const name = parts[parts.length - 1] ?? '';
   const schema = parts.length > 1 ? parts[parts.length - 2] : undefined;
   return schema !== undefined ? { schema, name } : { name };
-}
-
-/** `public.readings` → `readings`. Comparison is on bare names; schemas are handled separately. */
-function bareName(qualified: string): string {
-  return splitQualified(qualified).name;
 }

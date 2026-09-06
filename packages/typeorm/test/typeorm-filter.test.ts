@@ -58,12 +58,16 @@ describe('timescaleOwnedObjects', () => {
   it('derives the auto index name from the TIME dimension only', () => {
     // `create_hypertable` indexes the time column. A space dimension gets no such index, and
     // inventing `readings_sensor_id_idx` would filter a user's own index of that name.
-    expect([...owned.autoIndexes]).toEqual(['readings_time_idx']);
+    expect([...owned.autoIndexes]).toEqual(['public.readings_time_idx']);
   });
 
-  it('records bare names, so schema-qualified statements still match', () => {
-    expect(owned.hypertables.has('readings')).toBe(true);
-    expect(owned.continuousAggregates.has('readings_hourly')).toBe(true);
+  it('keys every owned object by SCHEMA and name, never by bare name', () => {
+    // Bare-name keying was the P1 in the #240 review: an `analytics.readings` hypertable made a
+    // legitimate `public.readings_time_idx` look owned. See the review-findings block below.
+    expect(owned.hypertables.has('public.readings')).toBe(true);
+    expect(owned.continuousAggregates.has('public.readings_hourly')).toBe(true);
+    expect(owned.hypertables.has('readings')).toBe(false);
+    expect(owned.defaultSchema).toBe('public');
   });
 });
 
@@ -198,6 +202,176 @@ describe('classify — must REFUSE rather than guess', () => {
     expect(d.verdict).toBe('unclassified');
     if (d.verdict !== 'unclassified') return;
     expect(d.reason).toMatch(/never drops a hypertable/);
+  });
+});
+
+/**
+ * The five findings from the Codex review of #240. Every one was verified against the code before
+ * being accepted, and every one was real — so each gets a test that fails without its fix.
+ */
+describe('review findings (#240)', () => {
+  it('P1 — ownership is schema-qualified, so a same-named object elsewhere is untouched', () => {
+    // With bare-name matching, an `analytics.readings` hypertable made a perfectly legitimate
+    // `DROP INDEX "public"."readings_time_idx"` look Timescale-owned and vanish from the user's
+    // migration. Over-filtering is the silent direction, which makes this the worst of the five.
+    const elsewhere = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: 'analytics.readings',
+          dimensions: [{ column: 'time', kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+      continuousAggregates: [
+        {
+          viewName: 'analytics.readings_hourly',
+          source: 'analytics.readings',
+          hierarchical: false,
+          materializedOnly: false,
+          definition: 'SELECT 1',
+        },
+      ],
+    });
+
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_time_idx"', elsewhere).verdict,
+    ).toBe('keep');
+    expect(classifyTypeormStatement('DROP TABLE "public"."readings"', elsewhere).verdict).toBe(
+      'keep',
+    );
+    expect(
+      classifyTypeormStatement('DROP VIEW "public"."readings_hourly"', elsewhere).verdict,
+    ).toBe('keep');
+
+    // ...while the genuinely owned ones in `analytics` still are.
+    expect(
+      classifyTypeormStatement('DROP INDEX "analytics"."readings_time_idx"', elsewhere).verdict,
+    ).toBe('filtered');
+    expect(classifyTypeormStatement('DROP TABLE "analytics"."readings"', elsewhere).verdict).toBe(
+      'unclassified',
+    );
+  });
+
+  it('P1 — an unqualified name resolves against the configured default schema', () => {
+    const inApp = timescaleOwnedObjects(
+      {
+        hypertables: [
+          {
+            table: 'app.readings',
+            dimensions: [{ column: 'time', kind: 'time', chunkInterval: '1 day' }],
+          },
+        ],
+      },
+      { defaultSchema: 'app' },
+    );
+    expect(classifyTypeormStatement('DROP INDEX "readings_time_idx"', inApp).verdict).toBe(
+      'filtered',
+    );
+    expect(classifyTypeormStatement('DROP INDEX "public"."readings_time_idx"', inApp).verdict).toBe(
+      'keep',
+    );
+  });
+
+  it('P1 — the auto index name is TRUNCATED to 63 bytes, as Postgres stores it', () => {
+    // Postgres clips every identifier to NAMEDATALEN-1. Keeping the full string meant the owned set
+    // never matched the name TypeORM reports, so the destructive DROP INDEX survived — the exact
+    // failure this module exists to prevent, reappearing on long names.
+    const table = 'sensor_readings_from_the_northern_field_station_array'; // 52 chars
+    const column = 'observed_at_utc';
+    const full = `${table}_${column}_idx`; // 72 chars — over the limit
+    const stored = full.slice(0, 63);
+    expect(full.length).toBeGreaterThan(63);
+
+    const long = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: `public.${table}`,
+          dimensions: [{ column, kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+    });
+
+    expect([...long.autoIndexes]).toEqual([`public.${stored}`]);
+    expect(classifyTypeormStatement(`DROP INDEX "public"."${stored}"`, long).verdict).toBe(
+      'filtered',
+    );
+  });
+
+  it('P1 — truncation clips on a character boundary, never mid-codepoint', () => {
+    const column = 'é'.repeat(40); // 80 bytes, 40 chars
+    const long = timescaleOwnedObjects({
+      hypertables: [
+        { table: 'public.t', dimensions: [{ column, kind: 'time', chunkInterval: '1 day' }] },
+      ],
+    });
+    const [only] = [...long.autoIndexes];
+    const bare = only!.slice('public.'.length);
+    expect(new TextEncoder().encode(bare).length).toBeLessThanOrEqual(63);
+    expect(bare).not.toContain('�'); // no split codepoint
+  });
+
+  it('P1 — a caller with real catalog names can supply them, sidestepping collision suffixes', () => {
+    const withKnown = timescaleOwnedObjects(
+      {
+        hypertables: [
+          {
+            table: 'public.readings',
+            dimensions: [{ column: 'time', kind: 'time', chunkInterval: '1 day' }],
+          },
+        ],
+      },
+      { knownAutoIndexes: ['public.readings_time_idx1'] },
+    );
+    // Postgres appends a suffix when the truncated name is taken; reconstruction cannot guess it,
+    // so the caller supplies it rather than this module inventing one and over-filtering.
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_time_idx1"', withKnown).verdict,
+    ).toBe('filtered');
+  });
+
+  it('P1 — allow-listed schema/extension verbs have their TARGET inspected, not waved through', () => {
+    // The earlier draft short-circuited these to `keep` without reading the target, so a composed
+    // migration could destroy the very schema this module declares entirely Timescale-owned.
+    filtered('DROP SCHEMA "_timescaledb_internal" CASCADE');
+    filtered('DROP SCHEMA IF EXISTS "_timescaledb_catalog"');
+    filtered('DROP EXTENSION "timescaledb"');
+    filtered('DROP EXTENSION IF EXISTS timescaledb CASCADE');
+    filtered('CREATE EXTENSION IF NOT EXISTS "timescaledb_toolkit"');
+
+    // A user's own schema and any other extension remain TypeORM's business.
+    keep('CREATE SCHEMA "analytics"');
+    keep('DROP SCHEMA "reporting" CASCADE');
+    keep('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
+  });
+
+  it('P1 — both ends of a rename get the SAME disposition', () => {
+    // TypeORM's down statement inverts the rename, naming the owned object as the DESTINATION.
+    // Filtering only the up statement left a down migration referencing an index never created.
+    filtered('ALTER INDEX "readings_time_idx" RENAME TO "IDX_abc"');
+    filtered('ALTER INDEX "IDX_abc" RENAME TO "readings_time_idx"');
+    filtered('ALTER MATERIALIZED VIEW "old_rollup" RENAME TO "readings_hourly"');
+
+    // A rename between two names this engine does not own stays TypeORM's.
+    keep('ALTER INDEX "users_email_idx" RENAME TO "IDX_xyz"');
+
+    // The destination inherits the source's schema, so a rename in another schema is untouched.
+    keep('ALTER INDEX "other"."IDX_abc" RENAME TO "readings_time_idx"');
+  });
+
+  it('P2 — doubled quotes inside an identifier are one escaped quote, not a terminator', () => {
+    // `"a""b"` is the single identifier `a"b`. Stopping at the inner quote parsed
+    // `"readings_time_idx""backup"` as the owned index and filtered a distinct user index.
+    keep('DROP INDEX "readings_time_idx""backup"');
+    filtered('DROP INDEX "readings_time_idx"');
+  });
+
+  it('P2 — a quoted identifier may contain a dot without becoming qualified', () => {
+    keep('DROP TABLE "public.readings"'); // one identifier literally named `public.readings`
+    refuses('DROP TABLE "public"."readings"'); // genuinely qualified — the owned hypertable
+  });
+
+  it('folds unquoted identifiers to lower case, as Postgres does', () => {
+    filtered('DROP INDEX public.READINGS_TIME_IDX');
+    refuses('DROP TABLE READINGS');
   });
 });
 
