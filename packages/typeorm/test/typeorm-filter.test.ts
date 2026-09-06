@@ -55,10 +55,14 @@ const refuses = (sql: string): void => {
 };
 
 describe('timescaleOwnedObjects', () => {
-  it('derives the auto index name from the TIME dimension only', () => {
-    // `create_hypertable` indexes the time column. A space dimension gets no such index, and
-    // inventing `readings_sensor_id_idx` would filter a user's own index of that name.
-    expect([...owned.autoIndexes]).toEqual(['public.readings_time_idx']);
+  it('derives the auto indexes create_hypertable actually creates', () => {
+    // Both verified on timescaledb:2.18.0-pg16 for a hypertable with a space partition: the time
+    // index, plus a composite `(space, time DESC)` index. Note what is NOT derived — a bare
+    // `readings_sensor_id_idx`, which would filter a user's own index of that name.
+    expect([...owned.autoIndexes].sort()).toEqual([
+      'public.readings_sensor_id_time_idx',
+      'public.readings_time_idx',
+    ]);
   });
 
   it('keys every owned object by SCHEMA and name, never by bare name', () => {
@@ -282,43 +286,12 @@ describe('review findings (#240)', () => {
     );
   });
 
-  it('P1 — the auto index name is TRUNCATED to 63 bytes, as Postgres stores it', () => {
-    // Postgres clips every identifier to NAMEDATALEN-1. Keeping the full string meant the owned set
-    // never matched the name TypeORM reports, so the destructive DROP INDEX survived — the exact
-    // failure this module exists to prevent, reappearing on long names.
-    const table = 'sensor_readings_from_the_northern_field_station_array'; // 52 chars
-    const column = 'observed_at_utc';
-    const full = `${table}_${column}_idx`; // 72 chars — over the limit
-    const stored = full.slice(0, 63);
-    expect(full.length).toBeGreaterThan(63);
-
-    const long = timescaleOwnedObjects({
-      hypertables: [
-        {
-          table: `public.${table}`,
-          dimensions: [{ column, kind: 'time', chunkInterval: '1 day' }],
-        },
-      ],
-    });
-
-    expect([...long.autoIndexes]).toEqual([`public.${stored}`]);
-    expect(classifyTypeormStatement(`DROP INDEX "public"."${stored}"`, long).verdict).toBe(
-      'filtered',
-    );
-  });
-
-  it('P1 — truncation clips on a character boundary, never mid-codepoint', () => {
-    const column = 'é'.repeat(40); // 80 bytes, 40 chars
-    const long = timescaleOwnedObjects({
-      hypertables: [
-        { table: 'public.t', dimensions: [{ column, kind: 'time', chunkInterval: '1 day' }] },
-      ],
-    });
-    const [only] = [...long.autoIndexes];
-    const bare = only!.slice('public.'.length);
-    expect(new TextEncoder().encode(bare).length).toBeLessThanOrEqual(63);
-    expect(bare).not.toContain('�'); // no split codepoint
-  });
+  // NOTE: the round-2 "truncate the finished string at 63 bytes" tests lived here and have been
+  // REMOVED, not merely edited. They asserted a name Postgres never produces. Round 4 showed the
+  // server shortens name COMPONENTS instead, so the correct expectations — verified against a live
+  // container — are in "R4 P1 — long names use Postgres's COMPONENT-WISE naming" below. Leaving the
+  // old assertions alongside the new ones would have encoded two contradictory beliefs about the
+  // same function.
 
   it('P1 — a caller with real catalog names can supply them, sidestepping collision suffixes', () => {
     const withKnown = timescaleOwnedObjects(
@@ -529,6 +502,78 @@ describe('review findings (#240)', () => {
     ]) {
       filtered(`ALTER TABLE "${s}"."thing" ADD "c" text`);
     }
+  });
+
+  it('R4 P1 — a SPACE dimension gets a second, COMPOSITE auto index', () => {
+    // Verified on timescaledb:2.18.0-pg16. `create_hypertable(..., partitioning_column =>
+    // 'sensor_id')` produced BOTH:
+    //   readings_time_idx            ON readings USING btree ("time" DESC)
+    //   readings_sensor_id_time_idx  ON readings USING btree (sensor_id, "time" DESC)
+    // Deriving only the time index left the composite exposed to TypeORM's DROP.
+    expect([...owned.autoIndexes].sort()).toEqual([
+      'public.readings_sensor_id_time_idx',
+      'public.readings_time_idx',
+    ]);
+    filtered('DROP INDEX "public"."readings_sensor_id_time_idx"');
+
+    // A space dimension still does NOT produce a bare `<table>_<space>_idx`, so that name remains
+    // the user's to own.
+    keep('DROP INDEX "public"."readings_sensor_id_idx"');
+  });
+
+  it("R4 P1 — long names use Postgres's COMPONENT-WISE naming, not a tail clip", () => {
+    // The round-2 truncation fix was wrong, and this is the evidence that proved it. Measured on
+    // timescaledb:2.18.0-pg16 with this exact table and column:
+    //   constructed : sensor_readings_..._array_observed_at_utc_timestamp_value_idx  (89 chars)
+    //   naive clip  : sensor_readings_from_the_northern_field_station_array_observed_
+    //   ACTUAL      : sensor_readings_from_the_nort_observed_at_utc_timestamp_val_idx
+    // Postgres shortens the COMPONENTS, preferring the longer one, and keeps the `_idx` label.
+    const table = 'sensor_readings_from_the_northern_field_station_array';
+    const column = 'observed_at_utc_timestamp_value';
+    const actual = 'sensor_readings_from_the_nort_observed_at_utc_timestamp_val_idx';
+    expect(actual.length).toBeLessThanOrEqual(63);
+
+    const long = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: `public.${table}`,
+          dimensions: [{ column, kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+    });
+
+    expect([...long.autoIndexes]).toEqual([`public.${actual}`]);
+    expect(classifyTypeormStatement(`DROP INDEX "public"."${actual}"`, long).verdict).toBe(
+      'filtered',
+    );
+    // The naive tail clip must NOT be treated as owned — it is not a real object.
+    const naive = `${table}_${column}_idx`.slice(0, 63);
+    expect(classifyTypeormStatement(`DROP INDEX "public"."${naive}"`, long).verdict).toBe('keep');
+  });
+
+  it('R4 P1 — component truncation still clips on a character boundary', () => {
+    const column = 'é'.repeat(40); // 80 bytes
+    const long = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: 'public.t',
+          dimensions: [{ column, kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+    });
+    const [only] = [...long.autoIndexes];
+    const bare = only!.slice('public.'.length);
+    expect(new TextEncoder().encode(bare).length).toBeLessThanOrEqual(63);
+    expect(bare).not.toContain('�');
+    expect(bare.endsWith('_idx')).toBe(true);
+  });
+
+  it('R4 P2 — an index CREATED on an internal table is filtered via its RESOLVED schema', () => {
+    // The index name cannot be qualified in CREATE INDEX, so `parsed.schema` is undefined here and
+    // the internal-schema guard silently did not fire.
+    filtered('CREATE INDEX "whatever" ON "_timescaledb_internal"."_hyper_1_1_chunk" ("time")');
+    filtered('CREATE INDEX "whatever" ON "_timescaledb_catalog"."hypertable" ("id")');
+    keep('CREATE INDEX "whatever" ON "public"."users" ("id")');
   });
 
   it('folds unquoted identifiers to lower case, as Postgres does', () => {

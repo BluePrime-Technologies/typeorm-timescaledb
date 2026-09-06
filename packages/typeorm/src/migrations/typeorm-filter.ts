@@ -46,28 +46,51 @@ const MAX_IDENTIFIER_BYTES = 63;
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
 
-/**
- * Reproduce Postgres's identifier truncation.
- *
- * `create_hypertable` relies on Postgres's standard index naming, so a constructed
- * `<table>_<timecolumn>_idx` longer than 63 bytes is stored TRUNCATED. Keeping the full string
- * would mean `owned.autoIndexes` never matches the name TypeORM actually reports, and the
- * destructive `DROP INDEX` this module exists to remove would survive. Truncation clips on a
- * character boundary, as `pg_mbcliplen` does, rather than splitting a multibyte character.
- *
- * Not reproduced: Postgres's collision suffixes (`_idx1`, `_idx2`, ...), which it appends only when
- * the truncated name is already taken. That case stays unhandled deliberately — guessing a suffix
- * risks filtering a DIFFERENT index, which is the over-filtering direction. See
- * {@link timescaleOwnedObjects} for how a caller supplies real catalog names instead.
- */
-function truncateIdentifier(name: string): string {
-  const bytes = utf8.encode(name);
-  if (bytes.length <= MAX_IDENTIFIER_BYTES) return name;
-
-  let end = MAX_IDENTIFIER_BYTES;
-  // Back off while sitting on a UTF-8 continuation byte (0b10xxxxxx).
+/** Clip to `n` bytes without splitting a multibyte character, as `pg_mbcliplen` does. */
+function clipBytes(bytes: Uint8Array, n: number): string {
+  let end = Math.min(n, bytes.length);
   while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
   return fromUtf8.decode(bytes.subarray(0, end));
+}
+
+/**
+ * Port of Postgres's `makeObjectName()` — how a generated index name is actually built.
+ *
+ * An earlier revision truncated the finished `<table>_<column>_idx` string at 63 bytes. That is NOT
+ * what the server does, and the difference is not subtle. Measured on `timescaledb:2.18.0-pg16`:
+ *
+ * ```text
+ * constructed : sensor_readings_from_the_northern_field_station_array_observed_at_utc_timestamp_value_idx
+ * naive clip  : sensor_readings_from_the_northern_field_station_array_observed_
+ * ACTUAL      : sensor_readings_from_the_nort_observed_at_utc_timestamp_val_idx
+ * ```
+ *
+ * Postgres shortens the COMPONENTS to fit, preferentially trimming the longer one, and preserves
+ * both separators and the `_idx` label. A reconstructed key that differs from the catalog name
+ * matches nothing, so the destructive `DROP INDEX` survives — the failure this module exists to
+ * prevent. This implementation reproduces the observed name exactly.
+ *
+ * Not reproduced: the collision suffixes (`_idx1`, `_idx2`, ...) `ChooseRelationName` appends when
+ * the generated name is already taken. Guessing one risks filtering a DIFFERENT index, which is the
+ * over-filtering direction; {@link OwnedObjectOptions.knownAutoIndexes} is the way out.
+ */
+function makeObjectName(name1: string, name2: string, label: string): string {
+  const b1 = utf8.encode(name1);
+  const b2 = utf8.encode(name2);
+
+  // overhead = '_' + label, plus the '_' between the two names.
+  const overhead = utf8.encode(label).length + 1 + (b2.length > 0 ? 1 : 0);
+  const availchars = MAX_IDENTIFIER_BYTES - overhead;
+
+  let n1 = b1.length;
+  let n2 = b2.length;
+  while (n1 + n2 > availchars) {
+    if (n1 > n2) n1--;
+    else n2--;
+  }
+
+  const p1 = clipBytes(b1, n1);
+  return b2.length > 0 ? `${p1}_${clipBytes(b2, n2)}_${label}` : `${p1}_${label}`;
 }
 
 /** A parsed, schema-qualified object name with Postgres's quoting rules already applied. */
@@ -142,12 +165,31 @@ export function timescaleOwnedObjects(
 
     if (fromCatalog) continue;
 
+    // `create_hypertable` creates an index on the time column, and — when the hypertable has a
+    // space partition — a SECOND composite index on `(space, time DESC)`. Verified on
+    // timescaledb:2.18.0-pg16, which produced exactly `readings_time_idx` and
+    // `readings_sensor_id_time_idx`. Missing the composite left a Timescale-owned index exposed to
+    // TypeORM's DROP.
+    const timeColumns = ht.dimensions.filter((d) => d.kind === 'time').map((d) => d.column);
+
+    for (const time of timeColumns) {
+      autoIndexes.add(
+        key({ ...parsed, name: makeObjectName(parsed.name, time, 'idx') }, defaultSchema),
+      );
+    }
+
     for (const dim of ht.dimensions) {
-      // Only the TIME dimension. `create_hypertable` indexes that column; a space dimension gets no
-      // such index, so deriving one would filter a user's own index that shared the name.
-      if (dim.kind !== 'time') continue;
-      const indexName = truncateIdentifier(`${parsed.name}_${dim.column}_idx`);
-      autoIndexes.add(key({ ...parsed, name: indexName }, defaultSchema));
+      if (dim.kind !== 'space') continue;
+      for (const time of timeColumns) {
+        // Postgres names a multi-column index from the column list joined by `_`
+        // (`ChooseIndexNameAddition`), so `(sensor_id, time)` gives `..._sensor_id_time_idx`.
+        autoIndexes.add(
+          key(
+            { ...parsed, name: makeObjectName(parsed.name, `${dim.column}_${time}`, 'idx') },
+            defaultSchema,
+          ),
+        );
+      }
     }
   }
 
@@ -399,15 +441,18 @@ export function classifyTypeormStatement(
   // chunks, materialization hypertables and partial/direct views exclusively in its own schemas, so
   // a `app._hyper_1_1_chunk` is a user table with an unfortunate name — and filtering it would
   // silently delete their DDL. The name still refines the reason, which is worth keeping.
-  if (parsed.schema !== undefined && INTERNAL_SCHEMAS.has(parsed.schema)) {
-    const internal = INTERNAL_PATTERNS.find((p) => p.re.test(parsed.name));
+  // Uses RESOLVED, not `parsed`. For `CREATE INDEX "n" ON "_timescaledb_internal"."t"` the index
+  // name cannot be qualified, so `parsed.schema` is undefined and this guard silently did not fire
+  // — leaving an index creation against a Timescale-owned internal table in the migration.
+  if (resolved.schema !== undefined && INTERNAL_SCHEMAS.has(resolved.schema)) {
+    const internal = INTERNAL_PATTERNS.find((p) => p.re.test(resolved.name));
     return {
       verdict: 'filtered',
       object: raw,
       reason:
         internal !== undefined
           ? `is ${internal.what}, created and owned by TimescaleDB`
-          : `lives in ${parsed.schema}, which is TimescaleDB's own schema`,
+          : `lives in ${resolved.schema}, which is TimescaleDB's own schema`,
     };
   }
 
