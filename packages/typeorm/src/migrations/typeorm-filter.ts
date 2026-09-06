@@ -105,6 +105,15 @@ export interface TimescaleOwnedObjects {
   readonly hypertables: ReadonlySet<string>;
   /** Schema-qualified auto-created time index names, e.g. `public.readings_time_idx`. */
   readonly autoIndexes: ReadonlySet<string>;
+  /**
+   * Expected column list for each RECONSTRUCTED auto index, keyed as in {@link autoIndexes}.
+   *
+   * Present only for names this module derived, so a `CREATE INDEX` reusing a derived name can be
+   * checked against its definition instead of filtered on the name alone. Names supplied through
+   * {@link OwnedObjectOptions.knownAutoIndexes} are catalog truth and are deliberately absent here,
+   * since there is nothing to second-guess.
+   */
+  readonly autoIndexColumns: ReadonlyMap<string, readonly string[]>;
   /** Schema-qualified continuous-aggregate view names. */
   readonly continuousAggregates: ReadonlySet<string>;
   /** The schema an unqualified statement resolves against. */
@@ -124,9 +133,10 @@ export interface OwnedObjectOptions {
   /**
    * Auto-index names read from the catalog, REPLACING reconstruction entirely.
    *
-   * {@link truncateIdentifier} reproduces Postgres's naming for the common case, but it cannot know
-   * about collision suffixes. A caller introspecting a live database can pass the real names
-   * instead.
+   * {@link makeObjectName} reproduces Postgres's generated-name algorithm for the common case, but
+   * it cannot know about collision suffixes, nor about indexes created by a `create_hypertable`
+   * call that this library did not emit. A caller introspecting a live database can pass the real
+   * names instead.
    *
    * Supplying this **replaces** the reconstructed set rather than adding to it, and that is the
    * whole point. Collision suffixes exist precisely because the reconstructed name was already
@@ -153,6 +163,7 @@ export function timescaleOwnedObjects(
 
   const hypertables = new Set<string>();
   const autoIndexes = new Set<string>();
+  const autoIndexColumns = new Map<string, readonly string[]>();
 
   // Catalog names REPLACE reconstruction — see OwnedObjectOptions.knownAutoIndexes. Unioning them
   // would filter the user's own index whenever a collision suffix was the reason for supplying
@@ -165,31 +176,29 @@ export function timescaleOwnedObjects(
 
     if (fromCatalog) continue;
 
-    // `create_hypertable` creates an index on the time column, and — when the hypertable has a
-    // space partition — a SECOND composite index on `(space, time DESC)`. Verified on
-    // timescaledb:2.18.0-pg16, which produced exactly `readings_time_idx` and
-    // `readings_sensor_id_time_idx`. Missing the composite left a Timescale-owned index exposed to
-    // TypeORM's DROP.
-    const timeColumns = ht.dimensions.filter((d) => d.kind === 'time').map((d) => d.column);
-
-    for (const time of timeColumns) {
-      autoIndexes.add(
-        key({ ...parsed, name: makeObjectName(parsed.name, time, 'idx') }, defaultSchema),
-      );
-    }
-
+    // ONLY the time index is reconstructed.
+    //
+    // Whether a space partition also yields a composite `(space, time)` index depends on HOW the
+    // hypertable was made, which this IR does not record. Measured on timescaledb:2.18.0-pg16:
+    //
+    //   create_hypertable('a','time', partitioning_column=>'sensor_id')
+    //     -> a_time_idx, a_sensor_id_time_idx          (composite CREATED)
+    //   create_hypertable('b', by_range('time')); add_dimension('b', by_hash('sensor_id', 4))
+    //     -> b_time_idx                                (composite NOT created)
+    //
+    // The second sequence is the one THIS LIBRARY emits (`core/src/sql/hypertable.ts`), so for
+    // hypertables it manages the composite does not exist. A previous revision derived it anyway,
+    // which would have filtered a user's own `<table>_<space>_<time>_idx` — over-filtering, the
+    // silent direction. Reconstruction therefore covers only what this library itself creates;
+    // anything else must come from the catalog via `knownAutoIndexes`.
     for (const dim of ht.dimensions) {
-      if (dim.kind !== 'space') continue;
-      for (const time of timeColumns) {
-        // Postgres names a multi-column index from the column list joined by `_`
-        // (`ChooseIndexNameAddition`), so `(sensor_id, time)` gives `..._sensor_id_time_idx`.
-        autoIndexes.add(
-          key(
-            { ...parsed, name: makeObjectName(parsed.name, `${dim.column}_${time}`, 'idx') },
-            defaultSchema,
-          ),
-        );
-      }
+      if (dim.kind !== 'time') continue;
+      const k = key(
+        { ...parsed, name: makeObjectName(parsed.name, dim.column, 'idx') },
+        defaultSchema,
+      );
+      autoIndexes.add(k);
+      autoIndexColumns.set(k, [dim.column]);
     }
   }
 
@@ -199,7 +208,7 @@ export function timescaleOwnedObjects(
     (state.continuousAggregates ?? []).map((c) => qualify(c.viewName)),
   );
 
-  return { hypertables, autoIndexes, continuousAggregates, defaultSchema };
+  return { hypertables, autoIndexes, autoIndexColumns, continuousAggregates, defaultSchema };
 }
 
 /** What the filter decided about one statement. */
@@ -297,19 +306,38 @@ const RENAME_TO = new RegExp(
 );
 
 /**
- * `CREATE INDEX "name" ON "schema"."table"` — the indexed table.
+ * The `ON <table> [USING m] (<cols>)` tail of a `CREATE INDEX`, matched against the text AFTER the
+ * index name has already been consumed.
  *
- * Postgres forbids qualifying the index name in `CREATE INDEX`: the index is always created in the
- * schema of the TABLE it indexes. Keying it under `defaultSchema` instead meant
- * `CREATE INDEX "readings_time_idx" ON "analytics"."events"` resolved to
- * `public.readings_time_idx` and could collide with a public hypertable's auto-index, silently
- * removing the user's analytics index from their migration.
+ * Anchored with `^` on the remainder rather than scanned from the head of the statement. A lazy
+ * `[\s\S]*?\bON\s+` scan could match an `ON` occurring INSIDE a quoted index name — so
+ * `CREATE INDEX "foo ON _timescaledb_internal.x" ON "analytics"."events" ("ts")` resolved the
+ * user's analytics index into an internal schema and silently filtered it.
+ *
+ * `cols` deliberately refuses to match nested parentheses. An expression index such as
+ * `(lower(name))` therefore yields no column list, and an unparsed definition is treated as
+ * "cannot prove this is the auto index" rather than assumed to be one.
  */
-const CREATE_INDEX_ON = new RegExp(
-  String.raw`^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b[\s\S]*?\bON\s+(?:ONLY\s+)?` +
-    String.raw`(?<table>${QUOTED}(?:\.${QUOTED})*|[^\s(;]+)`,
+const CREATE_INDEX_TAIL = new RegExp(
+  String.raw`^\s*ON\s+(?:ONLY\s+)?(?<table>${QUOTED}(?:\.${QUOTED})*|[^\s(;]+)` +
+    String.raw`(?:\s+USING\s+\w+)?\s*(?:\((?<cols>[^()]*)\))?`,
   'i',
 );
+
+/** Column names from an index column list, stripped of ordering and quoting. */
+function indexColumns(cols: string): string[] {
+  return cols
+    .split(',')
+    .map((c) =>
+      c
+        .trim()
+        .replace(/\s+(?:ASC|DESC)\b/i, '')
+        .replace(/\s+NULLS\s+(?:FIRST|LAST)\b/i, '')
+        .trim(),
+    )
+    .map((c) => (c.startsWith('"') ? parseQualified(c).name : c.toLowerCase()))
+    .filter((c) => c.length > 0);
+}
 
 /** `CREATE TABLE "schema"."name"` — used to spot tables this diff creates. */
 const CREATE_TABLE_TARGET = new RegExp(
@@ -427,12 +455,20 @@ export function classifyTypeormStatement(
   }
 
   const parsed = parseQualified(raw);
+
+  // Parse the CREATE INDEX tail from the text AFTER the index name, never by scanning the whole
+  // statement — an `ON` inside a quoted index name would otherwise be read as the table clause.
+  const head = match.re.exec(sql);
+  const isCreateIndex = match.target === 'index' && /^\s*CREATE\b/i.test(sql);
+  const tail =
+    isCreateIndex && head !== null
+      ? CREATE_INDEX_TAIL.exec(sql.slice(head.index + head[0].length))
+      : null;
+
   // `CREATE INDEX` cannot qualify its index name — Postgres creates the index in the schema of the
   // table being indexed, so that is where the name must be resolved.
   const indexSchema =
-    match.target === 'index' && parsed.schema === undefined
-      ? parseQualified(CREATE_INDEX_ON.exec(sql)?.groups?.['table'] ?? '').schema
-      : undefined;
+    parsed.schema === undefined ? parseQualified(tail?.groups?.['table'] ?? '').schema : undefined;
   const resolved: QualifiedName =
     indexSchema !== undefined ? { schema: indexSchema, name: parsed.name } : parsed;
   const qualified = key(resolved, owned.defaultSchema);
@@ -444,7 +480,11 @@ export function classifyTypeormStatement(
   // Uses RESOLVED, not `parsed`. For `CREATE INDEX "n" ON "_timescaledb_internal"."t"` the index
   // name cannot be qualified, so `parsed.schema` is undefined and this guard silently did not fire
   // — leaving an index creation against a Timescale-owned internal table in the migration.
-  if (resolved.schema !== undefined && INTERNAL_SCHEMAS.has(resolved.schema)) {
+  // `?? owned.defaultSchema` because that is how `key()` resolves an unqualified name. Without it
+  // the two disagreed: with `defaultSchema: '_timescaledb_internal'`, `DROP TABLE "_hyper_1_1_chunk"`
+  // keyed into an internal schema but was classified as ordinary user DDL.
+  const effectiveSchema = resolved.schema ?? owned.defaultSchema;
+  if (INTERNAL_SCHEMAS.has(effectiveSchema)) {
     const internal = INTERNAL_PATTERNS.find((p) => p.re.test(resolved.name));
     return {
       verdict: 'filtered',
@@ -452,7 +492,7 @@ export function classifyTypeormStatement(
       reason:
         internal !== undefined
           ? `is ${internal.what}, created and owned by TimescaleDB`
-          : `lives in ${resolved.schema}, which is TimescaleDB's own schema`,
+          : `lives in ${effectiveSchema}, which is TimescaleDB's own schema`,
     };
   }
 
@@ -482,6 +522,28 @@ export function classifyTypeormStatement(
     match.target === 'index' &&
     (owned.autoIndexes.has(qualified) || hasOwned(owned.autoIndexes, renamed))
   ) {
+    // A CREATE whose name matches a RECONSTRUCTED auto index must also match its DEFINITION.
+    // Nothing stops a user declaring `@Index('readings_time_idx', ['value'])` on a new hypertable:
+    // the desired-state name collides, but the index is theirs. Filtering it by name alone silently
+    // dropped their index and substituted TimescaleDB's. Names that came from the catalog
+    // (`knownAutoIndexes`) are authoritative and skip this check.
+    const expected = owned.autoIndexColumns.get(qualified);
+    if (isCreateIndex && expected !== undefined) {
+      const cols = tail?.groups?.['cols'];
+      const actual = cols === undefined ? undefined : indexColumns(cols);
+      if (actual === undefined || !sameColumns(actual, expected)) {
+        return {
+          verdict: 'unclassified',
+          reason:
+            `${raw} has the name create_hypertable() would generate for the time index on ` +
+            `(${expected.join(', ')}), but this statement defines it on ` +
+            `${actual === undefined ? 'an expression this filter cannot read' : `(${actual.join(', ')})`}. ` +
+            'Keeping it would collide with the index create_hypertable() creates; dropping it would ' +
+            'lose your index. Rename yours to resolve',
+        };
+      }
+    }
+
     return {
       verdict: 'filtered',
       object: raw,
@@ -602,6 +664,11 @@ function renameDestination(
 
 function hasOwned(set: ReadonlySet<string>, qualified: string | undefined): boolean {
   return qualified !== undefined && set.has(qualified);
+}
+
+/** Order matters for an index, so this is a positional comparison, not a set comparison. */
+function sameColumns(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((c, i) => c === b[i]);
 }
 
 /** `{ schema, name }` → the `schema.name` string both sides of a comparison are keyed by. */

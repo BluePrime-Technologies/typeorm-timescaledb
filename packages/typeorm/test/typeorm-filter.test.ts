@@ -55,14 +55,12 @@ const refuses = (sql: string): void => {
 };
 
 describe('timescaleOwnedObjects', () => {
-  it('derives the auto indexes create_hypertable actually creates', () => {
-    // Both verified on timescaledb:2.18.0-pg16 for a hypertable with a space partition: the time
-    // index, plus a composite `(space, time DESC)` index. Note what is NOT derived — a bare
-    // `readings_sensor_id_idx`, which would filter a user's own index of that name.
-    expect([...owned.autoIndexes].sort()).toEqual([
-      'public.readings_sensor_id_time_idx',
-      'public.readings_time_idx',
-    ]);
+  it('reconstructs ONLY the time index, even with a space dimension', () => {
+    // A space partition does NOT imply a composite index — it depends on how the hypertable was
+    // made, which this IR does not record. See the R5 test below for the measurements. Anything
+    // beyond the time index must come from the catalog via `knownAutoIndexes`.
+    expect([...owned.autoIndexes]).toEqual(['public.readings_time_idx']);
+    expect(owned.autoIndexColumns.get('public.readings_time_idx')).toEqual(['time']);
   });
 
   it('keys every owned object by SCHEMA and name, never by bare name', () => {
@@ -504,21 +502,82 @@ describe('review findings (#240)', () => {
     }
   });
 
-  it('R4 P1 — a SPACE dimension gets a second, COMPOSITE auto index', () => {
-    // Verified on timescaledb:2.18.0-pg16. `create_hypertable(..., partitioning_column =>
-    // 'sensor_id')` produced BOTH:
-    //   readings_time_idx            ON readings USING btree ("time" DESC)
-    //   readings_sensor_id_time_idx  ON readings USING btree (sensor_id, "time" DESC)
-    // Deriving only the time index left the composite exposed to TypeORM's DROP.
-    expect([...owned.autoIndexes].sort()).toEqual([
-      'public.readings_sensor_id_time_idx',
-      'public.readings_time_idx',
-    ]);
-    filtered('DROP INDEX "public"."readings_sensor_id_time_idx"');
-
-    // A space dimension still does NOT produce a bare `<table>_<space>_idx`, so that name remains
-    // the user's to own.
+  it('R5 P1 — the composite space index is NOT inferred, because add_dimension does not create it', () => {
+    // Round 4 added a composite `(space, time)` auto index after observing one. Round 5 showed that
+    // observation used the wrong creation path. Measured on timescaledb:2.18.0-pg16:
+    //
+    //   create_hypertable('a','time', partitioning_column=>'sensor_id')
+    //     -> a_time_idx, a_sensor_id_time_idx          (composite CREATED)
+    //   create_hypertable('b', by_range('time')); add_dimension('b', by_hash('sensor_id', 4))
+    //     -> b_time_idx                                (composite NOT created)
+    //
+    // The second is what THIS library emits (core/src/sql/hypertable.ts), so for hypertables it
+    // manages the composite does not exist — and inferring it would filter a user's own index of
+    // that name. Reconstruction covers only what the library itself creates.
+    expect([...owned.autoIndexes]).toEqual(['public.readings_time_idx']);
+    keep('DROP INDEX "public"."readings_sensor_id_time_idx"');
     keep('DROP INDEX "public"."readings_sensor_id_idx"');
+
+    // A caller who DID create the hypertable the other way supplies the real names instead.
+    const fromCatalog = timescaleOwnedObjects(state, {
+      knownAutoIndexes: ['public.readings_time_idx', 'public.readings_sensor_id_time_idx'],
+    });
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_sensor_id_time_idx"', fromCatalog)
+        .verdict,
+    ).toBe('filtered');
+  });
+
+  it('R5 P1 — a user index REUSING the generated name is refused, not silently dropped', () => {
+    // `@Index('readings_time_idx', ['value'])` on a new hypertable collides with the reconstructed
+    // name, but the index is the user's. Filtering by name alone lost it and substituted
+    // TimescaleDB's time index. The name matches but the DEFINITION does not, so this refuses.
+    const d = classifyTypeormStatement(
+      'CREATE INDEX "readings_time_idx" ON "readings" ("value")',
+      owned,
+    );
+    expect(d.verdict).toBe('unclassified');
+    if (d.verdict !== 'unclassified') return;
+    expect(d.reason).toMatch(/defines it on \(value\)/);
+
+    // The genuine auto index — same name, matching definition — is still filtered.
+    filtered('CREATE INDEX "readings_time_idx" ON "readings" USING btree ("time" DESC)');
+    // A definition this filter cannot read is refused rather than assumed to be the auto index.
+    refuses('CREATE INDEX "readings_time_idx" ON "readings" (lower("note"))');
+    // DROP carries no definition, so it stays filtered on the name.
+    filtered('DROP INDEX "public"."readings_time_idx"');
+    // Catalog-supplied names are authoritative: no definition second-guessing.
+    const fromCatalog = timescaleOwnedObjects(state, {
+      knownAutoIndexes: ['public.readings_time_idx'],
+    });
+    expect(
+      classifyTypeormStatement(
+        'CREATE INDEX "readings_time_idx" ON "readings" ("value")',
+        fromCatalog,
+      ).verdict,
+    ).toBe('filtered');
+  });
+
+  it('R5 P2 — the ON clause is found after the index name, not inside it', () => {
+    // A lazy scan matched an `ON` occurring INSIDE a quoted index name, resolving a legitimate
+    // analytics index into an internal schema and filtering it.
+    keep('CREATE INDEX "foo ON _timescaledb_internal.x" ON "analytics"."events" ("ts")');
+    // The real internal case still filters.
+    filtered('CREATE INDEX "plain" ON "_timescaledb_internal"."_hyper_1_1_chunk" ("time")');
+  });
+
+  it('R5 P2 — the internal-schema guard honours defaultSchema', () => {
+    // `key()` applies defaultSchema, so the ownership guard must too; otherwise unqualified DDL
+    // resolving into an internal schema is classified as ordinary user DDL.
+    const internalDefault = timescaleOwnedObjects(
+      { hypertables: [] },
+      { defaultSchema: '_timescaledb_internal' },
+    );
+    expect(classifyTypeormStatement('DROP TABLE "_hyper_1_1_chunk"', internalDefault).verdict).toBe(
+      'filtered',
+    );
+    // The ordinary configuration is unaffected.
+    keep('DROP TABLE "_hyper_1_1_chunk"');
   });
 
   it("R4 P1 — long names use Postgres's COMPONENT-WISE naming, not a tail clip", () => {
