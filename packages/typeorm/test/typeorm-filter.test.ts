@@ -1,0 +1,766 @@
+import { describe, expect, it } from 'vitest';
+import {
+  TimescaleError,
+  TimescaleErrorCode,
+  type SchemaStateIR,
+} from '@blueprime/timescaledb-core';
+import {
+  classifyTypeormStatement,
+  filterTypeormDiff,
+  timescaleOwnedObjects,
+} from '../src/migrations/typeorm-filter.js';
+import type { TypeormDiff } from '../src/migrations/typeorm-diff.js';
+
+/**
+ * Slice 2 of M4.5 (#235) — the protective filter.
+ *
+ * Being wrong here is destructive rather than merely noisy, so these cover BOTH directions:
+ * statements that must be filtered, and statements that must survive untouched. The second half is
+ * the one that matters most — over-filtering silently removes the user's own DDL from a migration
+ * they believe is complete, which is harder to notice than an outright refusal.
+ *
+ * The fixtures are real statement text observed from TypeORM against a live database while
+ * planning this milestone, not invented shapes.
+ */
+const state: SchemaStateIR = {
+  hypertables: [
+    {
+      table: 'public.readings',
+      dimensions: [
+        { column: 'time', kind: 'time', chunkInterval: '1 day' },
+        { column: 'sensor_id', kind: 'space', numPartitions: 4 },
+      ],
+    },
+  ],
+  continuousAggregates: [
+    {
+      viewName: 'public.readings_hourly',
+      source: 'public.readings',
+      hierarchical: false,
+      materializedOnly: false,
+      definition: 'SELECT 1',
+    },
+  ],
+};
+const owned = timescaleOwnedObjects(state);
+
+const keep = (sql: string): void => {
+  expect(classifyTypeormStatement(sql, owned).verdict, sql).toBe('keep');
+};
+const filtered = (sql: string): void => {
+  expect(classifyTypeormStatement(sql, owned).verdict, sql).toBe('filtered');
+};
+const refuses = (sql: string): void => {
+  expect(classifyTypeormStatement(sql, owned).verdict, sql).toBe('unclassified');
+};
+
+describe('timescaleOwnedObjects', () => {
+  it('reconstructs ONLY the time index, even with a space dimension', () => {
+    // A space partition does NOT imply a composite index — it depends on how the hypertable was
+    // made, which this IR does not record. See the R5 test below for the measurements. Anything
+    // beyond the time index must come from the catalog via `knownAutoIndexes`.
+    expect([...owned.autoIndexes]).toEqual(['public.readings_time_idx']);
+    expect(owned.autoIndexColumns.get('public.readings_time_idx')).toEqual(['time']);
+  });
+
+  it('keys every owned object by SCHEMA and name, never by bare name', () => {
+    // Bare-name keying was the P1 in the #240 review: an `analytics.readings` hypertable made a
+    // legitimate `public.readings_time_idx` look owned. See the review-findings block below.
+    expect(owned.hypertables.has('public.readings')).toBe(true);
+    expect(owned.continuousAggregates.has('public.readings_hourly')).toBe(true);
+    expect(owned.hypertables.has('readings')).toBe(false);
+    expect(owned.defaultSchema).toBe('public');
+  });
+});
+
+describe('name resolution', () => {
+  it('reads the schema as the part before the name, not the first part', () => {
+    // A three-part `"db"."_timescaledb_internal"."x"` must resolve the SCHEMA, not the catalog —
+    // otherwise the internal-schema check silently stops firing on qualified names.
+    filtered('DROP TABLE "db"."_timescaledb_internal"."x"');
+    keep('DROP TABLE "_timescaledb_internal"."public"."x"');
+  });
+
+  it('reads the target when no space separates it from the column list', () => {
+    keep('CREATE TABLE "users"("id" SERIAL)');
+    filtered('CREATE INDEX "readings_time_idx"ON "readings" ("time")');
+  });
+
+  it('tolerates a trailing semicolon', () => {
+    filtered('DROP INDEX "public"."readings_time_idx";');
+    keep('DROP TABLE "users";');
+  });
+});
+
+describe('classify — must FILTER (TimescaleDB owns these)', () => {
+  it('the auto time index, the statement that motivated this whole slice', () => {
+    // Verbatim from a live diff. Qualified on DROP, bare on CREATE — both must match.
+    filtered('DROP INDEX "public"."readings_time_idx"');
+    filtered('CREATE INDEX "readings_time_idx" ON "readings" USING btree ("time")');
+  });
+
+  it('chunks, compressed chunks and materialization internals — in their own schema', () => {
+    // TimescaleDB places all of these in `_timescaledb_internal`, never in a user schema.
+    filtered('DROP TABLE "_timescaledb_internal"."_hyper_1_1_chunk"');
+    filtered('DROP TABLE "_timescaledb_internal"."_hyper_12_34_chunk"');
+    filtered('DROP TABLE "_timescaledb_internal"."compress_hyper_2_3_chunk"');
+    filtered('DROP TABLE "_timescaledb_internal"."_materialized_hypertable_2"');
+    filtered('DROP VIEW "_timescaledb_internal"."_partial_view_2"');
+    filtered('DROP VIEW "_timescaledb_internal"."_direct_view_2"');
+  });
+
+  it('names the specific internal object in its reason, not just the schema', () => {
+    const d = classifyTypeormStatement(
+      'DROP TABLE "_timescaledb_internal"."_hyper_1_1_chunk"',
+      owned,
+    );
+    expect(d.verdict).toBe('filtered');
+    if (d.verdict !== 'filtered') return;
+    expect(d.reason).toMatch(/hypertable chunk/);
+  });
+
+  it('anything in a TimescaleDB schema', () => {
+    filtered('ALTER TABLE "_timescaledb_catalog"."hypertable" ADD "x" text');
+    filtered('DROP TABLE "_timescaledb_config"."bgw_job"');
+  });
+
+  it('a continuous aggregate — this engine diffs those structurally', () => {
+    filtered('DROP VIEW "readings_hourly"');
+    filtered('DROP MATERIALIZED VIEW "public"."readings_hourly"');
+  });
+
+  it('an ALTER that RENAMES an owned object, not just a DROP', () => {
+    // Renaming the time index breaks it as surely as dropping it, so the ALTER forms are classified
+    // by object kind rather than waved through as "not destructive".
+    filtered('ALTER INDEX "public"."readings_time_idx" RENAME TO "IDX_abc"');
+    filtered('ALTER MATERIALIZED VIEW "readings_hourly" RENAME TO "old_rollup"');
+  });
+});
+
+describe('classify — must KEEP (over-filtering is the silent failure)', () => {
+  it("the hypertable's BASE TABLE, which is TypeORM's to manage", () => {
+    // The entire point of composing. Filtering these would break the milestone.
+    keep('ALTER TABLE "readings" ADD "note" text');
+    keep('ALTER TABLE "public"."readings" ALTER COLUMN "value" SET NOT NULL');
+    keep('CREATE TABLE "readings" ("time" TIMESTAMPTZ NOT NULL)');
+  });
+
+  it("a user's own index on a hypertable — only the auto time index is Timescale's", () => {
+    keep('CREATE INDEX "readings_sensor_id_idx" ON "readings" ("sensor_id")');
+    keep('DROP INDEX "public"."readings_value_idx"');
+  });
+
+  it('a TABLE that merely SHARES a name with an owned index or aggregate', () => {
+    // The owned-name checks are scoped to the matching object kind on purpose. An index name and a
+    // table name live in the same namespace in Postgres but a user can still own `readings_hourly`
+    // as a plain table, and `DROP TABLE` of it is TypeORM's business. Without the kind guard these
+    // would be filtered — the user's DDL silently vanishing from a migration they think is whole.
+    // (Caught by mutation testing: removing `match.target === 'index'` left every test green.)
+    keep('DROP TABLE "readings_time_idx"');
+    keep('CREATE TABLE "readings_hourly" ("id" SERIAL)');
+    keep('ALTER TABLE "readings_hourly" ADD "x" text');
+  });
+
+  it('an unrelated table, view, and its indexes', () => {
+    keep('CREATE TABLE "users" ("id" SERIAL PRIMARY KEY)');
+    keep('DROP TABLE "users"');
+    keep('CREATE VIEW "user_summary" AS SELECT 1');
+  });
+
+  it("TypeORM's own bookkeeping", () => {
+    keep('INSERT INTO "typeorm_metadata"("database", "schema") VALUES (DEFAULT, $1)');
+    keep('DELETE FROM "typeorm_metadata" WHERE "type" = $1');
+    // Appears whenever the database query-result cache is enabled — identical to
+    // `migration:generate`, so it must be classified rather than refused. (#236 review.)
+    keep('CREATE TABLE "query-result-cache" ("id" SERIAL NOT NULL)');
+  });
+
+  it('object kinds with no single target', () => {
+    keep('CREATE TYPE "public"."mood" AS ENUM (\'a\')');
+    keep('DROP SEQUENCE "users_id_seq"');
+    keep('COMMENT ON COLUMN "readings"."value" IS $1');
+  });
+
+  it('the ALTER forms TypeORM really emits — enum changes above all', () => {
+    // Checked against every DDL verb PostgresQueryRunner emits: ALTER TYPE (8 call sites),
+    // ALTER INDEX (8), ALTER SEQUENCE (4). An earlier draft omitted all three, which would have
+    // REFUSED composition for any entity with an enum column, since `ALTER TYPE ... RENAME TO` is
+    // how TypeORM performs every enum change.
+    keep('ALTER TYPE "public"."users_role_enum" RENAME TO "users_role_enum_old"');
+    keep('ALTER SEQUENCE "users_id_seq" OWNED BY "users"."id"');
+    keep('ALTER INDEX "users_email_idx" RENAME TO "IDX_abc123"');
+    keep('ALTER VIEW "user_summary" RENAME TO "user_overview"');
+  });
+});
+
+describe('classify — must REFUSE rather than guess', () => {
+  it('an unrecognised statement form', () => {
+    // Neither provably safe to keep nor safe to drop. The allow-list is deliberate: this repo has
+    // twice shipped a bug from an allow-list quietly missing an entry.
+    refuses('GRANT SELECT ON "readings" TO "app_reader"');
+    refuses('CLUSTER "readings" USING "readings_time_idx"');
+    refuses('VACUUM FULL "readings"');
+  });
+
+  it('destructive verbs the schema builder never emits stay OUT of the allow-list', () => {
+    // `TRUNCATE TABLE` comes only from queryRunner.clearTable(), and CREATE/DROP DATABASE never
+    // appear in a schema diff. Leaving them unrecognised is deliberate, not an oversight — they
+    // have no business in a generated migration, so meeting one means something is badly wrong.
+    refuses('TRUNCATE TABLE "readings"');
+    refuses('DROP DATABASE "app"');
+  });
+
+  it('DROP TABLE of a hypertable — both engines claim it, so neither decides', () => {
+    const d = classifyTypeormStatement('DROP TABLE "readings"', owned);
+    expect(d.verdict).toBe('unclassified');
+    if (d.verdict !== 'unclassified') return;
+    expect(d.reason).toMatch(/never drops a hypertable/);
+  });
+});
+
+/**
+ * The five findings from the Codex review of #240. Every one was verified against the code before
+ * being accepted, and every one was real — so each gets a test that fails without its fix.
+ */
+describe('review findings (#240)', () => {
+  it('P1 — ownership is schema-qualified, so a same-named object elsewhere is untouched', () => {
+    // With bare-name matching, an `analytics.readings` hypertable made a perfectly legitimate
+    // `DROP INDEX "public"."readings_time_idx"` look Timescale-owned and vanish from the user's
+    // migration. Over-filtering is the silent direction, which makes this the worst of the five.
+    const elsewhere = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: 'analytics.readings',
+          dimensions: [{ column: 'time', kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+      continuousAggregates: [
+        {
+          viewName: 'analytics.readings_hourly',
+          source: 'analytics.readings',
+          hierarchical: false,
+          materializedOnly: false,
+          definition: 'SELECT 1',
+        },
+      ],
+    });
+
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_time_idx"', elsewhere).verdict,
+    ).toBe('keep');
+    expect(classifyTypeormStatement('DROP TABLE "public"."readings"', elsewhere).verdict).toBe(
+      'keep',
+    );
+    expect(
+      classifyTypeormStatement('DROP VIEW "public"."readings_hourly"', elsewhere).verdict,
+    ).toBe('keep');
+
+    // ...while the genuinely owned ones in `analytics` still are.
+    expect(
+      classifyTypeormStatement('DROP INDEX "analytics"."readings_time_idx"', elsewhere).verdict,
+    ).toBe('filtered');
+    expect(classifyTypeormStatement('DROP TABLE "analytics"."readings"', elsewhere).verdict).toBe(
+      'unclassified',
+    );
+  });
+
+  it('P1 — an unqualified name resolves against the configured default schema', () => {
+    const inApp = timescaleOwnedObjects(
+      {
+        hypertables: [
+          {
+            table: 'app.readings',
+            dimensions: [{ column: 'time', kind: 'time', chunkInterval: '1 day' }],
+          },
+        ],
+      },
+      { defaultSchema: 'app' },
+    );
+    expect(classifyTypeormStatement('DROP INDEX "readings_time_idx"', inApp).verdict).toBe(
+      'filtered',
+    );
+    expect(classifyTypeormStatement('DROP INDEX "public"."readings_time_idx"', inApp).verdict).toBe(
+      'keep',
+    );
+  });
+
+  // NOTE: the round-2 "truncate the finished string at 63 bytes" tests lived here and have been
+  // REMOVED, not merely edited. They asserted a name Postgres never produces. Round 4 showed the
+  // server shortens name COMPONENTS instead, so the correct expectations — verified against a live
+  // container — are in "R4 P1 — long names use Postgres's COMPONENT-WISE naming" below. Leaving the
+  // old assertions alongside the new ones would have encoded two contradictory beliefs about the
+  // same function.
+
+  it('P1 — a caller with real catalog names can supply them, sidestepping collision suffixes', () => {
+    const withKnown = timescaleOwnedObjects(
+      {
+        hypertables: [
+          {
+            table: 'public.readings',
+            dimensions: [{ column: 'time', kind: 'time', chunkInterval: '1 day' }],
+          },
+        ],
+      },
+      { knownAutoIndexes: ['public.readings_time_idx1'] },
+    );
+    // Postgres appends a suffix when the truncated name is taken; reconstruction cannot guess it,
+    // so the caller supplies it rather than this module inventing one and over-filtering.
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_time_idx1"', withKnown).verdict,
+    ).toBe('filtered');
+  });
+
+  it('P1 — allow-listed schema/extension verbs have their TARGET inspected, not waved through', () => {
+    // The earlier draft short-circuited these to `keep` without reading the target, so a composed
+    // migration could destroy the very schema this module declares entirely Timescale-owned.
+    filtered('DROP SCHEMA "_timescaledb_internal" CASCADE');
+    filtered('DROP SCHEMA IF EXISTS "_timescaledb_catalog"');
+    filtered('DROP EXTENSION "timescaledb"');
+    filtered('DROP EXTENSION IF EXISTS timescaledb CASCADE');
+    filtered('CREATE EXTENSION IF NOT EXISTS "timescaledb_toolkit"');
+
+    // A user's own schema and any other extension remain TypeORM's business.
+    keep('CREATE SCHEMA "analytics"');
+    keep('DROP SCHEMA "reporting" CASCADE');
+    keep('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
+  });
+
+  it('P1 — both ends of a rename get the SAME disposition', () => {
+    // TypeORM's down statement inverts the rename, naming the owned object as the DESTINATION.
+    // Filtering only the up statement left a down migration referencing an index never created.
+    filtered('ALTER INDEX "readings_time_idx" RENAME TO "IDX_abc"');
+    filtered('ALTER INDEX "IDX_abc" RENAME TO "readings_time_idx"');
+    filtered('ALTER MATERIALIZED VIEW "old_rollup" RENAME TO "readings_hourly"');
+
+    // A rename between two names this engine does not own stays TypeORM's.
+    keep('ALTER INDEX "users_email_idx" RENAME TO "IDX_xyz"');
+
+    // The destination inherits the source's schema, so a rename in another schema is untouched.
+    keep('ALTER INDEX "other"."IDX_abc" RENAME TO "readings_time_idx"');
+  });
+
+  it('R2 P1 — catalog names REPLACE reconstruction, they do not union with it', () => {
+    // Postgres only appends a collision suffix because the reconstructed name was already taken —
+    // by a USER's index. Unioning would filter both the real auto index (`..._time_idx1`) AND the
+    // user's own `..._time_idx`, silently deleting their DDL. The contract is replacement.
+    const withCatalog = timescaleOwnedObjects(
+      {
+        hypertables: [
+          {
+            table: 'public.readings',
+            dimensions: [{ column: 'time', kind: 'time', chunkInterval: '1 day' }],
+          },
+        ],
+      },
+      { knownAutoIndexes: ['public.readings_time_idx1'] },
+    );
+
+    expect([...withCatalog.autoIndexes]).toEqual(['public.readings_time_idx1']);
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_time_idx1"', withCatalog).verdict,
+    ).toBe('filtered');
+    // The user's index of the reconstructed name must SURVIVE.
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_time_idx"', withCatalog).verdict,
+    ).toBe('keep');
+  });
+
+  it('R2 P2 — internal NAMES only confer ownership inside an internal SCHEMA', () => {
+    // TimescaleDB puts chunks and materialization internals exclusively in its own schemas, so a
+    // user entity that happens to match the convention is theirs, and filtering it would silently
+    // remove legitimate TypeORM DDL.
+    keep('DROP TABLE "app"."_hyper_1_1_chunk"');
+    keep('DROP TABLE "_hyper_12_34_chunk"'); // unqualified → resolves to public
+    keep('DROP TABLE "public"."_materialized_hypertable_2"');
+    keep('DROP VIEW "app"."_partial_view_2"');
+
+    filtered('DROP TABLE "_timescaledb_internal"."_hyper_1_1_chunk"');
+  });
+
+  it('P2 — doubled quotes inside an identifier are one escaped quote, not a terminator', () => {
+    // `"a""b"` is the single identifier `a"b`. Stopping at the inner quote parsed
+    // `"readings_time_idx""backup"` as the owned index and filtered a distinct user index.
+    keep('DROP INDEX "readings_time_idx""backup"');
+    filtered('DROP INDEX "readings_time_idx"');
+  });
+
+  it('P2 — a quoted identifier may contain a dot without becoming qualified', () => {
+    keep('DROP TABLE "public.readings"'); // one identifier literally named `public.readings`
+    refuses('DROP TABLE "public"."readings"'); // genuinely qualified — the owned hypertable
+  });
+
+  it('R3 P1 — catalog names keep their CASE; only SQL tokens fold', () => {
+    // SchemaStateIR holds raw catalog values, so `public.Readings` means a table genuinely named
+    // `Readings`. Folding it lower-cased the owned entry, which then never matched the quoted
+    // identifier TypeORM emits — and the destructive DROP survived.
+    const mixed = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: 'public.Readings',
+          dimensions: [{ column: 'Time', kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+      continuousAggregates: [
+        {
+          viewName: 'public.ReadingsHourly',
+          source: 'public.Readings',
+          hierarchical: false,
+          materializedOnly: false,
+          definition: 'SELECT 1',
+        },
+      ],
+    });
+
+    expect([...mixed.autoIndexes]).toEqual(['public.Readings_Time_idx']);
+    expect(classifyTypeormStatement('DROP INDEX "public"."Readings_Time_idx"', mixed).verdict).toBe(
+      'filtered',
+    );
+    expect(classifyTypeormStatement('DROP VIEW "public"."ReadingsHourly"', mixed).verdict).toBe(
+      'filtered',
+    );
+    // A differently-cased name is a DIFFERENT object in Postgres, so it must survive.
+    expect(classifyTypeormStatement('DROP INDEX "public"."readings_time_idx"', mixed).verdict).toBe(
+      'keep',
+    );
+  });
+
+  it("R3 P1 — CREATE INDEX resolves its name in the INDEXED TABLE's schema", () => {
+    // Postgres forbids qualifying the index name; the index lands in the table's schema. Keying it
+    // under defaultSchema collided with a public hypertable's auto-index and silently removed the
+    // user's index in another schema.
+    keep('CREATE INDEX "readings_time_idx" ON "analytics"."events" ("ts")');
+    // ...while the same name on a table in the owned schema is still the auto index.
+    filtered('CREATE INDEX "readings_time_idx" ON "public"."readings" ("time")');
+    filtered('CREATE INDEX "readings_time_idx" ON "readings" USING btree ("time")');
+  });
+
+  it("R3 P1 — DROP TABLE in `down` that inverts this diff's own CREATE TABLE is ordinary", () => {
+    // Building the owned set from DESIRED state means a not-yet-existing hypertable is "owned".
+    // TypeORM's initial diff is CREATE TABLE up / DROP TABLE down, so refusing that down statement
+    // blocked the first composed migration for EVERY new hypertable — the milestone's main case.
+    const initial: TypeormDiff = {
+      up: [
+        { sql: 'CREATE TABLE "readings" ("time" TIMESTAMPTZ NOT NULL)' },
+        { sql: 'CREATE INDEX "readings_sensor_id_idx" ON "readings" ("sensor_id")' },
+      ],
+      down: [
+        { sql: 'DROP INDEX "public"."readings_sensor_id_idx"' },
+        { sql: 'DROP TABLE "readings"' },
+      ],
+    };
+
+    const out = filterTypeormDiff(initial, owned);
+    expect(out.diff.down.map((s) => s.sql)).toContain('DROP TABLE "readings"');
+    expect(out.filtered).toEqual([]);
+  });
+
+  it('R3 P1 — but dropping a hypertable this diff did NOT create is still refused', () => {
+    // The exception is narrow: it applies only to a table created by the SAME diff. Removing an
+    // existing hypertable is still the destructive conflict that must be resolved by hand.
+    const removal: TypeormDiff = { up: [{ sql: 'DROP TABLE "readings"' }], down: [] };
+    expect(() => filterTypeormDiff(removal, owned)).toThrow(/never drops a hypertable/);
+
+    // ...and creating a DIFFERENT table does not license the drop either.
+    const unrelated: TypeormDiff = {
+      up: [{ sql: 'CREATE TABLE "users" ("id" SERIAL)' }],
+      down: [{ sql: 'DROP TABLE "readings"' }],
+    };
+    expect(() => filterTypeormDiff(unrelated, owned)).toThrow(/never drops a hypertable/);
+  });
+
+  it('R3 P2 — RENAME TO is read only as a real clause, not from a string literal', () => {
+    // A free text scan matched inside literals and comments, so a legitimate view whose body
+    // mentions the phrase was filtered as a rename onto the owned aggregate.
+    // These are worded so that an UNANCHORED `\bRENAME\s+TO\b` scan really does match: a bare word
+    // token sits immediately before the phrase. An earlier version of this test used
+    // `SELECT 'RENAME TO ...'`, which passed for the wrong reason — the apostrophe alone defeated
+    // the naive scan, so the anchor was never exercised. Mutation testing caught that.
+    keep(`CREATE VIEW "notes" AS SELECT 1 -- do not RENAME TO "readings_hourly"`);
+    keep(`CREATE VIEW "notes" AS SELECT 'please RENAME TO "readings_hourly"' AS hint`);
+    keep(`CREATE VIEW "notes" AS SELECT 'x' AS msg RENAME TO "readings_hourly"`);
+    // The genuine clause still classifies.
+    filtered('ALTER INDEX "IDX_abc" RENAME TO "readings_time_idx"');
+  });
+
+  it('R3 P2 — every schema the timescaledb extension owns is protected', () => {
+    // Enumerated from a live 2.18.0 container via pg_depend, not from memory. That found
+    // `_timescaledb_functions` AND `_timescaledb_debug` missing; the review named only the first.
+    filtered('DROP SCHEMA "_timescaledb_functions" CASCADE');
+    filtered('DROP SCHEMA "_timescaledb_debug" CASCADE');
+    filtered('DROP TABLE "_timescaledb_functions"."x"');
+    for (const s of [
+      '_timescaledb_cache',
+      '_timescaledb_catalog',
+      '_timescaledb_config',
+      '_timescaledb_debug',
+      '_timescaledb_functions',
+      '_timescaledb_internal',
+      'timescaledb_experimental',
+      'timescaledb_information',
+    ]) {
+      filtered(`ALTER TABLE "${s}"."thing" ADD "c" text`);
+    }
+  });
+
+  it('R5 P1 — the composite space index is NOT inferred, because add_dimension does not create it', () => {
+    // Round 4 added a composite `(space, time)` auto index after observing one. Round 5 showed that
+    // observation used the wrong creation path. Measured on timescaledb:2.18.0-pg16:
+    //
+    //   create_hypertable('a','time', partitioning_column=>'sensor_id')
+    //     -> a_time_idx, a_sensor_id_time_idx          (composite CREATED)
+    //   create_hypertable('b', by_range('time')); add_dimension('b', by_hash('sensor_id', 4))
+    //     -> b_time_idx                                (composite NOT created)
+    //
+    // The second is what THIS library emits (core/src/sql/hypertable.ts), so for hypertables it
+    // manages the composite does not exist — and inferring it would filter a user's own index of
+    // that name. Reconstruction covers only what the library itself creates.
+    expect([...owned.autoIndexes]).toEqual(['public.readings_time_idx']);
+    keep('DROP INDEX "public"."readings_sensor_id_time_idx"');
+    keep('DROP INDEX "public"."readings_sensor_id_idx"');
+
+    // A caller who DID create the hypertable the other way supplies the real names instead.
+    const fromCatalog = timescaleOwnedObjects(state, {
+      knownAutoIndexes: ['public.readings_time_idx', 'public.readings_sensor_id_time_idx'],
+    });
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_sensor_id_time_idx"', fromCatalog)
+        .verdict,
+    ).toBe('filtered');
+  });
+
+  it('R5 P1 — a user index REUSING the generated name is refused, not silently dropped', () => {
+    // `@Index('readings_time_idx', ['value'])` on a new hypertable collides with the reconstructed
+    // name, but the index is the user's. Filtering by name alone lost it and substituted
+    // TimescaleDB's time index. The name matches but the DEFINITION does not, so this refuses.
+    const d = classifyTypeormStatement(
+      'CREATE INDEX "readings_time_idx" ON "readings" ("value")',
+      owned,
+    );
+    expect(d.verdict).toBe('unclassified');
+    if (d.verdict !== 'unclassified') return;
+    expect(d.reason).toMatch(/defines it on \(value\)/);
+
+    // R6 P1 — the column list alone is not the definition. A UNIQUE or partial index on the SAME
+    // column is a different index, and matching columns made it look owned.
+    refuses('CREATE UNIQUE INDEX "readings_time_idx" ON "readings" ("time")');
+    refuses('CREATE INDEX "readings_time_idx" ON "readings" ("time") WHERE "value" > 0');
+    refuses('CREATE INDEX "readings_time_idx" ON "readings" USING hash ("time")');
+    refuses('CREATE INDEX "readings_time_idx" ON "readings" ("time") INCLUDE ("value")');
+
+    // Explicit ordering refuses too — but assert the REASON, not just the verdict. Without the
+    // ordering guard these still refuse (the parse yields a garbled column), so only the message
+    // distinguishes the two paths, and a verdict-only test left the guard unpinned under mutation.
+    for (const sql of [
+      'CREATE INDEX "readings_time_idx" ON "readings" ("time" ASC)',
+      'CREATE INDEX "readings_time_idx" ON "readings" ("time" NULLS FIRST)',
+    ]) {
+      const ordered = classifyTypeormStatement(sql, owned);
+      expect(ordered.verdict, sql).toBe('unclassified');
+      if (ordered.verdict !== 'unclassified') continue;
+      expect(ordered.reason, sql).toMatch(/ordering this filter cannot read/);
+    }
+
+    // A trailing semicolon is not an "extra clause".
+    filtered('CREATE INDEX "readings_time_idx" ON "readings" ("time");');
+
+    // The genuine auto index — same name, matching definition — is still filtered.
+    filtered('CREATE INDEX "readings_time_idx" ON "readings" USING btree ("time" DESC)');
+    // A definition this filter cannot read is refused rather than assumed to be the auto index.
+    refuses('CREATE INDEX "readings_time_idx" ON "readings" (lower("note"))');
+    // DROP carries no definition, so it stays filtered on the name.
+    filtered('DROP INDEX "public"."readings_time_idx"');
+    // Catalog-supplied names are authoritative: no definition second-guessing.
+    const fromCatalog = timescaleOwnedObjects(state, {
+      knownAutoIndexes: ['public.readings_time_idx'],
+    });
+    expect(
+      classifyTypeormStatement(
+        'CREATE INDEX "readings_time_idx" ON "readings" ("value")',
+        fromCatalog,
+      ).verdict,
+    ).toBe('filtered');
+  });
+
+  it('R5 P2 — the ON clause is found after the index name, not inside it', () => {
+    // A lazy scan matched an `ON` occurring INSIDE a quoted index name, resolving a legitimate
+    // analytics index into an internal schema and filtering it.
+    keep('CREATE INDEX "foo ON _timescaledb_internal.x" ON "analytics"."events" ("ts")');
+    // The real internal case still filters.
+    filtered('CREATE INDEX "plain" ON "_timescaledb_internal"."_hyper_1_1_chunk" ("time")');
+  });
+
+  it('R5 P2 — the internal-schema guard honours defaultSchema', () => {
+    // `key()` applies defaultSchema, so the ownership guard must too; otherwise unqualified DDL
+    // resolving into an internal schema is classified as ordinary user DDL.
+    const internalDefault = timescaleOwnedObjects(
+      { hypertables: [] },
+      { defaultSchema: '_timescaledb_internal' },
+    );
+    expect(classifyTypeormStatement('DROP TABLE "_hyper_1_1_chunk"', internalDefault).verdict).toBe(
+      'filtered',
+    );
+    // The ordinary configuration is unaffected.
+    keep('DROP TABLE "_hyper_1_1_chunk"');
+  });
+
+  it("R4 P1 — long names use Postgres's COMPONENT-WISE naming, not a tail clip", () => {
+    // The round-2 truncation fix was wrong, and this is the evidence that proved it. Measured on
+    // timescaledb:2.18.0-pg16 with this exact table and column:
+    //   constructed : sensor_readings_..._array_observed_at_utc_timestamp_value_idx  (89 chars)
+    //   naive clip  : sensor_readings_from_the_northern_field_station_array_observed_
+    //   ACTUAL      : sensor_readings_from_the_nort_observed_at_utc_timestamp_val_idx
+    // Postgres shortens the COMPONENTS, preferring the longer one, and keeps the `_idx` label.
+    const table = 'sensor_readings_from_the_northern_field_station_array';
+    const column = 'observed_at_utc_timestamp_value';
+    const actual = 'sensor_readings_from_the_nort_observed_at_utc_timestamp_val_idx';
+    expect(actual.length).toBeLessThanOrEqual(63);
+
+    const long = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: `public.${table}`,
+          dimensions: [{ column, kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+    });
+
+    expect([...long.autoIndexes]).toEqual([`public.${actual}`]);
+    expect(classifyTypeormStatement(`DROP INDEX "public"."${actual}"`, long).verdict).toBe(
+      'filtered',
+    );
+    // The naive tail clip must NOT be treated as owned — it is not a real object.
+    const naive = `${table}_${column}_idx`.slice(0, 63);
+    expect(classifyTypeormStatement(`DROP INDEX "public"."${naive}"`, long).verdict).toBe('keep');
+  });
+
+  it('R4 P1 — component truncation still clips on a character boundary', () => {
+    const column = 'é'.repeat(40); // 80 bytes
+    const long = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: 'public.t',
+          dimensions: [{ column, kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+    });
+    const [only] = [...long.autoIndexes];
+    const bare = only!.slice('public.'.length);
+    expect(new TextEncoder().encode(bare).length).toBeLessThanOrEqual(63);
+    expect(bare).not.toContain('�');
+    expect(bare.endsWith('_idx')).toBe(true);
+  });
+
+  it('R4 P2 — an index CREATED on an internal table is filtered via its RESOLVED schema', () => {
+    // The index name cannot be qualified in CREATE INDEX, so `parsed.schema` is undefined here and
+    // the internal-schema guard silently did not fire.
+    filtered('CREATE INDEX "whatever" ON "_timescaledb_internal"."_hyper_1_1_chunk" ("time")');
+    filtered('CREATE INDEX "whatever" ON "_timescaledb_catalog"."hypertable" ("id")');
+    keep('CREATE INDEX "whatever" ON "public"."users" ("id")');
+  });
+
+  it('R7 P2 — COMMENT ON has its TARGET inspected, including the COLUMN form', () => {
+    // Treating every COMMENT ON as targetless let a comment on extension-owned metadata through.
+    // The COLUMN form names the column LAST, so its schema sits one component further left than
+    // in any other statement — getting that wrong would read `hypertable` as the schema.
+    filtered(`COMMENT ON COLUMN "_timescaledb_catalog"."hypertable"."table_name" IS 'x'`);
+    filtered(`COMMENT ON TABLE "_timescaledb_catalog"."hypertable" IS 'x'`);
+
+    // A user's own comments are untouched — this is the over-filtering direction to protect.
+    keep(`COMMENT ON COLUMN "public"."readings"."value" IS 'x'`);
+    keep(`COMMENT ON COLUMN "readings"."value" IS $1`);
+    keep(`COMMENT ON TABLE "readings" IS 'sensor data'`);
+  });
+
+  it('R7 P2 — TRIGGER and FUNCTION DDL refuses, since TypeORM never emits it', () => {
+    // These were allow-listed on an assumption. Grepping PostgresQueryRunner for trigger/function
+    // DDL returns ZERO matches, and keeping them meant `DROP TRIGGER "x" ON <internal table>` was
+    // waved through on the unqualified trigger name — ignoring the `ON <table>` that decides
+    // ownership. Refusing a form TypeORM cannot produce costs nothing real.
+    refuses('DROP TRIGGER "x" ON "_timescaledb_internal"."t"');
+    refuses('CREATE TRIGGER "x" BEFORE INSERT ON "readings" EXECUTE FUNCTION f()');
+    refuses('DROP FUNCTION "public"."f"()');
+
+    // TYPE and SEQUENCE stay allow-listed — TypeORM emits those.
+    keep('CREATE TYPE "public"."mood" AS ENUM (\'a\')');
+    keep('DROP SEQUENCE "users_id_seq"');
+  });
+
+  it('R7 P2 — the toolkit-owned schema is protected too', () => {
+    // `toolkit_experimental` is owned by timescaledb_toolkit, not timescaledb, so the earlier
+    // enumeration missed it. Confirmed on a timescaledb-ha image with the toolkit installed:
+    // `timescaledb_toolkit -> toolkit_experimental`. The CI matrix runs a toolkit leg.
+    filtered('DROP SCHEMA "toolkit_experimental" CASCADE');
+    filtered('DROP TABLE "toolkit_experimental"."thing"');
+    filtered('ALTER TABLE "toolkit_experimental"."thing" ADD "c" text');
+  });
+
+  it('folds unquoted identifiers to lower case, as Postgres does', () => {
+    filtered('DROP INDEX public.READINGS_TIME_IDX');
+    refuses('DROP TABLE READINGS');
+  });
+});
+
+describe('filterTypeormDiff', () => {
+  const diff: TypeormDiff = {
+    up: [
+      { sql: 'DROP INDEX "public"."readings_time_idx"' },
+      { sql: 'ALTER TABLE "readings" ADD "note" text' },
+    ],
+    down: [
+      { sql: 'ALTER TABLE "readings" DROP COLUMN "note"' },
+      { sql: 'CREATE INDEX "readings_time_idx" ON "readings" USING btree ("time")' },
+    ],
+  };
+
+  it('removes Timescale-owned statements and keeps the rest, on BOTH sides', () => {
+    const out = filterTypeormDiff(diff, owned);
+    expect(out.diff.up.map((s) => s.sql)).toEqual(['ALTER TABLE "readings" ADD "note" text']);
+    expect(out.diff.down.map((s) => s.sql)).toEqual(['ALTER TABLE "readings" DROP COLUMN "note"']);
+  });
+
+  it('REPORTS what it removed — never a silent drop', () => {
+    const out = filterTypeormDiff(diff, owned);
+    expect(out.filtered).toHaveLength(2);
+    expect(out.filtered.map((f) => f.side)).toEqual(['up', 'down']);
+    expect(out.filtered[0]?.object).toBe('"public"."readings_time_idx"');
+    expect(out.filtered[0]?.reason).toMatch(/create_hypertable/);
+  });
+
+  it('leaves a clean diff untouched and reports nothing', () => {
+    const clean: TypeormDiff = { up: [{ sql: 'CREATE TABLE "users" ()' }], down: [] };
+    const out = filterTypeormDiff(clean, owned);
+    expect(out.diff).toEqual(clean);
+    expect(out.filtered).toEqual([]);
+  });
+
+  it('preserves bound parameters through the filter', () => {
+    const withParams: TypeormDiff = {
+      up: [{ sql: 'INSERT INTO "typeorm_metadata"("schema") VALUES ($1)', parameters: ['public'] }],
+      down: [],
+    };
+    expect(filterTypeormDiff(withParams, owned).diff.up[0]?.parameters).toEqual(['public']);
+  });
+
+  it('throws on an unclassified statement, naming it and the side', () => {
+    const bad: TypeormDiff = { up: [], down: [{ sql: 'GRANT SELECT ON "readings" TO "r"' }] };
+    try {
+      filterTypeormDiff(bad, owned);
+      throw new Error('expected a throw');
+    } catch (e) {
+      const err = e as TimescaleError;
+      expect(err).toBeInstanceOf(TimescaleError);
+      expect(err.code).toBe(TimescaleErrorCode.INVALID_ARGUMENT);
+      expect(err.context).toMatchObject({ side: 'down' });
+      expect(err.message).toMatch(/GRANT SELECT/);
+    }
+  });
+
+  it("'strict' refuses what 'filter' would have dropped, and says how to proceed", () => {
+    expect(() => filterTypeormDiff(diff, owned, { mode: 'strict' })).toThrow(TimescaleError);
+    expect(() => filterTypeormDiff(diff, owned, { mode: 'strict' })).toThrow(
+      /strict mode.*'filter' mode/s,
+    );
+    // ...while the default still composes.
+    expect(filterTypeormDiff(diff, owned).filtered).toHaveLength(2);
+  });
+});
