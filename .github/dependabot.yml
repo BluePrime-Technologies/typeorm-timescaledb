@@ -34,6 +34,13 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: 'chore(deps)'
+    # Only widen a manifest range when the new version does not already satisfy it. The default
+    # (`auto`) rewrites the range too, which for a PUBLISHED package silently narrows what
+    # consumers may install: #238 took `@blueprime/timescaledb-core`'s `"zod": "^4.0.0"` to
+    # `"^4.5.4"` even though ^4.0.0 already admitted 4.5.4, forcing every downstream project onto
+    # the newer zod for no reason. Lockfile-only bumps still arrive; they just stop editing the
+    # contract.
+    versioning-strategy: increase-if-necessary
     # Upgrades that are BLOCKED BY SOMETHING ELSE, not merely unreviewed. Each was proposed,
     # attempted, and demonstrated to break a support claim this repo makes and tests (see #207);
     # without these entries Dependabot re-proposes them every week and the dev-tooling group goes
@@ -58,6 +65,25 @@ updates:
       - dependency-name: 'prisma'
         update-types: ['version-update:semver-major']
       - dependency-name: '@prisma/client'
+        update-types: ['version-update:semver-major']
+
+      # NestJS 12 in devDependencies while packages/typeorm ships
+      # `peerDependencies: { "@nestjs/common": "^10.0.0 || ^11.0.0" }` means the behavioural suite
+      # (packages/typeorm/test/nestjs.test.ts) would exercise ONLY a major we reject, while the two
+      # majors we advertise lose their coverage entirely. The package smoke test installs Nest 11
+      # but only checks that the subpath exports load — it never compiles a module or exercises a
+      # provider, so a Nest 10/11 regression would pass CI unseen. Exactly the situation the
+      # prisma hold above describes.
+      #
+      # Nest 12 also drags in `file-type@22`, whose own `engines` is `>=22`, against the
+      # `^20.19.0 || >=22.12.0` declared by all three packages — the testcontainers problem again.
+      # REMOVE WHEN: the peer range widens to include ^12.0.0 AND nestjs.test.ts covers the
+      # advertised majors (a matrix leg, or a second install like the smoke test uses).
+      - dependency-name: '@nestjs/common'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@nestjs/core'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@nestjs/testing'
         update-types: ['version-update:semver-major']
 
       # Every testcontainers >=12.0.2 depends on undici ^8, and undici 8 declares
