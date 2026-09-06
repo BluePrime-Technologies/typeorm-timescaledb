@@ -6,7 +6,7 @@ This page lists the public compatibility surface for the current package scope.
 
 | Area        | Supported range                        |
 | ----------- | -------------------------------------- |
-| Node.js     | `^20.19.0 \|\| >=22.12.0`              |
+| Node.js     | `>=22.12.0`                            |
 | TypeORM     | `^0.3.20 \|\| ^1.0.0`                  |
 | PostgreSQL  | 16, 17, 18                             |
 | TimescaleDB | `>= 2.18`, tested through 2.29.1       |

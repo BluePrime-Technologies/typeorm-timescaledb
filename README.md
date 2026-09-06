@@ -26,7 +26,7 @@ It's built on one hard rule:
 npm install typeorm-timescaledb typeorm pg reflect-metadata
 ```
 
-Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 || ^1.0.0`, Node `^20.19.0 || >=22.12.0`.
+Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 || ^1.0.0`, Node `>=22.12.0`.
 
 ## Quick start
 

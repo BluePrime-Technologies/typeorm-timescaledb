@@ -18,7 +18,7 @@ You will:
 
 ## Prerequisites
 
-- Node `^20.19.0 || >=22.12.0`.
+- Node `>=22.12.0`.
 - Docker with Compose support.
 - npm.
 
