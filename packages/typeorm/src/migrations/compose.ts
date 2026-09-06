@@ -94,6 +94,10 @@ export function composeMigration(
 
   const literal = (sql: string): ComposedStatement => ({ sql });
 
+  // Both halves can legitimately want to rename the same table; executing both fails.
+  assertNoDuplicateRename(diff.up, timescale.up, 'up');
+  assertNoDuplicateRename(diff.down, timescale.down, 'down');
+
   // Resolve the PAIR, never independently. The 13-digit suffix in the class name is TypeORM's
   // ordering key and the renderer emits only the name, so a `timestamp` override that does not
   // reach the name silently does nothing — and a `name` prefix used verbatim would produce a class
@@ -113,6 +117,68 @@ export function composeMigration(
     down: [...timescale.down.map(literal), ...[...diff.down].reverse()],
     filtered,
   };
+}
+
+/** `ALTER TABLE a RENAME TO b` — used to spot a rename both halves want to perform. */
+const RENAME_TABLE =
+  /^\s*ALTER\s+TABLE\s+(?:ONLY\s+)?(?<from>"(?:[^"]|"")*"(?:\."(?:[^"]|"")*")*|[^\s(;]+)\s+RENAME\s+TO\s+(?<to>"(?:[^"]|"")*"|[^\s(;]+)/i;
+
+/** Bare, unquoted final component of a possibly-qualified identifier. */
+function bareIdent(raw: string): string {
+  const parts = raw.split('.').map((x) => x.replace(/^"(.*)"$/s, '$1'));
+  return parts[parts.length - 1] ?? '';
+}
+
+/** `a->b` for a rename statement, or `undefined` if it is not one. */
+function renamePair(sql: string): string | undefined {
+  const m = RENAME_TABLE.exec(sql);
+  const from = m?.groups?.['from'];
+  const to = m?.groups?.['to'];
+  return from !== undefined && to !== undefined
+    ? `${bareIdent(from)}->${bareIdent(to)}`
+    : undefined;
+}
+
+/**
+ * Refuse a table rename that BOTH halves intend to perform.
+ *
+ * `planToMigration()` can emit a `renameHypertable` step, whose SQL is an ordinary
+ * `ALTER TABLE ... RENAME TO ...`. If TypeORM's diff independently detected the same rename — which
+ * it will, because renaming an entity's table is base DDL and TypeORM owns base DDL — concatenating
+ * the halves executes the rename twice. The second attempt fails, because the old relation no
+ * longer exists, and `down` fails the same way in reverse.
+ *
+ * This is refused rather than de-duplicated. Silently dropping one side would mean guessing which
+ * engine's intent to honour, and the two are not always identical: the TimescaleDB plan may carry a
+ * rename the entity metadata does not, or vice versa. A failure at generate time is strictly better
+ * than one part-way through applying a migration.
+ */
+function assertNoDuplicateRename(
+  typeormStatements: readonly ComposedStatement[],
+  timescaleStatements: readonly string[],
+  side: 'up' | 'down',
+): void {
+  const fromTypeorm = new Map<string, string>();
+  for (const { sql } of typeormStatements) {
+    const pair = renamePair(sql);
+    if (pair !== undefined) fromTypeorm.set(pair, sql);
+  }
+  if (fromTypeorm.size === 0) return;
+
+  for (const sql of timescaleStatements) {
+    const pair = renamePair(sql);
+    if (pair === undefined) continue;
+    const clash = fromTypeorm.get(pair);
+    if (clash === undefined) continue;
+    throw new TimescaleError(
+      TimescaleErrorCode.INVALID_ARGUMENT,
+      `Cannot compose: both halves rename the same table in ${side}, so the second statement would ` +
+        `fail — the old relation no longer exists after the first. Assign the rename to one side ` +
+        `(TypeORM owns base-table DDL) rather than letting both emit it.\n` +
+        `  TypeORM:     ${clash}\n  TimescaleDB: ${sql}`,
+      { side, typeorm: clash, timescale: sql },
+    );
+  }
 }
 
 /**
@@ -284,10 +350,21 @@ function endsWithTerminator(sql: string): boolean {
  */
 function commentEveryLine(sql: string, prefix: string): string {
   return sql
-    .split('\n')
+    .split(LINE_TERMINATORS)
     .map((line) => `${prefix}${line}`)
     .join('\n');
 }
+
+/**
+ * Every character that ends a line for the consumers of these artifacts.
+ *
+ * `\n` alone is not enough. A quoted identifier may contain a bare `\r`, which ends a Postgres
+ * `--` comment, or `\u2028`/`\u2029`, which JavaScript treats as line terminators — so a `//`
+ * annotation would end early and the text after it would become source code sitting above the
+ * import. Splitting on all of them and rejoining with `\n` also NORMALISES the output, so no exotic
+ * terminator survives into the artifact at all.
+ */
+const LINE_TERMINATORS = /\r\n|[\n\r\u2028\u2029]/;
 
 /**
  * Statements that cannot run inside a transaction block, so cannot be wrapped in BEGIN/COMMIT.

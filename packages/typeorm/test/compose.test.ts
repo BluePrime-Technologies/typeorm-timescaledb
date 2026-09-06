@@ -278,6 +278,106 @@ describe('review findings (#242)', () => {
   });
 });
 
+/** Round 4 of the #242 review. Both verified against the code; both real. */
+describe('review findings (#242, round 4)', () => {
+  it('R4 P2 — CR and Unicode line separators are prefixed too, not just LF', () => {
+    // `\r` ends a Postgres `--` comment; `\u2028`/`\u2029` are line terminators to JavaScript.
+    // Splitting on `\n` alone let the text after one of those escape the annotation.
+    for (const terminator of ['\r', '\u2028', '\u2029']) {
+      const hostile: TypeormDiff = {
+        up: [
+          {
+            sql: `DROP TABLE "_timescaledb_internal"."bad${terminator}DROP TABLE \\"victim\\"; --"`,
+          },
+        ],
+        down: [],
+      };
+      const composed = composeMigration(hostile, timescale, owned);
+      expect(composed.filtered[0]?.object, terminator).toContain(terminator);
+
+      const sql = renderComposedMigrationSql(composed);
+      const header = sql.slice(0, sql.indexOf('BEGIN;'));
+      for (const line of header.split(/\r\n|[\n\r\u2028\u2029]/).filter((l) => l.trim() !== '')) {
+        expect(line.trimStart().startsWith('--'), `uncommented (${terminator}): ${line}`).toBe(
+          true,
+        );
+      }
+
+      const ts = renderComposedMigration(composed);
+      const tsHeader = ts.slice(0, ts.indexOf('import type'));
+      for (const line of tsHeader.split(/\r\n|[\n\r\u2028\u2029]/).filter((l) => l.trim() !== '')) {
+        expect(line.trimStart().startsWith('//'), `uncommented (${terminator}): ${line}`).toBe(
+          true,
+        );
+      }
+    }
+  });
+
+  it('R4 P2 — a rename BOTH halves want is refused, not executed twice', () => {
+    // planToMigration() can emit a `renameHypertable` step, whose SQL is an ordinary
+    // ALTER TABLE ... RENAME TO. TypeORM detects the same rename because base DDL is its job, so
+    // concatenating executes it twice — the second fails, the old relation being gone.
+    const renaming: TypeormDiff = {
+      up: [{ sql: 'ALTER TABLE "readings" RENAME TO "measurements"' }],
+      down: [{ sql: 'ALTER TABLE "measurements" RENAME TO "readings"' }],
+    };
+    const planWithRename: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "public"."readings" RENAME TO "measurements";'],
+      down: ['ALTER TABLE "public"."measurements" RENAME TO "readings";'],
+    };
+
+    try {
+      composeMigration(renaming, planWithRename, owned);
+      throw new Error('expected a throw');
+    } catch (e) {
+      const err = e as TimescaleError;
+      expect(err).toBeInstanceOf(TimescaleError);
+      expect(err.code).toBe(TimescaleErrorCode.INVALID_ARGUMENT);
+      expect(err.message).toMatch(/both halves rename the same table/);
+      expect(err.context).toMatchObject({ side: 'up' });
+    }
+  });
+
+  it('R4 P2 — the down side is checked too', () => {
+    const downOnly: TypeormDiff = {
+      up: [],
+      down: [{ sql: 'ALTER TABLE "measurements" RENAME TO "readings"' }],
+    };
+    const planDownOnly: GeneratedMigration = {
+      ...timescale,
+      up: [],
+      down: ['ALTER TABLE "public"."measurements" RENAME TO "readings";'],
+    };
+    try {
+      composeMigration(downOnly, planDownOnly, owned);
+      throw new Error('expected a throw');
+    } catch (e) {
+      expect((e as TimescaleError).context).toMatchObject({ side: 'down' });
+    }
+  });
+
+  it('R4 P2 — a rename by only ONE half composes normally', () => {
+    // The check must not fire on the ordinary case, or it would block every rename.
+    const typeormOnly: TypeormDiff = {
+      up: [{ sql: 'ALTER TABLE "readings" RENAME TO "measurements"' }],
+      down: [{ sql: 'ALTER TABLE "measurements" RENAME TO "readings"' }],
+    };
+    const composed = composeMigration(typeormOnly, timescale, owned);
+    expect(composed.up.map((s) => s.sql)).toContain(
+      'ALTER TABLE "readings" RENAME TO "measurements"',
+    );
+
+    // ...and two DIFFERENT renames are not a clash either.
+    const otherRename: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "public"."other" RENAME TO "elsewhere";'],
+      down: [],
+    };
+    expect(() => composeMigration(typeormOnly, otherRename, owned)).not.toThrow();
+  });
+});
+
 /** Round 3 of the #242 review. Both verified against the code; both real. */
 describe('review findings (#242, round 3)', () => {
   it('R3 P1 — a newline in the OBJECT NAME cannot escape the comment block', () => {
