@@ -6,6 +6,7 @@ import {
 } from '@blueprime/timescaledb-core';
 import {
   composeMigration,
+  nonTransactionalStatements,
   renderComposedMigration,
   renderComposedMigrationSql,
 } from '../src/migrations/compose.js';
@@ -272,6 +273,114 @@ describe('review findings (#242)', () => {
       expect(err.message).toMatch(/migrationsTransactionMode/);
       expect(err.message).toMatch(/NOT on its own a fix/);
     }
+  });
+});
+
+/** Round 2 of the #242 review. Both verified against the code; both real. */
+describe('review findings (#242, round 2)', () => {
+  it('R2 P2 — a `;` INSIDE a trailing comment does not count as terminated', () => {
+    // `endsWith(";")` said terminated; Postgres says the semicolon is part of the comment, so the
+    // statement is unterminated and the COMMIT that follows is parsed as a continuation of it.
+    const commentedSemicolon: TypeormDiff = {
+      up: [{ sql: 'CREATE VIEW "v" AS SELECT 1 -- why;' }],
+      down: [],
+    };
+    const out = renderComposedMigrationSql(composeMigration(commentedSemicolon, timescale, owned));
+    expect(out).toContain('CREATE VIEW "v" AS SELECT 1 -- why;\n;');
+    // COMMIT must be a statement of its own, not swallowed by the comment.
+    expect(out).toMatch(/\n;\n(?:.*\n)*?COMMIT;/);
+  });
+
+  it('R2 P2 — a genuinely terminated statement is not double-terminated', () => {
+    const terminated: TypeormDiff = { up: [{ sql: 'CREATE VIEW "v" AS SELECT 1;' }], down: [] };
+    const out = renderComposedMigrationSql(composeMigration(terminated, timescale, owned));
+    expect(out).toContain('CREATE VIEW "v" AS SELECT 1;');
+    expect(out).not.toContain(';;');
+    expect(out).not.toContain(';\n;');
+  });
+
+  it('R2 P2 — quote tracking: a comment marker INSIDE a string is not a comment', () => {
+    // The discriminating case for single-quote tracking, found by mutation testing. Without it the
+    // `--` inside the literal starts a "comment" that swallows the real trailing `;`, and the
+    // statement gets a second, redundant terminator.
+    const markerInString: TypeormDiff = {
+      // Must be a form the slice-2 filter recognises — a bare SELECT is (correctly) refused.
+      up: [{ sql: `CREATE VIEW "v" AS SELECT '--' ;` }],
+      down: [],
+    };
+    const out = renderComposedMigrationSql(composeMigration(markerInString, timescale, owned));
+    expect(out).toContain(`CREATE VIEW "v" AS SELECT '--' ;`);
+    expect(out).not.toContain(';\n;');
+    expect(out).not.toContain(';;');
+  });
+
+  it('R2 P2 — a real terminator followed by a trailing comment still counts', () => {
+    // The scanner must ignore the whitespace between `;` and the comment; otherwise the last
+    // recorded character is a space and the statement gains a spurious second terminator.
+    const terminatedThenComment: TypeormDiff = {
+      up: [{ sql: 'CREATE VIEW "v" AS SELECT 1; -- note' }],
+      down: [],
+    };
+    const out = renderComposedMigrationSql(
+      composeMigration(terminatedThenComment, timescale, owned),
+    );
+    expect(out).toContain('CREATE VIEW "v" AS SELECT 1; -- note');
+    expect(out).not.toContain('-- note\n;');
+  });
+
+  it('R2 P2 — quote tracking covers quoted IDENTIFIERS, not just string literals', () => {
+    // `"v--x"` is a legal quoted identifier. Without double-quote tracking the `--` inside it
+    // starts a phantom comment that swallows the real trailing `;`.
+    const dashedIdentifier: TypeormDiff = {
+      up: [{ sql: 'CREATE VIEW "v--x" AS SELECT 1;' }],
+      down: [],
+    };
+    const out = renderComposedMigrationSql(composeMigration(dashedIdentifier, timescale, owned));
+    expect(out).toContain('CREATE VIEW "v--x" AS SELECT 1;');
+    expect(out).not.toContain(';\n;');
+  });
+
+  it('R2 P2 — a `;` inside a string literal or block comment is not a terminator either', () => {
+    const tricky: TypeormDiff = {
+      up: [
+        { sql: `CREATE TABLE "t" ("c" text DEFAULT ';')` },
+        { sql: 'CREATE VIEW "w" AS SELECT 1 /* ; */' },
+      ],
+      down: [],
+    };
+    const out = renderComposedMigrationSql(composeMigration(tricky, timescale, owned));
+    expect(out).toContain(`CREATE TABLE "t" ("c" text DEFAULT ';');`);
+    expect(out).toContain('CREATE VIEW "w" AS SELECT 1 /* ; */\n;');
+  });
+
+  it('R2 P2 — the .ts artifact WARNS about statements needing a non-transactional DataSource', () => {
+    // The .ts target cannot just refuse — CREATE INDEX CONCURRENTLY is legitimate and TypeORM
+    // supports untransacted migrations. But MigrationExecutor defaults to 'all', so an unannotated
+    // class fails by default. Silence is the one option that is definitely wrong.
+    const concurrent: TypeormDiff = {
+      up: [{ sql: 'CREATE INDEX CONCURRENTLY "t_c_idx" ON "t" ("c")' }],
+      down: [],
+    };
+    const composed = composeMigration(concurrent, timescale, owned);
+
+    expect(nonTransactionalStatements(composed).map((s) => s.sql)).toEqual([
+      'CREATE INDEX CONCURRENTLY "t_c_idx" ON "t" ("c")',
+    ]);
+
+    const ts = renderComposedMigration(composed);
+    expect(ts).toMatch(/migrationsTransactionMode: 'none'/);
+    expect(ts).toContain('CREATE INDEX CONCURRENTLY "t_c_idx" ON "t" ("c")');
+    // The warning is a comment, not stray code.
+    const header = ts.slice(0, ts.indexOf('import type'));
+    for (const line of header.split('\n').filter((l) => l.trim() !== '')) {
+      expect(line.trimStart().startsWith('//'), `uncommented: ${line}`).toBe(true);
+    }
+  });
+
+  it('R2 P2 — an ordinary migration carries no such warning', () => {
+    const ts = renderComposedMigration(composeMigration(typeorm, timescale, owned));
+    expect(ts).not.toMatch(/migrationsTransactionMode/);
+    expect(nonTransactionalStatements(composeMigration(typeorm, timescale, owned))).toEqual([]);
   });
 });
 

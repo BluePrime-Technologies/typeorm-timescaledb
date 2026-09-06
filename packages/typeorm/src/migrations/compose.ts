@@ -116,6 +116,22 @@ export function composeMigration(
 }
 
 /**
+ * Statements in `migration` that cannot run inside a transaction block.
+ *
+ * Exported because the `.ts` target cannot simply refuse them the way the `.sql` target does.
+ * `CREATE INDEX CONCURRENTLY` is a legitimate thing to want, and TypeORM supports running
+ * migrations untransacted — so refusing would block a valid setup. But TypeORM's `MigrationExecutor`
+ * defaults to `migrationsTransactionMode: 'all'`, which means the emitted class fails by default
+ * unless the DataSource is configured for it. Silence is the one option that is definitely wrong,
+ * so the renderer annotates the artifact and callers (the CLI, in slice 4) can warn.
+ */
+export function nonTransactionalStatements(
+  migration: ComposedMigration,
+): readonly ComposedStatement[] {
+  return [...migration.up, ...migration.down].filter((s) => NON_TRANSACTIONAL.test(s.sql));
+}
+
+/**
  * Render a {@link ComposedMigration} as TypeORM migration TypeScript source.
  *
  * Parameters are written as `queryRunner.query()`'s SECOND argument, exactly as
@@ -138,6 +154,16 @@ export function renderComposedMigration(migration: ComposedMigration): string {
           })
           .join('\n');
 
+  const untransacted = nonTransactionalStatements(migration);
+  const transactionWarning =
+    untransacted.length === 0
+      ? ''
+      : `\n// ⚠ REQUIRES migrationsTransactionMode: 'none' (or running these outside the migration).\n` +
+        `// TypeORM's MigrationExecutor defaults to 'all', which wraps this class in a transaction,\n` +
+        `// and the following cannot run inside one:\n${untransacted
+          .map((s) => commentEveryLine(s.sql, '//   '))
+          .join('\n')}\n`;
+
   const note =
     migration.filtered.length === 0
       ? ''
@@ -152,7 +178,7 @@ export function renderComposedMigration(migration: ComposedMigration): string {
 // Base relational DDL comes from TypeORM's own schema diff; the TimescaleDB layer is
 // appended after it, because create_hypertable converts a table that must already exist.
 // down() reverses that: the TimescaleDB layer is undone first. The TimescaleDB half is
-// intentionally non-destructive — hypertable and columnstore conversions are NOT reverted.${note}
+// intentionally non-destructive — hypertable and columnstore conversions are NOT reverted.${transactionWarning}${note}
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class ${migration.name} implements MigrationInterface {
@@ -167,6 +193,83 @@ ${body(migration.down)}
   }
 }
 `;
+}
+
+/**
+ * Is the last SYNTACTIC character of `sql` a `;`?
+ *
+ * Not the same as `endsWith(';')`, which is what an earlier revision checked. In
+ * `CREATE VIEW "v" AS SELECT 1 -- why;` the final character IS a semicolon, but Postgres treats it
+ * as part of the line comment, so the statement is unterminated and the `COMMIT` that follows is
+ * parsed as a continuation of it. The artifact then fails to apply.
+ *
+ * Walks the statement tracking single quotes (with `''` escapes), quoted identifiers (with `""`
+ * and quoted identifiers) and `--` line comments, and remembers the last character that was
+ * neither.
+ *
+ * Quote tracking earns its place: `--` inside a string literal or a quoted identifier
+ * (`CREATE VIEW "v--x" ...`) would otherwise start a phantom comment and swallow the real
+ * terminator. Doubled-quote ESCAPES (`'it''s'`) are deliberately not special-cased — `''` is two
+ * toggles, so the in-string parity, and therefore the verdict, is identical either way. Mutation
+ * testing showed the branch could not change any outcome. If this scanner is ever extended to
+ * return more than "does it end in `;`", escape handling has to come back.
+ *
+ * Block comments need no special case and are deliberately not tracked: a well-formed one always
+ * ends in `/`, so it can never make the scanner report a terminator that is not there. Mutation
+ * testing confirmed the branch was unreachable for any valid SQL, and an untestable guard is worse
+ * than none — the only input that would exercise it is an UNTERMINATED block comment, which is
+ * malformed SQL the schema builder cannot emit.
+ *
+ * Deliberately does NOT handle dollar-quoted strings (`$$ ... $$`): TypeORM's schema builder never
+ * emits one, and getting it wrong would mis-read a `;` inside a function body. The failure
+ * direction is safe either way — an extra `;` is a harmless empty statement in Postgres, a MISSING
+ * one breaks the artifact, so anything this cannot parse falls through to "not terminated" and gets
+ * a terminator appended.
+ */
+function endsWithTerminator(sql: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  let inLine = false;
+  let last = '';
+
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i] as string;
+    const next = sql[i + 1];
+
+    if (inLine) {
+      if (c === '\n') inLine = false;
+      continue;
+    }
+    if (inSingle) {
+      if (c === "'") inSingle = false;
+      last = c;
+      continue;
+    }
+    if (inDouble) {
+      if (c === '"') inDouble = false;
+      last = c;
+      continue;
+    }
+
+    if (c === '-' && next === '-') {
+      inLine = true;
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      inSingle = true;
+      last = c;
+      continue;
+    }
+    if (c === '"') {
+      inDouble = true;
+      last = c;
+      continue;
+    }
+    if (!/\s/.test(c)) last = c;
+  }
+
+  return last === ';';
 }
 
 /**
@@ -246,11 +349,10 @@ export function renderComposedMigrationSql(migration: ComposedMigration): string
 
   const terminate = (sql: string): string => {
     const trimmed = sql.trimEnd();
-    if (trimmed.endsWith(';')) return trimmed;
-    // A statement ending in a `--` line comment would swallow an inline `;`, leaving the statement
-    // unterminated and the following COMMIT parsed as part of it. Putting the terminator on its own
-    // line is always valid, so err toward it whenever the text could contain a line comment.
-    return /--|\n/.test(trimmed) ? `${trimmed}\n;` : `${trimmed};`;
+    if (endsWithTerminator(trimmed)) return trimmed;
+    // Put the terminator on its own line whenever a comment could be in play — appending it inline
+    // after a `--` would place it INSIDE the comment.
+    return /--|\/\*|\n/.test(trimmed) ? `${trimmed}\n;` : `${trimmed};`;
   };
   const section = (statements: readonly ComposedStatement[]): string =>
     statements.length === 0
