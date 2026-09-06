@@ -359,7 +359,7 @@ const CREATE_TABLE_TARGET = new RegExp(
 
 /** What kind of object a recognised statement targets. */
 type TargetKind =
-  'index' | 'table' | 'view' | 'schema' | 'extension' | 'comment-column' | 'other' | 'none';
+  'index' | 'table' | 'view' | 'schema' | 'extension' | 'comment-column' | 'other';
 
 const recognise = (body: string, target: TargetKind) => ({
   re: new RegExp(String.raw`^\s*${body}`, 'i'),
@@ -469,8 +469,6 @@ export function classifyTypeormStatement(
         'to drop',
     };
   }
-
-  if (match.target === 'none') return { verdict: 'keep' };
 
   const raw = match.re.exec(sql)?.groups?.['obj'];
   if (raw === undefined) {
