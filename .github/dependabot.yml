@@ -76,7 +76,9 @@ updates:
       # prisma hold above describes.
       #
       # Nest 12 also drags in `file-type@22`, whose own `engines` is `>=22`, against the
-      # `^20.19.0 || >=22.12.0` declared by all three packages — the testcontainers problem again.
+      # `^20.19.0 || >=22.12.0` that all packages declared at the time — the testcontainers problem
+      # again. That second half is now MOOT: the floor is `>=22.12.0` since Node 20 was dropped, so
+      # `file-type@22` is in range. The peer-range reason above is unaffected and still holds.
       # REMOVE WHEN: the peer range widens to include ^12.0.0 AND nestjs.test.ts covers the
       # advertised majors (a matrix leg, or a second install like the smoke test uses).
       - dependency-name: '@nestjs/common'
@@ -88,11 +90,14 @@ updates:
 
       # Every testcontainers >=12.0.2 depends on undici ^8, and undici 8 declares
       # `engines: node >=22.19.0` — it calls `webidl.util.markAsUncloneable`, which does not exist
-      # on Node 20. All four node-20 CI legs fail with that TypeError. All three packages here
-      # declare `engines: { node: "^20.19.0 || >=22.12.0" }`, so taking it would silently narrow
-      # published support to >=22. Note 12.0.2/12.0.3/12.0.4 do NOT declare the constraint in their
-      # own `engines` — only 12.1.0 does — so nothing warns; hence a version range, not a major hold.
-      # REMOVE WHEN: Node 20 is dropped from `engines` and the CI matrix, or testcontainers
-      # supports undici 7 again.
+      # on Node 20. Note 12.0.2/12.0.3/12.0.4 do NOT declare the constraint in their own `engines`
+      # — only 12.1.0 does — so nothing warns; hence a version range, not a major hold.
+      #
+      # STILL HELD after Node 20 was dropped, which is not obvious and was checked rather than
+      # assumed: undici 8's floor is `>=22.19.0`, but ours is now `>=22.12.0` (taken from vitest 5,
+      # the change that prompted the drop). Node 22.12 through 22.18 therefore remains a real,
+      # advertised gap where testcontainers >=12.0.2 would break. Dropping Node 20 was necessary to
+      # release this hold but not sufficient.
+      # REMOVE WHEN: the floor reaches `>=22.19.0`, or testcontainers supports undici 7 again.
       - dependency-name: 'testcontainers'
         versions: ['>=12.0.2']

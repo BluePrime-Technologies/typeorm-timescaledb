@@ -12,7 +12,7 @@ pnpm build
 pnpm test
 ```
 
-- **Node:** >= 20.19 or >= 22.12
+- **Node:** >= 22.12
 - **Package manager:** pnpm (via corepack)
 - Integration tests require Docker (Testcontainers spins up a real TimescaleDB).
 

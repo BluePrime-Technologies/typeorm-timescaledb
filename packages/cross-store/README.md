@@ -16,7 +16,7 @@ package apart from the zero-bug ORM core.
 npm install @blueprime/cross-store
 ```
 
-Ships **ESM-only** with full type definitions. Requires Node `^20.19.0 || >=22.12.0`. The ORM is an
+Ships **ESM-only** with full type definitions. Requires Node `>=22.12.0`. The ORM is an
 **optional peer** — install whichever adapter you use:
 
 ```sh

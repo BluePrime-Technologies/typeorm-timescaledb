@@ -9,7 +9,7 @@ You usually don't install this directly — install
 Reach for this package directly only if you are building your own integration (a different ORM, a
 plain `pg` tool) on top of the same SQL and diff machinery.
 
-Ships **dual ESM + CJS** with full type definitions. Requires Node `^20.19.0 || >=22.12.0` and
+Ships **dual ESM + CJS** with full type definitions. Requires Node `>=22.12.0` and
 targets **TimescaleDB ≥ 2.18**.
 
 ## What's in it

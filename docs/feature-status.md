@@ -95,7 +95,7 @@ introspection, and T-Digest percentiles:
   (toolkit `tdigest`), with mean/min/max/count.
 
 All of the above are covered by unit tests and real-TimescaleDB integration on the CI matrix
-(TimescaleDB 2.18.0 / 2.19.0 / 2.26.0 / 2.29.1 across PostgreSQL 16, 17 and 18; Node 20/22/24;
+(TimescaleDB 2.18.0 / 2.19.0 / 2.26.0 / 2.29.1 across PostgreSQL 16, 17 and 18; Node 22/24;
 TypeORM 0.3.20/1.0.0).
 
 ## Shipped in 0.5.0
@@ -159,7 +159,7 @@ and CI:
 
 - TimescaleDB `>= 2.18`.
 - TypeORM `^0.3.20 || ^1.0.0`.
-- Node `^20.19.0 || >=22.12.0`.
+- Node `>=22.12.0`.
 - NestJS peers are optional and support the ranges declared in
   `packages/typeorm/package.json`.
 

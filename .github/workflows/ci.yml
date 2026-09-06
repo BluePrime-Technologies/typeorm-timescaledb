@@ -53,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22, 24]
+        node: [22, 24]
         typeorm: ['0.3.20', '1.0.0']
         # BOTH ends pinned, deliberately.
         #
