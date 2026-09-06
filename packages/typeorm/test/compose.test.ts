@@ -278,6 +278,64 @@ describe('review findings (#242)', () => {
   });
 });
 
+/** Round 5 of the #242 review. Both verified against the code; both real. */
+describe('review findings (#242, round 5)', () => {
+  it('R5 P2 — a `--` INSIDE a block comment does not hijack the scan', () => {
+    // This is the counterexample to my own round-2 reasoning. I deleted block-comment tracking as
+    // "provably unreachable" because a well-formed block comment ends in `/` and so cannot leave a
+    // `;` as the last character. That considered the block in isolation: the `--` inside it starts
+    // a LINE comment, the closing delimiter is never seen, and the block's `;` survives as `last`.
+    // The scanner then reports a terminator that is not there and the COMMIT gets swallowed.
+    const trap: TypeormDiff = {
+      up: [{ sql: 'CREATE VIEW "v" AS SELECT 1 /* ; -- */' }],
+      down: [],
+    };
+    const out = renderComposedMigrationSql(composeMigration(trap, timescale, owned));
+    expect(out).toContain('CREATE VIEW "v" AS SELECT 1 /* ; -- */\n;');
+    expect(out).toMatch(/\n;\n(?:.*\n)*?COMMIT;/);
+  });
+
+  it('R5 P2 — a real terminator after a block comment is still recognised', () => {
+    const terminated: TypeormDiff = {
+      up: [{ sql: 'CREATE VIEW "v" AS SELECT 1 /* note */;' }],
+      down: [],
+    };
+    const out = renderComposedMigrationSql(composeMigration(terminated, timescale, owned));
+    expect(out).toContain('CREATE VIEW "v" AS SELECT 1 /* note */;');
+    expect(out).not.toContain(';\n;');
+  });
+
+  it('R5 P2 — renames in DIFFERENT schemas are not a duplicate', () => {
+    // Comparing bare names made `analytics.old->new` and `public.old->new` look like one repeated
+    // rename, refusing a valid multi-schema migration. My round-4 test only varied the TABLE name,
+    // so it never exercised this.
+    const crossSchema: TypeormDiff = {
+      up: [{ sql: 'ALTER TABLE "analytics"."old" RENAME TO "new"' }],
+      down: [],
+    };
+    const planOtherSchema: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "public"."old" RENAME TO "new";'],
+      down: [],
+    };
+    expect(() => composeMigration(crossSchema, planOtherSchema, owned)).not.toThrow();
+
+    // The SAME schema is still caught, including when one side is unqualified and resolves to it.
+    const sameSchema: TypeormDiff = {
+      up: [{ sql: 'ALTER TABLE "old" RENAME TO "new"' }],
+      down: [],
+    };
+    const planPublic: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "public"."old" RENAME TO "new";'],
+      down: [],
+    };
+    expect(() => composeMigration(sameSchema, planPublic, owned)).toThrow(
+      /both halves rename the same table/,
+    );
+  });
+});
+
 /** Round 4 of the #242 review. Both verified against the code; both real. */
 describe('review findings (#242, round 4)', () => {
   it('R4 P2 — CR and Unicode line separators are prefixed too, not just LF', () => {

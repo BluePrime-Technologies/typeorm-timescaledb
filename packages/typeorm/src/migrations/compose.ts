@@ -95,8 +95,8 @@ export function composeMigration(
   const literal = (sql: string): ComposedStatement => ({ sql });
 
   // Both halves can legitimately want to rename the same table; executing both fails.
-  assertNoDuplicateRename(diff.up, timescale.up, 'up');
-  assertNoDuplicateRename(diff.down, timescale.down, 'down');
+  assertNoDuplicateRename(diff.up, timescale.up, 'up', owned.defaultSchema);
+  assertNoDuplicateRename(diff.down, timescale.down, 'down', owned.defaultSchema);
 
   // Resolve the PAIR, never independently. The 13-digit suffix in the class name is TypeORM's
   // ordering key and the renderer emits only the name, so a `timestamp` override that does not
@@ -123,20 +123,28 @@ export function composeMigration(
 const RENAME_TABLE =
   /^\s*ALTER\s+TABLE\s+(?:ONLY\s+)?(?<from>"(?:[^"]|"")*"(?:\."(?:[^"]|"")*")*|[^\s(;]+)\s+RENAME\s+TO\s+(?<to>"(?:[^"]|"")*"|[^\s(;]+)/i;
 
-/** Bare, unquoted final component of a possibly-qualified identifier. */
-function bareIdent(raw: string): string {
+/** Split a possibly-qualified identifier into its unquoted schema and name. */
+function splitIdent(raw: string, defaultSchema: string): { schema: string; name: string } {
   const parts = raw.split('.').map((x) => x.replace(/^"(.*)"$/s, '$1'));
-  return parts[parts.length - 1] ?? '';
+  const name = parts[parts.length - 1] ?? '';
+  return { schema: parts.length > 1 ? (parts[parts.length - 2] as string) : defaultSchema, name };
 }
 
-/** `a->b` for a rename statement, or `undefined` if it is not one. */
-function renamePair(sql: string): string | undefined {
+/**
+ * `schema.a->schema.b` for a rename statement, or `undefined` if it is not one.
+ *
+ * SCHEMA-QUALIFIED, because comparing bare names made renaming `analytics.old` and `public.old` in
+ * the same migration look like one duplicated rename and refused a perfectly valid multi-schema
+ * change. `RENAME TO` takes an unqualified name — Postgres keeps the table in its existing schema —
+ * so the destination inherits the source's.
+ */
+function renamePair(sql: string, defaultSchema: string): string | undefined {
   const m = RENAME_TABLE.exec(sql);
   const from = m?.groups?.['from'];
   const to = m?.groups?.['to'];
-  return from !== undefined && to !== undefined
-    ? `${bareIdent(from)}->${bareIdent(to)}`
-    : undefined;
+  if (from === undefined || to === undefined) return undefined;
+  const source = splitIdent(from, defaultSchema);
+  return `${source.schema}.${source.name}->${source.schema}.${splitIdent(to, source.schema).name}`;
 }
 
 /**
@@ -157,16 +165,17 @@ function assertNoDuplicateRename(
   typeormStatements: readonly ComposedStatement[],
   timescaleStatements: readonly string[],
   side: 'up' | 'down',
+  defaultSchema: string,
 ): void {
   const fromTypeorm = new Map<string, string>();
   for (const { sql } of typeormStatements) {
-    const pair = renamePair(sql);
+    const pair = renamePair(sql, defaultSchema);
     if (pair !== undefined) fromTypeorm.set(pair, sql);
   }
   if (fromTypeorm.size === 0) return;
 
   for (const sql of timescaleStatements) {
-    const pair = renamePair(sql);
+    const pair = renamePair(sql, defaultSchema);
     if (pair === undefined) continue;
     const clash = fromTypeorm.get(pair);
     if (clash === undefined) continue;
@@ -277,10 +286,21 @@ ${body(migration.down)}
  *
  * Quote tracking earns its place: `--` inside a string literal or a quoted identifier
  * (`CREATE VIEW "v--x" ...`) would otherwise start a phantom comment and swallow the real
- * terminator. Doubled-quote ESCAPES (`'it''s'`) are deliberately not special-cased — `''` is two
- * toggles, so the in-string parity, and therefore the verdict, is identical either way. Mutation
- * testing showed the branch could not change any outcome. If this scanner is ever extended to
- * return more than "does it end in `;`", escape handling has to come back.
+ * terminator.
+ *
+ * Block-comment tracking earns its place too, which an earlier revision got WRONG. It was deleted
+ * as "provably unreachable" on the argument that a well-formed block comment always ends in `/`, so
+ * it could never leave a `;` as the last character. That argument considered the block comment in
+ * isolation and missed the interaction: in `SELECT 1 /* ; -- *\u002F` the `--` INSIDE the block
+ * starts a line comment, the closing delimiter is therefore never seen, and the block's `;` survives
+ * as the last character — reporting a terminator that is not there. What matters is that the
+ * in-block STATE is consumed before a `--` is allowed to start a line comment; the relative order of
+ * the two opening checks is irrelevant, since a position cannot be both.
+ *
+ * Doubled-quote ESCAPES (`'it''s'`) genuinely are not special-cased: `''` is two toggles, so the
+ * in-string parity, and therefore the verdict, is identical either way. That one is a parity
+ * argument with no interaction to miss. If this scanner is ever extended to return more than
+ * "does it end in `;`", escape handling has to come back.
  *
  * Block comments need no special case and are deliberately not tracked: a well-formed one always
  * ends in `/`, so it can never make the scanner report a terminator that is not there. Mutation
@@ -298,6 +318,7 @@ function endsWithTerminator(sql: string): boolean {
   let inSingle = false;
   let inDouble = false;
   let inLine = false;
+  let inBlock = false;
   let last = '';
 
   for (let i = 0; i < sql.length; i++) {
@@ -306,6 +327,13 @@ function endsWithTerminator(sql: string): boolean {
 
     if (inLine) {
       if (c === '\n') inLine = false;
+      continue;
+    }
+    if (inBlock) {
+      if (c === '*' && next === '/') {
+        inBlock = false;
+        i++;
+      }
       continue;
     }
     if (inSingle) {
@@ -319,6 +347,11 @@ function endsWithTerminator(sql: string): boolean {
       continue;
     }
 
+    if (c === '/' && next === '*') {
+      inBlock = true;
+      i++;
+      continue;
+    }
     if (c === '-' && next === '-') {
       inLine = true;
       i++;
