@@ -126,7 +126,7 @@ export function timescaleOwnedObjects(
   options: OwnedObjectOptions = {},
 ): TimescaleOwnedObjects {
   const defaultSchema = options.defaultSchema ?? 'public';
-  const qualify = (raw: string): string => key(parseQualified(raw), defaultSchema);
+  const qualify = (raw: string): string => key(parseCatalogName(raw), defaultSchema);
 
   const hypertables = new Set<string>();
   const autoIndexes = new Set<string>();
@@ -137,7 +137,7 @@ export function timescaleOwnedObjects(
   const fromCatalog = options.knownAutoIndexes !== undefined;
 
   for (const ht of state.hypertables) {
-    const parsed = parseQualified(ht.table);
+    const parsed = parseCatalogName(ht.table);
     hypertables.add(key(parsed, defaultSchema));
 
     if (fromCatalog) continue;
@@ -199,14 +199,32 @@ const INTERNAL_PATTERNS: readonly { readonly re: RegExp; readonly what: string }
   { re: /^compress_hyper_\d+_\d+_chunk$/, what: 'a compressed chunk' },
 ];
 
-/** Schemas that are entirely TimescaleDB's. */
+/**
+ * Schemas that are entirely TimescaleDB's.
+ *
+ * Not written from memory. Enumerated from a live 2.18.0 container — the floor of the supported
+ * range — by asking Postgres which namespaces the extension actually owns:
+ *
+ * ```sql
+ * SELECT n.nspname FROM pg_namespace n
+ *   JOIN pg_depend d ON d.objid = n.oid AND d.classid = 'pg_namespace'::regclass
+ *   JOIN pg_extension e ON e.oid = d.refobjid
+ *  WHERE e.extname LIKE 'timescaledb%';
+ * ```
+ *
+ * That found `_timescaledb_functions` AND `_timescaledb_debug` missing from an earlier draft; the
+ * review had spotted only the first. Same lesson as the `ALTER TYPE` gap: ask the system, do not
+ * recall.
+ */
 const INTERNAL_SCHEMAS = new Set([
-  '_timescaledb_internal',
+  '_timescaledb_cache',
   '_timescaledb_catalog',
   '_timescaledb_config',
-  '_timescaledb_cache',
-  'timescaledb_information',
+  '_timescaledb_debug',
+  '_timescaledb_functions',
+  '_timescaledb_internal',
   'timescaledb_experimental',
+  'timescaledb_information',
 ]);
 
 /** Extensions whose lifecycle this library owns, not TypeORM's entity metadata. */
@@ -222,8 +240,40 @@ const OWNED_EXTENSIONS = new Set(['timescaledb', 'timescaledb_toolkit']);
 const QUOTED = String.raw`"(?:[^"]|"")*"`;
 const OBJ = String.raw`(?<obj>${QUOTED}(?:\.${QUOTED})*|[^\s(;]+)`;
 
-/** `... RENAME TO "new_name"` — the destination of a rename, always unqualified in Postgres. */
-const RENAME_TO = new RegExp(String.raw`\bRENAME\s+TO\s+(?<dest>${QUOTED}|[^\s(;]+)`, 'i');
+/**
+ * `ALTER <kind> <obj> RENAME TO "new"` — the destination of a rename.
+ *
+ * ANCHORED to the head of the statement rather than searched for anywhere in the text. A free
+ * `\bRENAME\s+TO\b` scan also matches inside string literals and comments, so a legitimate
+ * `CREATE VIEW "notes" AS SELECT 'RENAME TO "readings_hourly"'` looked like a rename onto an owned
+ * aggregate and was silently filtered — the over-filtering direction again.
+ */
+const RENAME_TO = new RegExp(
+  String.raw`^\s*ALTER\s+(?:INDEX|TABLE|(?:MATERIALIZED\s+)?VIEW)\s+(?:ONLY\s+|IF\s+EXISTS\s+)?` +
+    String.raw`(?:${QUOTED}(?:\.${QUOTED})*|[^\s(;]+)\s+RENAME\s+TO\s+(?<dest>${QUOTED}|[^\s(;]+)`,
+  'i',
+);
+
+/**
+ * `CREATE INDEX "name" ON "schema"."table"` — the indexed table.
+ *
+ * Postgres forbids qualifying the index name in `CREATE INDEX`: the index is always created in the
+ * schema of the TABLE it indexes. Keying it under `defaultSchema` instead meant
+ * `CREATE INDEX "readings_time_idx" ON "analytics"."events"` resolved to
+ * `public.readings_time_idx` and could collide with a public hypertable's auto-index, silently
+ * removing the user's analytics index from their migration.
+ */
+const CREATE_INDEX_ON = new RegExp(
+  String.raw`^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b[\s\S]*?\bON\s+(?:ONLY\s+)?` +
+    String.raw`(?<table>${QUOTED}(?:\.${QUOTED})*|[^\s(;]+)`,
+  'i',
+);
+
+/** `CREATE TABLE "schema"."name"` — used to spot tables this diff creates. */
+const CREATE_TABLE_TARGET = new RegExp(
+  String.raw`^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?${OBJ}`,
+  'i',
+);
 
 /** What kind of object a recognised statement targets. */
 type TargetKind = 'index' | 'table' | 'view' | 'schema' | 'extension' | 'other' | 'none';
@@ -290,10 +340,29 @@ const RECOGNISED = [
   recognise(String.raw`COMMENT\s+ON\b`, 'none'),
 ] as const;
 
+/**
+ * Cross-statement context, which a single statement cannot supply on its own.
+ *
+ * Only {@link filterTypeormDiff} can build this, because it is the only caller that sees both
+ * sides of the diff at once.
+ */
+export interface ClassifyContext {
+  /**
+   * Qualified names of tables CREATED by the up side of this same diff.
+   *
+   * A `DROP TABLE` in `down` that inverts a `CREATE TABLE` in `up` is not the destructive removal
+   * of an existing hypertable — it is the ordinary inverse of a table this migration creates.
+   * Without this distinction the composer refuses every INITIAL migration for a new hypertable,
+   * which is the milestone's primary use case.
+   */
+  readonly createdTables?: ReadonlySet<string>;
+}
+
 /** Classify a single statement against the owned set. */
 export function classifyTypeormStatement(
   sql: string,
   owned: TimescaleOwnedObjects,
+  context: ClassifyContext = {},
 ): StatementDisposition {
   const match = RECOGNISED.find((r) => r.re.test(sql));
   if (match === undefined) {
@@ -316,7 +385,15 @@ export function classifyTypeormStatement(
   }
 
   const parsed = parseQualified(raw);
-  const qualified = key(parsed, owned.defaultSchema);
+  // `CREATE INDEX` cannot qualify its index name — Postgres creates the index in the schema of the
+  // table being indexed, so that is where the name must be resolved.
+  const indexSchema =
+    match.target === 'index' && parsed.schema === undefined
+      ? parseQualified(CREATE_INDEX_ON.exec(sql)?.groups?.['table'] ?? '').schema
+      : undefined;
+  const resolved: QualifiedName =
+    indexSchema !== undefined ? { schema: indexSchema, name: parsed.name } : parsed;
+  const qualified = key(resolved, owned.defaultSchema);
 
   // Internal-object NAMES only establish ownership inside an internal SCHEMA. TimescaleDB puts
   // chunks, materialization hypertables and partial/direct views exclusively in its own schemas, so
@@ -354,7 +431,7 @@ export function classifyTypeormStatement(
   // rename, so it names the owned object as the DESTINATION rather than the target. Classifying
   // only the target would filter the up statement and keep the down one, leaving a down migration
   // that references an index which was never created.
-  const renamed = renameDestination(sql, parsed, owned.defaultSchema);
+  const renamed = renameDestination(sql, resolved, owned.defaultSchema);
 
   if (
     match.target === 'index' &&
@@ -387,7 +464,12 @@ export function classifyTypeormStatement(
   if (
     match.target === 'table' &&
     /^\s*DROP\s+TABLE\b/i.test(sql) &&
-    owned.hypertables.has(qualified)
+    owned.hypertables.has(qualified) &&
+    // ...unless THIS diff created the table. Then the drop is just the inverse of its own
+    // CREATE TABLE, dropping something that did not exist before the migration ran. Refusing it
+    // would block the initial composed migration for every new hypertable — the case the whole
+    // milestone exists to serve.
+    context.createdTables?.has(qualified) !== true
   ) {
     return {
       verdict: 'unclassified',
@@ -415,9 +497,19 @@ export function filterTypeormDiff(
   const mode = options.mode ?? 'filter';
   const filtered: FilteredStatement[] = [];
 
+  // Tables this diff creates. A `DROP TABLE` in `down` that inverts one of these is ordinary, not
+  // the destructive removal of an existing hypertable. Only this function can know that, because
+  // it is the only place both sides are in scope.
+  const createdTables = new Set<string>();
+  for (const { sql } of diff.up) {
+    const created = CREATE_TABLE_TARGET.exec(sql)?.groups?.['obj'];
+    if (created !== undefined) createdTables.add(key(parseQualified(created), owned.defaultSchema));
+  }
+  const context: ClassifyContext = { createdTables };
+
   const run = (statements: readonly TypeormStatement[], side: 'up' | 'down'): TypeormStatement[] =>
     statements.filter((statement) => {
-      const d = classifyTypeormStatement(statement.sql, owned);
+      const d = classifyTypeormStatement(statement.sql, owned, context);
 
       if (d.verdict === 'unclassified') {
         throw new TimescaleError(
@@ -470,6 +562,23 @@ function hasOwned(set: ReadonlySet<string>, qualified: string | undefined): bool
 /** `{ schema, name }` → the `schema.name` string both sides of a comparison are keyed by. */
 function key(n: QualifiedName, defaultSchema: string): string {
   return `${n.schema ?? defaultSchema}.${n.name}`;
+}
+
+/**
+ * Parse a name that came from the CATALOG rather than from SQL text.
+ *
+ * `SchemaStateIR` holds raw catalog values — `public.Readings` means a table genuinely named
+ * `Readings`, not an unquoted token to be case-folded. Running these through
+ * {@link parseQualified} lower-cased them, so a mixed-case hypertable's owned entry never matched
+ * the quoted `"public"."Readings_time_idx"` TypeORM emits, and the destructive DROP survived.
+ *
+ * So: split on the last dot, strip surrounding quotes defensively, and preserve case exactly.
+ */
+function parseCatalogName(raw: string): QualifiedName {
+  const unquote = (s: string): string => s.replace(/^"(.*)"$/s, '$1');
+  const dot = raw.lastIndexOf('.');
+  if (dot === -1) return { name: unquote(raw) };
+  return { schema: unquote(raw.slice(0, dot)), name: unquote(raw.slice(dot + 1)) };
 }
 
 /**

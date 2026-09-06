@@ -418,6 +418,119 @@ describe('review findings (#240)', () => {
     refuses('DROP TABLE "public"."readings"'); // genuinely qualified — the owned hypertable
   });
 
+  it('R3 P1 — catalog names keep their CASE; only SQL tokens fold', () => {
+    // SchemaStateIR holds raw catalog values, so `public.Readings` means a table genuinely named
+    // `Readings`. Folding it lower-cased the owned entry, which then never matched the quoted
+    // identifier TypeORM emits — and the destructive DROP survived.
+    const mixed = timescaleOwnedObjects({
+      hypertables: [
+        {
+          table: 'public.Readings',
+          dimensions: [{ column: 'Time', kind: 'time', chunkInterval: '1 day' }],
+        },
+      ],
+      continuousAggregates: [
+        {
+          viewName: 'public.ReadingsHourly',
+          source: 'public.Readings',
+          hierarchical: false,
+          materializedOnly: false,
+          definition: 'SELECT 1',
+        },
+      ],
+    });
+
+    expect([...mixed.autoIndexes]).toEqual(['public.Readings_Time_idx']);
+    expect(classifyTypeormStatement('DROP INDEX "public"."Readings_Time_idx"', mixed).verdict).toBe(
+      'filtered',
+    );
+    expect(classifyTypeormStatement('DROP VIEW "public"."ReadingsHourly"', mixed).verdict).toBe(
+      'filtered',
+    );
+    // A differently-cased name is a DIFFERENT object in Postgres, so it must survive.
+    expect(classifyTypeormStatement('DROP INDEX "public"."readings_time_idx"', mixed).verdict).toBe(
+      'keep',
+    );
+  });
+
+  it("R3 P1 — CREATE INDEX resolves its name in the INDEXED TABLE's schema", () => {
+    // Postgres forbids qualifying the index name; the index lands in the table's schema. Keying it
+    // under defaultSchema collided with a public hypertable's auto-index and silently removed the
+    // user's index in another schema.
+    keep('CREATE INDEX "readings_time_idx" ON "analytics"."events" ("ts")');
+    // ...while the same name on a table in the owned schema is still the auto index.
+    filtered('CREATE INDEX "readings_time_idx" ON "public"."readings" ("time")');
+    filtered('CREATE INDEX "readings_time_idx" ON "readings" USING btree ("time")');
+  });
+
+  it("R3 P1 — DROP TABLE in `down` that inverts this diff's own CREATE TABLE is ordinary", () => {
+    // Building the owned set from DESIRED state means a not-yet-existing hypertable is "owned".
+    // TypeORM's initial diff is CREATE TABLE up / DROP TABLE down, so refusing that down statement
+    // blocked the first composed migration for EVERY new hypertable — the milestone's main case.
+    const initial: TypeormDiff = {
+      up: [
+        { sql: 'CREATE TABLE "readings" ("time" TIMESTAMPTZ NOT NULL)' },
+        { sql: 'CREATE INDEX "readings_sensor_id_idx" ON "readings" ("sensor_id")' },
+      ],
+      down: [
+        { sql: 'DROP INDEX "public"."readings_sensor_id_idx"' },
+        { sql: 'DROP TABLE "readings"' },
+      ],
+    };
+
+    const out = filterTypeormDiff(initial, owned);
+    expect(out.diff.down.map((s) => s.sql)).toContain('DROP TABLE "readings"');
+    expect(out.filtered).toEqual([]);
+  });
+
+  it('R3 P1 — but dropping a hypertable this diff did NOT create is still refused', () => {
+    // The exception is narrow: it applies only to a table created by the SAME diff. Removing an
+    // existing hypertable is still the destructive conflict that must be resolved by hand.
+    const removal: TypeormDiff = { up: [{ sql: 'DROP TABLE "readings"' }], down: [] };
+    expect(() => filterTypeormDiff(removal, owned)).toThrow(/never drops a hypertable/);
+
+    // ...and creating a DIFFERENT table does not license the drop either.
+    const unrelated: TypeormDiff = {
+      up: [{ sql: 'CREATE TABLE "users" ("id" SERIAL)' }],
+      down: [{ sql: 'DROP TABLE "readings"' }],
+    };
+    expect(() => filterTypeormDiff(unrelated, owned)).toThrow(/never drops a hypertable/);
+  });
+
+  it('R3 P2 — RENAME TO is read only as a real clause, not from a string literal', () => {
+    // A free text scan matched inside literals and comments, so a legitimate view whose body
+    // mentions the phrase was filtered as a rename onto the owned aggregate.
+    // These are worded so that an UNANCHORED `\bRENAME\s+TO\b` scan really does match: a bare word
+    // token sits immediately before the phrase. An earlier version of this test used
+    // `SELECT 'RENAME TO ...'`, which passed for the wrong reason — the apostrophe alone defeated
+    // the naive scan, so the anchor was never exercised. Mutation testing caught that.
+    keep(`CREATE VIEW "notes" AS SELECT 1 -- do not RENAME TO "readings_hourly"`);
+    keep(`CREATE VIEW "notes" AS SELECT 'please RENAME TO "readings_hourly"' AS hint`);
+    keep(`CREATE VIEW "notes" AS SELECT 'x' AS msg RENAME TO "readings_hourly"`);
+    // The genuine clause still classifies.
+    filtered('ALTER INDEX "IDX_abc" RENAME TO "readings_time_idx"');
+  });
+
+  it('R3 P2 — every schema the timescaledb extension owns is protected', () => {
+    // Enumerated from a live 2.18.0 container via pg_depend, not from memory. That found
+    // `_timescaledb_functions` AND `_timescaledb_debug` missing; the review named only the first.
+    filtered('DROP SCHEMA "_timescaledb_functions" CASCADE');
+    filtered('DROP SCHEMA "_timescaledb_debug" CASCADE');
+    filtered('DROP TABLE "_timescaledb_functions"."x"');
+    for (const s of [
+      '_timescaledb_cache',
+      '_timescaledb_catalog',
+      '_timescaledb_config',
+      '_timescaledb_debug',
+      '_timescaledb_functions',
+      '_timescaledb_internal',
+      'timescaledb_experimental',
+      'timescaledb_information',
+    ]) {
+      filtered(`ALTER TABLE "${s}"."thing" ADD "c" text`);
+    }
+  });
+
   it('folds unquoted identifiers to lower case, as Postgres does', () => {
     filtered('DROP INDEX public.READINGS_TIME_IDX');
     refuses('DROP TABLE READINGS');
