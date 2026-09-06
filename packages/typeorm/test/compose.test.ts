@@ -30,6 +30,20 @@ const state: SchemaStateIR = {
 };
 const owned = timescaleOwnedObjects(state);
 
+/** Same, plus a continuous aggregate — used where a filtered VIEW statement is needed. */
+const ownedWithCagg = timescaleOwnedObjects({
+  ...state,
+  continuousAggregates: [
+    {
+      viewName: 'public.readings_hourly',
+      source: 'public.readings',
+      hierarchical: false,
+      materializedOnly: false,
+      definition: 'SELECT 1',
+    },
+  ],
+});
+
 /** TypeORM's half: creates the table, plus the auto-index drop the filter must remove. */
 const typeorm: TypeormDiff = {
   up: [
@@ -159,6 +173,105 @@ describe('composeMigration — filtering and identity', () => {
     expect(composedEmpty.up.map((s) => s.sql)).toEqual(timescale.up);
     expect(composedEmpty.down.map((s) => s.sql)).toEqual(timescale.down);
     expect(composedEmpty.filtered).toEqual([]);
+  });
+});
+
+/**
+ * The five findings from the Codex review of #242. Each was verified against the code (and, for the
+ * transaction one, against TypeORM's own MigrationExecutor) before being accepted; all five were real.
+ */
+describe('review findings (#242)', () => {
+  it('R1 P1 — EVERY line of a multi-line filtered statement is commented', () => {
+    // A statement with newlines previously had only its first line prefixed. In the .sql artifact
+    // the continuation lines became executable SQL sitting ABOVE `-- Up`, outside the transaction;
+    // in the .ts artifact they became invalid TypeScript.
+    const multiline: TypeormDiff = {
+      up: [{ sql: 'DROP VIEW "readings_hourly"\n  -- trailing note\n  CASCADE' }],
+      down: [],
+    };
+    const composed = composeMigration(multiline, timescale, ownedWithCagg);
+    expect(composed.filtered).toHaveLength(1);
+
+    const sql = renderComposedMigrationSql(composed);
+    const header = sql.slice(0, sql.indexOf('-- Up'));
+    for (const line of header.split('\n').filter((l) => l.trim() !== '')) {
+      expect(line.trimStart().startsWith('--'), `uncommented in .sql: ${line}`).toBe(true);
+    }
+
+    const ts = renderComposedMigration(composed);
+    const tsHeader = ts.slice(0, ts.indexOf('import type'));
+    for (const line of tsHeader.split('\n').filter((l) => l.trim() !== '')) {
+      expect(line.trimStart().startsWith('//'), `uncommented in .ts: ${line}`).toBe(true);
+    }
+  });
+
+  it('R2 P2 — a timestamp override reaches the NAME, which is what orders migrations', () => {
+    // TypeORM derives ordering from the 13-digit suffix of the class name, and the renderer emits
+    // only the name — so a timestamp that updated the field but not the name did nothing at all.
+    const shifted = composeMigration(typeorm, timescale, owned, { timestamp: 1_800_000_000_000 });
+    expect(shifted.timestamp).toBe(1_800_000_000_000);
+    expect(shifted.name).toBe('Timescale1800000000000');
+    expect(renderComposedMigration(shifted)).toContain('export class Timescale1800000000000');
+  });
+
+  it('R2 P2 — `name` is a PREFIX, as documented and as every other generator treats it', () => {
+    const renamed = composeMigration(typeorm, timescale, owned, { name: 'AddReadings' });
+    expect(renamed.name).toBe('AddReadings1700000000000');
+    // A full name including the key is idempotent rather than doubled.
+    const full = composeMigration(typeorm, timescale, owned, { name: 'AddReadings1700000000000' });
+    expect(full.name).toBe('AddReadings1700000000000');
+  });
+
+  it('R3 P2 — CONCURRENTLY inside a string literal is not mistaken for the command', () => {
+    // `\bCONCURRENTLY\b` matched the word anywhere, so a transaction-safe statement was refused.
+    const literal: TypeormDiff = {
+      up: [{ sql: 'CREATE TABLE "t" ("c" text DEFAULT \'concurrently\')' }],
+      down: [],
+    };
+    expect(() =>
+      renderComposedMigrationSql(composeMigration(literal, timescale, owned)),
+    ).not.toThrow();
+
+    // ...while the real command is still refused.
+    const real: TypeormDiff = {
+      up: [{ sql: 'CREATE INDEX CONCURRENTLY "t_c_idx" ON "t" ("c")' }],
+      down: [],
+    };
+    expect(() => renderComposedMigrationSql(composeMigration(real, timescale, owned))).toThrow(
+      /cannot run inside a transaction/,
+    );
+  });
+
+  it('R4 P2 — a statement ending in a line comment is terminated on its own line', () => {
+    // Appending `;` inline would put the terminator INSIDE the comment, leaving the statement
+    // unterminated and the following COMMIT parsed as part of it.
+    const trailingComment: TypeormDiff = {
+      up: [{ sql: 'CREATE VIEW "v" AS SELECT 1 -- why' }],
+      down: [],
+    };
+    const out = renderComposedMigrationSql(composeMigration(trailingComment, timescale, owned));
+    expect(out).toContain('CREATE VIEW "v" AS SELECT 1 -- why\n;');
+    expect(out).not.toContain('-- why;');
+    // The COMMIT must still be its own statement.
+    expect(out).toMatch(/\n;\n(?:.*\n)*?COMMIT;/);
+  });
+
+  it('R5 P2 — the refusal does not claim .ts alone fixes it', () => {
+    // Verified in typeorm@1.1.1: MigrationExecutor sets `this.transaction = "all"` by default, so a
+    // .ts migration is wrapped in a transaction too. The old message told users to emit .ts, which
+    // would have failed the same way.
+    const real: TypeormDiff = {
+      up: [{ sql: 'CREATE INDEX CONCURRENTLY "t_c_idx" ON "t" ("c")' }],
+      down: [],
+    };
+    try {
+      renderComposedMigrationSql(composeMigration(real, timescale, owned));
+      throw new Error('expected a throw');
+    } catch (e) {
+      const err = e as TimescaleError;
+      expect(err.message).toMatch(/migrationsTransactionMode/);
+      expect(err.message).toMatch(/NOT on its own a fix/);
+    }
   });
 });
 
