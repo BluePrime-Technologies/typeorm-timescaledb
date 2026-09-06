@@ -168,9 +168,11 @@ export function renderComposedMigration(migration: ComposedMigration): string {
     migration.filtered.length === 0
       ? ''
       : `\n// Statements removed because TimescaleDB owns their target (not lost — listed for review):\n${migration.filtered
-          .map(
-            (f) =>
-              `//   [${f.side}] ${f.object} — ${f.reason}\n${commentEveryLine(f.statement.sql, '//     ')}`,
+          .map((f) =>
+            commentEveryLine(
+              `[${f.side}] ${f.object} — ${f.reason}\n  ${f.statement.sql}`,
+              '//   ',
+            ),
           )
           .join('\n')}\n`;
 
@@ -298,6 +300,17 @@ function commentEveryLine(sql: string, prefix: string): string {
 const NON_TRANSACTIONAL =
   /^\s*(?:(?:CREATE\s+(?:UNIQUE\s+)?INDEX|DROP\s+INDEX|REINDEX(?:\s+\w+)?)\s+CONCURRENTLY\b|(?:VACUUM|CREATE\s+DATABASE|DROP\s+DATABASE)\b)/i;
 
+/** Options for {@link renderComposedMigrationSql}. */
+export interface RenderSqlOptions {
+  /**
+   * Which direction to emit. Default `'up'`.
+   *
+   * Deliberately one per artifact rather than both in one file — see the note on
+   * {@link renderComposedMigrationSql}.
+   */
+  readonly section?: 'up' | 'down';
+}
+
 /**
  * Render a {@link ComposedMigration} as a raw `.sql` artifact.
  *
@@ -316,9 +329,24 @@ const NON_TRANSACTIONAL =
  * time, inside a wrapper this emitter added. Refusing is the honest outcome; the `.ts` target has
  * no such constraint and takes these fine.
  *
- * @throws {TimescaleError} `INVALID_ARGUMENT` on a parameterised or non-transactional statement.
+ * **One direction per artifact.** `-- Down` used to sit below `-- Up` in the same file, but a raw
+ * `.sql` artifact is run by psql or a plain SQL runner, where a `--` heading delimits nothing: the
+ * runner commits the up section and then immediately executes the down one. For the TimescaleDB-only
+ * emitter that was survivable, because its `down` only removes policies. It is NOT survivable now
+ * that TypeORM's half is composed in — the down section drops the very table the up section just
+ * created, so running the file end to end would build the schema and then destroy it. Each call
+ * therefore emits exactly one direction, and the whole file is safe to run.
+ *
+ * @throws {TimescaleError} `INVALID_ARGUMENT` on a parameterised or non-transactional statement in
+ *   the section being emitted.
  */
-export function renderComposedMigrationSql(migration: ComposedMigration): string {
+export function renderComposedMigrationSql(
+  migration: ComposedMigration,
+  options: RenderSqlOptions = {},
+): string {
+  const side = options.section ?? 'up';
+  const statements = side === 'up' ? migration.up : migration.down;
+
   const check = (statements: readonly ComposedStatement[], side: 'up' | 'down'): void => {
     for (const { sql, parameters } of statements) {
       if (parameters !== undefined && parameters.length > 0) {
@@ -344,8 +372,9 @@ export function renderComposedMigrationSql(migration: ComposedMigration): string
       }
     }
   };
-  check(migration.up, 'up');
-  check(migration.down, 'down');
+  // Only the section being emitted is checked: a `CREATE INDEX CONCURRENTLY` in `down` must not
+  // block emitting a perfectly valid `up` artifact.
+  check(statements, side);
 
   const terminate = (sql: string): string => {
     const trimmed = sql.trimEnd();
@@ -354,7 +383,7 @@ export function renderComposedMigrationSql(migration: ComposedMigration): string
     // after a `--` would place it INSIDE the comment.
     return /--|\/\*|\n/.test(trimmed) ? `${trimmed}\n;` : `${trimmed};`;
   };
-  const section = (statements: readonly ComposedStatement[]): string =>
+  const sqlSection = (statements: readonly ComposedStatement[]): string =>
     statements.length === 0
       ? '-- no-op'
       : ['BEGIN;', ...statements.map((s) => terminate(s.sql)), 'COMMIT;'].join('\n');
@@ -363,25 +392,32 @@ export function renderComposedMigrationSql(migration: ComposedMigration): string
     migration.filtered.length === 0
       ? ''
       : `${migration.filtered
-          .map(
-            (f) =>
-              `-- removed [${f.side}] ${f.object} — ${f.reason}\n${commentEveryLine(f.statement.sql, '--   ')}`,
+          .map((f) =>
+            commentEveryLine(
+              `removed [${f.side}] ${f.object} — ${f.reason}\n  ${f.statement.sql}`,
+              '-- ',
+            ),
           )
           .join('\n')}\n\n`;
 
+  const counterpart = side === 'up' ? 'down' : 'up';
+  const intent =
+    side === 'up'
+      ? `-- Base relational DDL comes from TypeORM's own schema diff; the TimescaleDB layer is
+-- appended after it, because create_hypertable converts a table that must already exist.`
+      : `-- The TimescaleDB layer is undone first, then TypeORM's base DDL in reverse.
+-- The TimescaleDB half is non-destructive: hypertable and columnstore conversions are
+-- NOT reverted. TypeORM's half CAN be destructive — it may drop tables it created.`;
+
   return `-- Generated by typeorm-timescaledb — regenerate rather than editing by hand.
--- Migration: ${migration.name}
--- Base relational DDL comes from TypeORM's own schema diff; the TimescaleDB layer is
--- appended after it, because create_hypertable converts a table that must already exist.
--- Each section is wrapped in a transaction: a failure part-way through rolls the whole
--- section back rather than leaving a half-applied schema.
--- down is non-destructive on the TimescaleDB half: hypertable and columnstore
--- conversions are NOT reverted.
+-- Migration: ${migration.name}  (${side.toUpperCase()})
+${intent}
+-- Wrapped in a transaction: a failure part-way through rolls the whole thing back
+-- rather than leaving a half-applied schema.
+--
+-- This artifact contains the ${side.toUpperCase()} direction ONLY, and is safe to run end to end.
+-- Render the ${counterpart} separately: renderComposedMigrationSql(m, { section: '${counterpart}' }).
 
-${note}-- Up
-${section(migration.up)}
-
--- Down
-${section(migration.down)}
+${note}${sqlSection(statements)}
 `;
 }

@@ -194,7 +194,9 @@ describe('review findings (#242)', () => {
     expect(composed.filtered).toHaveLength(1);
 
     const sql = renderComposedMigrationSql(composed);
-    const header = sql.slice(0, sql.indexOf('-- Up'));
+    // Everything before the first executable line must be commented. `-- Up` is no longer a
+    // marker (each artifact is one direction now), so the body starts at BEGIN;.
+    const header = sql.slice(0, sql.indexOf('BEGIN;'));
     for (const line of header.split('\n').filter((l) => l.trim() !== '')) {
       expect(line.trimStart().startsWith('--'), `uncommented in .sql: ${line}`).toBe(true);
     }
@@ -273,6 +275,46 @@ describe('review findings (#242)', () => {
       expect(err.message).toMatch(/migrationsTransactionMode/);
       expect(err.message).toMatch(/NOT on its own a fix/);
     }
+  });
+});
+
+/** Round 3 of the #242 review. Both verified against the code; both real. */
+describe('review findings (#242, round 3)', () => {
+  it('R3 P1 — a newline in the OBJECT NAME cannot escape the comment block', () => {
+    // Postgres permits a newline inside a quoted identifier, and the filter's OBJ pattern uses
+    // `[^"]`, which matches one. Round 1 routed `statement.sql` through the line-commenter but left
+    // the object/reason annotation interpolated raw, so the second line of a crafted identifier
+    // landed as executable SQL above the body.
+    // The newline must be in the OBJECT NAME, not merely in the statement — an earlier version of
+    // this test put it in the statement, so the captured object stayed single-line and the bug went
+    // undetected (both annotation mutants survived). An internal-schema target is filtered on its
+    // schema alone, so the identifier is free to be hostile.
+    const newlineIdentifier: TypeormDiff = {
+      up: [{ sql: 'DROP TABLE "_timescaledb_internal"."bad\nDROP TABLE \\"victim\\"; --"' }],
+      down: [],
+    };
+    const composed = composeMigration(newlineIdentifier, timescale, owned);
+    expect(composed.filtered).toHaveLength(1);
+    expect(composed.filtered[0]?.object).toContain('\n');
+
+    const sql = renderComposedMigrationSql(composed);
+    const header = sql.slice(0, sql.indexOf('BEGIN;'));
+    for (const line of header.split('\n').filter((l) => l.trim() !== '')) {
+      expect(line.trimStart().startsWith('--'), `uncommented in .sql: ${line}`).toBe(true);
+    }
+    const ts = renderComposedMigration(composed);
+    const tsHeader = ts.slice(0, ts.indexOf('import type'));
+    for (const line of tsHeader.split('\n').filter((l) => l.trim() !== '')) {
+      expect(line.trimStart().startsWith('//'), `uncommented in .ts: ${line}`).toBe(true);
+    }
+  });
+
+  it('R3 P1 — the up artifact never contains the destructive down statements', () => {
+    // The core of the finding: psql does not treat `-- Down` as a delimiter, so a single-file
+    // artifact would create the table and then drop it.
+    const up = renderComposedMigrationSql(composeMigration(typeorm, timescale, owned));
+    expect(up).not.toContain('DROP TABLE');
+    expect(up).not.toMatch(/^-- Down$/m);
   });
 });
 
@@ -445,16 +487,29 @@ describe('renderComposedMigration (.ts)', () => {
 });
 
 describe('renderComposedMigrationSql (.sql) — refuses rather than degrades', () => {
-  it('wraps each section in a transaction', () => {
-    const out = renderComposedMigrationSql(composeMigration(typeorm, timescale, owned));
-    expect(out).toContain('-- Up\nBEGIN;');
-    expect(out).toContain('COMMIT;');
-    // Compare positions WITHIN the Up section: the filtered-note header also mentions
-    // create_hypertable (it is part of the reason string), which a whole-document indexOf finds first.
-    const upSection = out.slice(out.indexOf('-- Up'), out.indexOf('-- Down'));
-    expect(upSection.indexOf('CREATE TABLE')).toBeLessThan(
-      upSection.indexOf('SELECT create_hypertable'),
-    );
+  it('emits ONE direction per artifact, each safe to run end to end', () => {
+    // `-- Down` below `-- Up` in one file is not a delimiter to psql: the runner would commit the
+    // up section and then execute the down one, dropping the table it just created. Composition is
+    // what made that fatal — the TimescaleDB-only down merely removed policies.
+    const composed = composeMigration(typeorm, timescale, owned);
+
+    const up = renderComposedMigrationSql(composed);
+    expect(up).toContain('BEGIN;');
+    expect(up).toContain('COMMIT;');
+    expect(up).toContain('CREATE TABLE "readings"');
+    expect(up).toContain("SELECT create_hypertable('public.readings', by_range('time'));");
+    // The destructive inverse must NOT be in the up artifact at all.
+    expect(up).not.toContain('DROP TABLE');
+    expect(up).not.toContain('remove_retention_policy');
+
+    const down = renderComposedMigrationSql(composed, { section: 'down' });
+    expect(down).toContain('DROP TABLE "readings"');
+    expect(down).toContain("SELECT remove_retention_policy('public.readings');");
+    expect(down).not.toContain('CREATE TABLE');
+
+    // Ordering still holds within the emitted direction.
+    expect(up.indexOf('CREATE TABLE')).toBeLessThan(up.indexOf('SELECT create_hypertable'));
+    expect(down.indexOf('remove_retention_policy')).toBeLessThan(down.indexOf('DROP TABLE'));
   });
 
   it('REFUSES bound parameters instead of inlining them', () => {
@@ -499,7 +554,7 @@ describe('renderComposedMigrationSql (.sql) — refuses rather than degrades', (
     };
     const composed = composeMigration(concurrentDown, timescale, owned);
     try {
-      renderComposedMigrationSql(composed);
+      renderComposedMigrationSql(composed, { section: 'down' });
       throw new Error('expected a throw');
     } catch (e) {
       expect((e as TimescaleError).context).toMatchObject({ side: 'down' });
