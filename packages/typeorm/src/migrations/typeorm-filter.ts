@@ -276,6 +276,11 @@ const INTERNAL_SCHEMAS = new Set([
   '_timescaledb_internal',
   'timescaledb_experimental',
   'timescaledb_information',
+  // Owned by timescaledb_toolkit, not by timescaledb — the same query against a
+  // timescaledb-ha image with the toolkit installed reports
+  // `timescaledb_toolkit -> toolkit_experimental`. The CI matrix runs a toolkit leg and
+  // docs/limitations.md already names this schema, so it is squarely in scope.
+  'toolkit_experimental',
 ]);
 
 /** Extensions whose lifecycle this library owns, not TypeORM's entity metadata. */
@@ -353,7 +358,8 @@ const CREATE_TABLE_TARGET = new RegExp(
 );
 
 /** What kind of object a recognised statement targets. */
-type TargetKind = 'index' | 'table' | 'view' | 'schema' | 'extension' | 'other' | 'none';
+type TargetKind =
+  'index' | 'table' | 'view' | 'schema' | 'extension' | 'comment-column' | 'other' | 'none';
 
 const recognise = (body: string, target: TargetKind) => ({
   re: new RegExp(String.raw`^\s*${body}`, 'i'),
@@ -408,13 +414,26 @@ const RECOGNISED = [
     String.raw`(?:CREATE|DROP|ALTER)\s+EXTENSION\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?${OBJ}`,
     'extension',
   ),
+  // TYPE and SEQUENCE only. TRIGGER and FUNCTION were in an earlier draft on the assumption that
+  // TypeORM emits them; grepping `PostgresQueryRunner` for trigger/function DDL returns ZERO
+  // matches. Keeping them meant `DROP TRIGGER "x" ON "_timescaledb_internal"."t"` was waved through
+  // on the strength of the unqualified TRIGGER name, ignoring the mandatory `ON <table>` that
+  // actually determines ownership. Since TypeORM never emits these, refusing costs nothing real and
+  // is safer than parsing a form that will not occur.
   recognise(
-    String.raw`(?:CREATE|DROP|ALTER)\s+(?:TYPE|SEQUENCE|FUNCTION|TRIGGER)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?${OBJ}`,
+    String.raw`(?:CREATE|DROP|ALTER)\s+(?:TYPE|SEQUENCE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?${OBJ}`,
     'other',
   ),
   recognise(String.raw`(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+${OBJ}`, 'table'),
-  // Metadata only, and its target may be a column or constraint rather than a relation.
-  recognise(String.raw`COMMENT\s+ON\b`, 'none'),
+  // COMMENT ON is metadata only, but its TARGET still decides ownership: classifying every form as
+  // targetless let `COMMENT ON COLUMN "_timescaledb_catalog"."hypertable"."table_name" IS 'x'`
+  // through, modifying extension-owned metadata. The COLUMN form carries an extra trailing
+  // component, so its schema sits one place further left than everywhere else in this table.
+  recognise(String.raw`COMMENT\s+ON\s+COLUMN\s+${OBJ}`, 'comment-column'),
+  recognise(
+    String.raw`COMMENT\s+ON\s+(?:MATERIALIZED\s+)?(?:TABLE|VIEW|INDEX|SEQUENCE|TYPE|SCHEMA)\s+${OBJ}`,
+    'other',
+  ),
 ] as const;
 
 /**
@@ -461,7 +480,10 @@ export function classifyTypeormStatement(
     };
   }
 
-  const parsed = parseQualified(raw);
+  // `COMMENT ON COLUMN a.b.c` names the COLUMN last, so the relation and schema each sit one
+  // component further left than in every other statement form.
+  const parsed =
+    match.target === 'comment-column' ? parseQualified(raw, { dropLast: 1 }) : parseQualified(raw);
 
   // Parse the CREATE INDEX tail from the text AFTER the index name, never by scanning the whole
   // statement — an `ON` inside a quoted index name would otherwise be read as the table clause.
@@ -746,7 +768,7 @@ function parseCatalogName(raw: string): QualifiedName {
  * and each mistake resolves to no owned object — which falls through to `keep`, the destructive
  * direction for this module.
  */
-function parseQualified(raw: string): QualifiedName {
+function parseQualified(raw: string, options: { dropLast?: number } = {}): QualifiedName {
   const parts: string[] = [];
   let i = 0;
 
@@ -775,7 +797,8 @@ function parseQualified(raw: string): QualifiedName {
     }
   }
 
-  const name = parts[parts.length - 1] ?? '';
-  const schema = parts.length > 1 ? parts[parts.length - 2] : undefined;
+  const kept = options.dropLast === undefined ? parts : parts.slice(0, -options.dropLast);
+  const name = kept[kept.length - 1] ?? '';
+  const schema = kept.length > 1 ? kept[kept.length - 2] : undefined;
   return schema !== undefined ? { schema, name } : { name };
 }

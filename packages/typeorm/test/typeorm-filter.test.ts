@@ -658,6 +658,42 @@ describe('review findings (#240)', () => {
     keep('CREATE INDEX "whatever" ON "public"."users" ("id")');
   });
 
+  it('R7 P2 — COMMENT ON has its TARGET inspected, including the COLUMN form', () => {
+    // Treating every COMMENT ON as targetless let a comment on extension-owned metadata through.
+    // The COLUMN form names the column LAST, so its schema sits one component further left than
+    // in any other statement — getting that wrong would read `hypertable` as the schema.
+    filtered(`COMMENT ON COLUMN "_timescaledb_catalog"."hypertable"."table_name" IS 'x'`);
+    filtered(`COMMENT ON TABLE "_timescaledb_catalog"."hypertable" IS 'x'`);
+
+    // A user's own comments are untouched — this is the over-filtering direction to protect.
+    keep(`COMMENT ON COLUMN "public"."readings"."value" IS 'x'`);
+    keep(`COMMENT ON COLUMN "readings"."value" IS $1`);
+    keep(`COMMENT ON TABLE "readings" IS 'sensor data'`);
+  });
+
+  it('R7 P2 — TRIGGER and FUNCTION DDL refuses, since TypeORM never emits it', () => {
+    // These were allow-listed on an assumption. Grepping PostgresQueryRunner for trigger/function
+    // DDL returns ZERO matches, and keeping them meant `DROP TRIGGER "x" ON <internal table>` was
+    // waved through on the unqualified trigger name — ignoring the `ON <table>` that decides
+    // ownership. Refusing a form TypeORM cannot produce costs nothing real.
+    refuses('DROP TRIGGER "x" ON "_timescaledb_internal"."t"');
+    refuses('CREATE TRIGGER "x" BEFORE INSERT ON "readings" EXECUTE FUNCTION f()');
+    refuses('DROP FUNCTION "public"."f"()');
+
+    // TYPE and SEQUENCE stay allow-listed — TypeORM emits those.
+    keep('CREATE TYPE "public"."mood" AS ENUM (\'a\')');
+    keep('DROP SEQUENCE "users_id_seq"');
+  });
+
+  it('R7 P2 — the toolkit-owned schema is protected too', () => {
+    // `toolkit_experimental` is owned by timescaledb_toolkit, not timescaledb, so the earlier
+    // enumeration missed it. Confirmed on a timescaledb-ha image with the toolkit installed:
+    // `timescaledb_toolkit -> toolkit_experimental`. The CI matrix runs a toolkit leg.
+    filtered('DROP SCHEMA "toolkit_experimental" CASCADE');
+    filtered('DROP TABLE "toolkit_experimental"."thing"');
+    filtered('ALTER TABLE "toolkit_experimental"."thing" ADD "c" text');
+  });
+
   it('folds unquoted identifiers to lower case, as Postgres does', () => {
     filtered('DROP INDEX public.READINGS_TIME_IDX');
     refuses('DROP TABLE READINGS');
