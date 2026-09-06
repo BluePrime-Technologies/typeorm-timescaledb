@@ -97,13 +97,24 @@ describe('classify — must FILTER (TimescaleDB owns these)', () => {
     filtered('CREATE INDEX "readings_time_idx" ON "readings" USING btree ("time")');
   });
 
-  it('chunks, compressed chunks and materialization internals', () => {
+  it('chunks, compressed chunks and materialization internals — in their own schema', () => {
+    // TimescaleDB places all of these in `_timescaledb_internal`, never in a user schema.
     filtered('DROP TABLE "_timescaledb_internal"."_hyper_1_1_chunk"');
-    filtered('DROP TABLE "_hyper_12_34_chunk"');
-    filtered('DROP TABLE "compress_hyper_2_3_chunk"');
-    filtered('DROP TABLE "_materialized_hypertable_2"');
-    filtered('DROP VIEW "_partial_view_2"');
-    filtered('DROP VIEW "_direct_view_2"');
+    filtered('DROP TABLE "_timescaledb_internal"."_hyper_12_34_chunk"');
+    filtered('DROP TABLE "_timescaledb_internal"."compress_hyper_2_3_chunk"');
+    filtered('DROP TABLE "_timescaledb_internal"."_materialized_hypertable_2"');
+    filtered('DROP VIEW "_timescaledb_internal"."_partial_view_2"');
+    filtered('DROP VIEW "_timescaledb_internal"."_direct_view_2"');
+  });
+
+  it('names the specific internal object in its reason, not just the schema', () => {
+    const d = classifyTypeormStatement(
+      'DROP TABLE "_timescaledb_internal"."_hyper_1_1_chunk"',
+      owned,
+    );
+    expect(d.verdict).toBe('filtered');
+    if (d.verdict !== 'filtered') return;
+    expect(d.reason).toMatch(/hypertable chunk/);
   });
 
   it('anything in a TimescaleDB schema', () => {
@@ -355,6 +366,44 @@ describe('review findings (#240)', () => {
 
     // The destination inherits the source's schema, so a rename in another schema is untouched.
     keep('ALTER INDEX "other"."IDX_abc" RENAME TO "readings_time_idx"');
+  });
+
+  it('R2 P1 — catalog names REPLACE reconstruction, they do not union with it', () => {
+    // Postgres only appends a collision suffix because the reconstructed name was already taken —
+    // by a USER's index. Unioning would filter both the real auto index (`..._time_idx1`) AND the
+    // user's own `..._time_idx`, silently deleting their DDL. The contract is replacement.
+    const withCatalog = timescaleOwnedObjects(
+      {
+        hypertables: [
+          {
+            table: 'public.readings',
+            dimensions: [{ column: 'time', kind: 'time', chunkInterval: '1 day' }],
+          },
+        ],
+      },
+      { knownAutoIndexes: ['public.readings_time_idx1'] },
+    );
+
+    expect([...withCatalog.autoIndexes]).toEqual(['public.readings_time_idx1']);
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_time_idx1"', withCatalog).verdict,
+    ).toBe('filtered');
+    // The user's index of the reconstructed name must SURVIVE.
+    expect(
+      classifyTypeormStatement('DROP INDEX "public"."readings_time_idx"', withCatalog).verdict,
+    ).toBe('keep');
+  });
+
+  it('R2 P2 — internal NAMES only confer ownership inside an internal SCHEMA', () => {
+    // TimescaleDB puts chunks and materialization internals exclusively in its own schemas, so a
+    // user entity that happens to match the convention is theirs, and filtering it would silently
+    // remove legitimate TypeORM DDL.
+    keep('DROP TABLE "app"."_hyper_1_1_chunk"');
+    keep('DROP TABLE "_hyper_12_34_chunk"'); // unqualified → resolves to public
+    keep('DROP TABLE "public"."_materialized_hypertable_2"');
+    keep('DROP VIEW "app"."_partial_view_2"');
+
+    filtered('DROP TABLE "_timescaledb_internal"."_hyper_1_1_chunk"');
   });
 
   it('P2 — doubled quotes inside an identifier are one escaped quote, not a terminator', () => {

@@ -99,11 +99,17 @@ export interface OwnedObjectOptions {
    */
   readonly defaultSchema?: string;
   /**
-   * Index names read from the catalog, when the caller has them.
+   * Auto-index names read from the catalog, REPLACING reconstruction entirely.
    *
    * {@link truncateIdentifier} reproduces Postgres's naming for the common case, but it cannot know
-   * about collision suffixes. A caller introspecting a live database can pass the real names and
-   * skip the reconstruction entirely.
+   * about collision suffixes. A caller introspecting a live database can pass the real names
+   * instead.
+   *
+   * Supplying this **replaces** the reconstructed set rather than adding to it, and that is the
+   * whole point. Collision suffixes exist precisely because the reconstructed name was already
+   * taken — by a USER's index. Unioning the two would filter both the real auto index
+   * (`..._time_idx1`) and the user's own `..._time_idx`, silently deleting their DDL. So when this
+   * is provided it must be the complete, authoritative list for every hypertable in `state`.
    */
   readonly knownAutoIndexes?: readonly string[];
 }
@@ -125,9 +131,16 @@ export function timescaleOwnedObjects(
   const hypertables = new Set<string>();
   const autoIndexes = new Set<string>();
 
+  // Catalog names REPLACE reconstruction — see OwnedObjectOptions.knownAutoIndexes. Unioning them
+  // would filter the user's own index whenever a collision suffix was the reason for supplying
+  // catalog names in the first place.
+  const fromCatalog = options.knownAutoIndexes !== undefined;
+
   for (const ht of state.hypertables) {
     const parsed = parseQualified(ht.table);
     hypertables.add(key(parsed, defaultSchema));
+
+    if (fromCatalog) continue;
 
     for (const dim of ht.dimensions) {
       // Only the TIME dimension. `create_hypertable` indexes that column; a space dimension gets no
@@ -305,11 +318,19 @@ export function classifyTypeormStatement(
   const parsed = parseQualified(raw);
   const qualified = key(parsed, owned.defaultSchema);
 
+  // Internal-object NAMES only establish ownership inside an internal SCHEMA. TimescaleDB puts
+  // chunks, materialization hypertables and partial/direct views exclusively in its own schemas, so
+  // a `app._hyper_1_1_chunk` is a user table with an unfortunate name — and filtering it would
+  // silently delete their DDL. The name still refines the reason, which is worth keeping.
   if (parsed.schema !== undefined && INTERNAL_SCHEMAS.has(parsed.schema)) {
+    const internal = INTERNAL_PATTERNS.find((p) => p.re.test(parsed.name));
     return {
       verdict: 'filtered',
       object: raw,
-      reason: `lives in ${parsed.schema}, which is TimescaleDB's own schema`,
+      reason:
+        internal !== undefined
+          ? `is ${internal.what}, created and owned by TimescaleDB`
+          : `lives in ${parsed.schema}, which is TimescaleDB's own schema`,
     };
   }
 
@@ -327,16 +348,6 @@ export function classifyTypeormStatement(
       object: raw,
       reason: 'is an extension whose lifecycle this library owns, not TypeORM entity metadata',
     };
-  }
-
-  for (const p of INTERNAL_PATTERNS) {
-    if (p.re.test(parsed.name)) {
-      return {
-        verdict: 'filtered',
-        object: raw,
-        reason: `is ${p.what}, created and owned by TimescaleDB`,
-      };
-    }
   }
 
   // A rename must get the SAME disposition at both ends. TypeORM's down statement inverts the
