@@ -320,23 +320,30 @@ const RENAME_TO = new RegExp(
  */
 const CREATE_INDEX_TAIL = new RegExp(
   String.raw`^\s*ON\s+(?:ONLY\s+)?(?<table>${QUOTED}(?:\.${QUOTED})*|[^\s(;]+)` +
-    String.raw`(?:\s+USING\s+\w+)?\s*(?:\((?<cols>[^()]*)\))?`,
+    String.raw`(?:\s+USING\s+(?<using>\w+))?\s*(?:\((?<cols>[^()]*)\))?(?<rest>[\s\S]*)$`,
   'i',
 );
 
-/** Column names from an index column list, stripped of ordering and quoting. */
-function indexColumns(cols: string): string[] {
-  return cols
-    .split(',')
-    .map((c) =>
-      c
-        .trim()
-        .replace(/\s+(?:ASC|DESC)\b/i, '')
-        .replace(/\s+NULLS\s+(?:FIRST|LAST)\b/i, '')
-        .trim(),
-    )
-    .map((c) => (c.startsWith('"') ? parseQualified(c).name : c.toLowerCase()))
-    .filter((c) => c.length > 0);
+/**
+ * Column names from an index column list, or `undefined` if the list carries anything this filter
+ * cannot account for.
+ *
+ * A trailing `DESC` is accepted because that is how `create_hypertable` builds the time index. An
+ * explicit `ASC` or `NULLS` ordering is NOT: it denotes a different index, and TypeORM never emits
+ * one (`createIndexSql` joins bare `"col"` names), so refusing costs nothing real.
+ */
+function indexColumns(cols: string): string[] | undefined {
+  const out: string[] = [];
+  for (const raw of cols.split(',')) {
+    const part = raw
+      .trim()
+      .replace(/\s+DESC$/i, '')
+      .trim();
+    if (part.length === 0) return undefined;
+    if (/\s/.test(part.replace(/^"(?:[^"]|"")*"$/, ''))) return undefined; // ASC / NULLS / expression
+    out.push(part.startsWith('"') ? parseQualified(part).name : part.toLowerCase());
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** `CREATE TABLE "schema"."name"` — used to spot tables this diff creates. */
@@ -529,17 +536,14 @@ export function classifyTypeormStatement(
     // (`knownAutoIndexes`) are authoritative and skip this check.
     const expected = owned.autoIndexColumns.get(qualified);
     if (isCreateIndex && expected !== undefined) {
-      const cols = tail?.groups?.['cols'];
-      const actual = cols === undefined ? undefined : indexColumns(cols);
-      if (actual === undefined || !sameColumns(actual, expected)) {
+      const mismatch = autoIndexMismatch(sql, tail, expected);
+      if (mismatch !== undefined) {
         return {
           verdict: 'unclassified',
           reason:
             `${raw} has the name create_hypertable() would generate for the time index on ` +
-            `(${expected.join(', ')}), but this statement defines it on ` +
-            `${actual === undefined ? 'an expression this filter cannot read' : `(${actual.join(', ')})`}. ` +
-            'Keeping it would collide with the index create_hypertable() creates; dropping it would ' +
-            'lose your index. Rename yours to resolve',
+            `(${expected.join(', ')}), but ${mismatch}. Keeping it would collide with the index ` +
+            'create_hypertable() creates; dropping it would lose yours. Rename yours to resolve',
         };
       }
     }
@@ -669,6 +673,47 @@ function hasOwned(set: ReadonlySet<string>, qualified: string | undefined): bool
 /** Order matters for an index, so this is a positional comparison, not a set comparison. */
 function sameColumns(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((c, i) => c === b[i]);
+}
+
+/**
+ * Why a `CREATE INDEX` is NOT the auto index whose name it reuses, or `undefined` if it is.
+ *
+ * The column list alone is not enough. `@Index('readings_time_idx', ['time'], { unique: true })`
+ * and a partial index on the same column both produce a matching column list while being entirely
+ * different indexes, so filtering on columns silently removed them. `createIndexSql` can emit
+ * `UNIQUE`, an index-type clause and a `WHERE` predicate, and every one of those changes what the
+ * index means — so the whole definition must match, and anything unrecognised refuses.
+ */
+function autoIndexMismatch(
+  sql: string,
+  tail: RegExpExecArray | null,
+  expected: readonly string[],
+): string | undefined {
+  if (/^\s*CREATE\s+UNIQUE\b/i.test(sql)) {
+    return 'this one is UNIQUE, which the auto index is not';
+  }
+
+  const using = tail?.groups?.['using'];
+  if (using !== undefined && using.toLowerCase() !== 'btree') {
+    return `this one uses the ${using} access method, not btree`;
+  }
+
+  const trailing = (tail?.groups?.['rest'] ?? '').trim().replace(/;$/, '').trim();
+  if (trailing.length > 0) {
+    // WHERE, INCLUDE, WITH, TABLESPACE, NULLS NOT DISTINCT — all change the index's meaning.
+    return `this one carries an extra clause the auto index does not have (${trailing})`;
+  }
+
+  const cols = tail?.groups?.['cols'];
+  const actual = cols === undefined ? undefined : indexColumns(cols);
+  if (actual === undefined) {
+    return 'this one is defined on an expression or ordering this filter cannot read';
+  }
+  if (!sameColumns(actual, expected)) {
+    return `this one defines it on (${actual.join(', ')})`;
+  }
+
+  return undefined;
 }
 
 /** `{ schema, name }` → the `schema.name` string both sides of a comparison are keyed by. */

@@ -540,6 +540,29 @@ describe('review findings (#240)', () => {
     if (d.verdict !== 'unclassified') return;
     expect(d.reason).toMatch(/defines it on \(value\)/);
 
+    // R6 P1 — the column list alone is not the definition. A UNIQUE or partial index on the SAME
+    // column is a different index, and matching columns made it look owned.
+    refuses('CREATE UNIQUE INDEX "readings_time_idx" ON "readings" ("time")');
+    refuses('CREATE INDEX "readings_time_idx" ON "readings" ("time") WHERE "value" > 0');
+    refuses('CREATE INDEX "readings_time_idx" ON "readings" USING hash ("time")');
+    refuses('CREATE INDEX "readings_time_idx" ON "readings" ("time") INCLUDE ("value")');
+
+    // Explicit ordering refuses too — but assert the REASON, not just the verdict. Without the
+    // ordering guard these still refuse (the parse yields a garbled column), so only the message
+    // distinguishes the two paths, and a verdict-only test left the guard unpinned under mutation.
+    for (const sql of [
+      'CREATE INDEX "readings_time_idx" ON "readings" ("time" ASC)',
+      'CREATE INDEX "readings_time_idx" ON "readings" ("time" NULLS FIRST)',
+    ]) {
+      const ordered = classifyTypeormStatement(sql, owned);
+      expect(ordered.verdict, sql).toBe('unclassified');
+      if (ordered.verdict !== 'unclassified') continue;
+      expect(ordered.reason, sql).toMatch(/ordering this filter cannot read/);
+    }
+
+    // A trailing semicolon is not an "extra clause".
+    filtered('CREATE INDEX "readings_time_idx" ON "readings" ("time");');
+
     // The genuine auto index — same name, matching definition — is still filtered.
     filtered('CREATE INDEX "readings_time_idx" ON "readings" USING btree ("time" DESC)');
     // A definition this filter cannot read is refused rather than assumed to be the auto index.
