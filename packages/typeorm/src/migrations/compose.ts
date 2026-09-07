@@ -3,7 +3,7 @@ import type { GeneratedMigration } from './generate.js';
 import { resolveMigrationName } from './generate.js';
 import type { TypeormDiff } from './typeorm-diff.js';
 import type { FilteredStatement, FilterMode, TimescaleOwnedObjects } from './typeorm-filter.js';
-import { filterTypeormDiff } from './typeorm-filter.js';
+import { filterTypeormDiff, parseQualified } from './typeorm-filter.js';
 
 /**
  * The composer — slice 3 of M4.5 (#235).
@@ -123,28 +123,28 @@ export function composeMigration(
 const RENAME_TABLE =
   /^\s*ALTER\s+TABLE\s+(?:ONLY\s+)?(?<from>"(?:[^"]|"")*"(?:\."(?:[^"]|"")*")*|[^\s(;]+)\s+RENAME\s+TO\s+(?<to>"(?:[^"]|"")*"|[^\s(;]+)/i;
 
-/** Split a possibly-qualified identifier into its unquoted schema and name. */
-function splitIdent(raw: string, defaultSchema: string): { schema: string; name: string } {
-  const parts = raw.split('.').map((x) => x.replace(/^"(.*)"$/s, '$1'));
-  const name = parts[parts.length - 1] ?? '';
-  return { schema: parts.length > 1 ? (parts[parts.length - 2] as string) : defaultSchema, name };
-}
-
 /**
  * `schema.a->schema.b` for a rename statement, or `undefined` if it is not one.
  *
- * SCHEMA-QUALIFIED, because comparing bare names made renaming `analytics.old` and `public.old` in
- * the same migration look like one duplicated rename and refused a perfectly valid multi-schema
- * change. `RENAME TO` takes an unqualified name — Postgres keeps the table in its existing schema —
- * so the destination inherits the source's.
+ * Uses slice 2's quote-aware {@link parseQualified} rather than a local `split('.')`. The local one
+ * was a naive duplicate of a parser that already existed and was already correct, and it broke on a
+ * quoted name CONTAINING a period: `"analytics"."old.name"` split into three parts, so the real
+ * schema fell off the front and two distinct tables compared equal. Duplicating parsing logic was
+ * the actual defect; the period was just how it surfaced.
+ *
+ * `RENAME TO` takes an unqualified name — Postgres keeps the table in its schema — so the
+ * destination inherits the source's.
  */
 function renamePair(sql: string, defaultSchema: string): string | undefined {
   const m = RENAME_TABLE.exec(sql);
   const from = m?.groups?.['from'];
   const to = m?.groups?.['to'];
   if (from === undefined || to === undefined) return undefined;
-  const source = splitIdent(from, defaultSchema);
-  return `${source.schema}.${source.name}->${source.schema}.${splitIdent(to, source.schema).name}`;
+  const source = parseQualified(from);
+  const schema = source.schema ?? defaultSchema;
+  // The destination is unqualified and inherits `schema`, which is already the key's first
+  // component — repeating it would add nothing to the comparison.
+  return `${schema}.${source.name}->${parseQualified(to).name}`;
 }
 
 /**
@@ -273,107 +273,6 @@ ${body(migration.down)}
 }
 
 /**
- * Is the last SYNTACTIC character of `sql` a `;`?
- *
- * Not the same as `endsWith(';')`, which is what an earlier revision checked. In
- * `CREATE VIEW "v" AS SELECT 1 -- why;` the final character IS a semicolon, but Postgres treats it
- * as part of the line comment, so the statement is unterminated and the `COMMIT` that follows is
- * parsed as a continuation of it. The artifact then fails to apply.
- *
- * Walks the statement tracking single quotes (with `''` escapes), quoted identifiers (with `""`
- * and quoted identifiers) and `--` line comments, and remembers the last character that was
- * neither.
- *
- * Quote tracking earns its place: `--` inside a string literal or a quoted identifier
- * (`CREATE VIEW "v--x" ...`) would otherwise start a phantom comment and swallow the real
- * terminator.
- *
- * Block-comment tracking earns its place too, which an earlier revision got WRONG. It was deleted
- * as "provably unreachable" on the argument that a well-formed block comment always ends in `/`, so
- * it could never leave a `;` as the last character. That argument considered the block comment in
- * isolation and missed the interaction: in `SELECT 1 /* ; -- *\u002F` the `--` INSIDE the block
- * starts a line comment, the closing delimiter is therefore never seen, and the block's `;` survives
- * as the last character — reporting a terminator that is not there. What matters is that the
- * in-block STATE is consumed before a `--` is allowed to start a line comment; the relative order of
- * the two opening checks is irrelevant, since a position cannot be both.
- *
- * Doubled-quote ESCAPES (`'it''s'`) genuinely are not special-cased: `''` is two toggles, so the
- * in-string parity, and therefore the verdict, is identical either way. That one is a parity
- * argument with no interaction to miss. If this scanner is ever extended to return more than
- * "does it end in `;`", escape handling has to come back.
- *
- * Block comments need no special case and are deliberately not tracked: a well-formed one always
- * ends in `/`, so it can never make the scanner report a terminator that is not there. Mutation
- * testing confirmed the branch was unreachable for any valid SQL, and an untestable guard is worse
- * than none — the only input that would exercise it is an UNTERMINATED block comment, which is
- * malformed SQL the schema builder cannot emit.
- *
- * Deliberately does NOT handle dollar-quoted strings (`$$ ... $$`): TypeORM's schema builder never
- * emits one, and getting it wrong would mis-read a `;` inside a function body. The failure
- * direction is safe either way — an extra `;` is a harmless empty statement in Postgres, a MISSING
- * one breaks the artifact, so anything this cannot parse falls through to "not terminated" and gets
- * a terminator appended.
- */
-function endsWithTerminator(sql: string): boolean {
-  let inSingle = false;
-  let inDouble = false;
-  let inLine = false;
-  let inBlock = false;
-  let last = '';
-
-  for (let i = 0; i < sql.length; i++) {
-    const c = sql[i] as string;
-    const next = sql[i + 1];
-
-    if (inLine) {
-      if (c === '\n') inLine = false;
-      continue;
-    }
-    if (inBlock) {
-      if (c === '*' && next === '/') {
-        inBlock = false;
-        i++;
-      }
-      continue;
-    }
-    if (inSingle) {
-      if (c === "'") inSingle = false;
-      last = c;
-      continue;
-    }
-    if (inDouble) {
-      if (c === '"') inDouble = false;
-      last = c;
-      continue;
-    }
-
-    if (c === '/' && next === '*') {
-      inBlock = true;
-      i++;
-      continue;
-    }
-    if (c === '-' && next === '-') {
-      inLine = true;
-      i++;
-      continue;
-    }
-    if (c === "'") {
-      inSingle = true;
-      last = c;
-      continue;
-    }
-    if (c === '"') {
-      inDouble = true;
-      last = c;
-      continue;
-    }
-    if (!/\s/.test(c)) last = c;
-  }
-
-  return last === ';';
-}
-
-/**
  * Prefix EVERY line of a statement, not just the first.
  *
  * Filtered SQL is echoed into both artifacts so a removed statement stays reviewable. A statement
@@ -486,12 +385,27 @@ export function renderComposedMigrationSql(
   // block emitting a perfectly valid `up` artifact.
   check(statements, side);
 
+  // Deciding whether a statement is ALREADY terminated turned out to need a Postgres lexer, and a
+  // hand-rolled one was wrong seven times across six review rounds: last-character vs last token,
+  // line comments, quoted identifiers, CR and Unicode line separators, block comments, NESTED block
+  // comments, dollar-quoted strings. Each miss produced an artifact that fails to apply.
+  //
+  // So it no longer tries. Verified on a live container: Postgres accepts a redundant empty
+  // statement (`SELECT 1;` followed by a bare `;`), which makes the failure directions wildly
+  // asymmetric — a spare `;` is inert, a missing one is fatal. A trailing `;` is therefore trusted
+  // only when the last line carries no `--` that could be hiding it; everything else gets a
+  // terminator on its own line, which is valid whatever the statement contains. That is correct for
+  // dollar quotes and nested comments for free, without knowing they exist.
   const terminate = (sql: string): string => {
     const trimmed = sql.trimEnd();
-    if (endsWithTerminator(trimmed)) return trimmed;
-    // Put the terminator on its own line whenever a comment could be in play — appending it inline
-    // after a `--` would place it INSIDE the comment.
-    return /--|\/\*|\n/.test(trimmed) ? `${trimmed}\n;` : `${trimmed};`;
+    // `!includes('--')` over the WHOLE statement, not just its last line. Restricting it to the last
+    // line saves a redundant `;` on a multi-line statement whose comment is early — an optimisation,
+    // not a safety property, and one more piece of cleverness to keep tested. Both are safe; this
+    // one is simpler.
+    if (trimmed.endsWith(';') && !trimmed.includes('--')) return trimmed;
+    // Only the constructs that can HIDE a terminator matter. A newline cannot: a multi-line
+    // statement with no comment and no dollar quote takes an inline `;` perfectly well.
+    return /--|\/\*|\$/.test(trimmed) ? `${trimmed}\n;` : `${trimmed};`;
   };
   const sqlSection = (statements: readonly ComposedStatement[]): string =>
     statements.length === 0

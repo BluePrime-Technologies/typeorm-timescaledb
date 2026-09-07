@@ -94,7 +94,7 @@ function makeObjectName(name1: string, name2: string, label: string): string {
 }
 
 /** A parsed, schema-qualified object name with Postgres's quoting rules already applied. */
-interface QualifiedName {
+export interface QualifiedName {
   readonly schema?: string;
   readonly name: string;
 }
@@ -765,7 +765,7 @@ function parseCatalogName(raw: string): QualifiedName {
  * and each mistake resolves to no owned object — which falls through to `keep`, the destructive
  * direction for this module.
  */
-function parseQualified(raw: string, options: { dropLast?: number } = {}): QualifiedName {
+export function parseQualified(raw: string, options: { dropLast?: number } = {}): QualifiedName {
   const parts: string[] = [];
   let i = 0;
 

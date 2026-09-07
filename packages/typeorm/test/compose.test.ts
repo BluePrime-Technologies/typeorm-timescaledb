@@ -278,6 +278,79 @@ describe('review findings (#242)', () => {
   });
 });
 
+/** Round 6 of the #242 review. All three verified; all three real. */
+describe('review findings (#242, round 6)', () => {
+  it('R6 P2 — dollar-quoted strings and NESTED block comments terminate correctly', () => {
+    // Neither is special-cased. Deleting the lexer in favour of "when in doubt, put the terminator
+    // on its own line" makes both correct for free — which is the point: the rule does not need to
+    // know these constructs exist, whereas the lexer had to and kept not knowing.
+    for (const sql of [
+      'CREATE VIEW "v" AS SELECT $$abc;--x$$', // dollar-quoted, no outer terminator
+      'CREATE VIEW "v" AS SELECT 1 /* outer /* inner */ ; -- x */', // nested block comment
+      'CREATE VIEW "v" AS SELECT $tag$a;$tag$', // TAGGED dollar quote
+    ]) {
+      const out = renderComposedMigrationSql(
+        composeMigration({ up: [{ sql }], down: [] }, timescale, owned),
+      );
+      expect(out, sql).toContain(sql);
+      // Terminator on its own line, so it cannot land inside the literal or comment. (Not asserted
+      // as adjacent to COMMIT — the TimescaleDB statements follow it in the up section.)
+      expect(out, sql).toContain(`${sql}\n;`);
+      expect(out, sql).toContain('COMMIT;');
+    }
+  });
+
+  it('R6 P2 — rename comparison resolves unqualified names against the CONFIGURED schema', () => {
+    // Every other rename test uses the default `public`, so hardcoding 'public' survived mutation.
+    const inApp = timescaleOwnedObjects(state, { defaultSchema: 'app' });
+    const unqualified: TypeormDiff = {
+      up: [{ sql: 'ALTER TABLE "old" RENAME TO "new"' }],
+      down: [],
+    };
+    const planApp: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "app"."old" RENAME TO "new";'],
+      down: [],
+    };
+    // Unqualified resolves to `app`, so this IS the same table.
+    expect(() => composeMigration(unqualified, planApp, inApp)).toThrow(
+      /both halves rename the same table/,
+    );
+    // ...and against `public` it is a different one.
+    const planPublic: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "public"."old" RENAME TO "new";'],
+      down: [],
+    };
+    expect(() => composeMigration(unqualified, planPublic, inApp)).not.toThrow();
+  });
+
+  it('R6 P2 — a quoted name CONTAINING a period is not mistaken for qualification', () => {
+    // `"analytics"."old.name"` split on '.' into three parts, so the real schema fell off the front
+    // and two distinct tables compared equal. Fixed by reusing slice 2's quote-aware parser instead
+    // of the naive duplicate — the duplication was the defect, the period just exposed it.
+    const dotted: TypeormDiff = {
+      up: [{ sql: 'ALTER TABLE "analytics"."old.name" RENAME TO "new.name"' }],
+      down: [],
+    };
+    const planPublic: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "public"."old.name" RENAME TO "new.name";'],
+      down: [],
+    };
+    expect(() => composeMigration(dotted, planPublic, owned)).not.toThrow();
+
+    // Same schema is still caught.
+    const samePublic: TypeormDiff = {
+      up: [{ sql: 'ALTER TABLE "public"."old.name" RENAME TO "new.name"' }],
+      down: [],
+    };
+    expect(() => composeMigration(samePublic, planPublic, owned)).toThrow(
+      /both halves rename the same table/,
+    );
+  });
+});
+
 /** Round 5 of the #242 review. Both verified against the code; both real. */
 describe('review findings (#242, round 5)', () => {
   it('R5 P2 — a `--` INSIDE a block comment does not hijack the scan', () => {
@@ -491,52 +564,31 @@ describe('review findings (#242, round 2)', () => {
     expect(out).toMatch(/\n;\n(?:.*\n)*?COMMIT;/);
   });
 
+  it('over-terminates rather than under-terminates when a comment could hide the `;`', () => {
+    // These used to assert the LEXER's cleverness — that it could tell a real terminator from one
+    // inside a string or a quoted identifier. The lexer is gone (it was wrong seven times), so what
+    // is asserted now is the SAFETY property: every statement ends terminated, and COMMIT is its own
+    // statement. A redundant `;` is accepted here deliberately — verified against Postgres, a bare
+    // `;` is an inert empty statement, whereas a MISSING terminator makes the artifact fail.
+    for (const sql of [
+      `CREATE VIEW "v" AS SELECT '--' ;`, // `--` inside a string literal
+      'CREATE VIEW "v--x" AS SELECT 1;', // `--` inside a quoted identifier
+      'CREATE VIEW "v" AS SELECT 1; -- note', // real terminator, then a comment
+    ]) {
+      const out = renderComposedMigrationSql(
+        composeMigration({ up: [{ sql }], down: [] }, timescale, owned),
+      );
+      expect(out, sql).toContain(sql);
+      // Terminated one way or the other, and COMMIT left standing alone.
+      expect(out, sql).toMatch(/;\s*\nCOMMIT;/);
+    }
+  });
+
   it('R2 P2 — a genuinely terminated statement is not double-terminated', () => {
     const terminated: TypeormDiff = { up: [{ sql: 'CREATE VIEW "v" AS SELECT 1;' }], down: [] };
     const out = renderComposedMigrationSql(composeMigration(terminated, timescale, owned));
     expect(out).toContain('CREATE VIEW "v" AS SELECT 1;');
     expect(out).not.toContain(';;');
-    expect(out).not.toContain(';\n;');
-  });
-
-  it('R2 P2 — quote tracking: a comment marker INSIDE a string is not a comment', () => {
-    // The discriminating case for single-quote tracking, found by mutation testing. Without it the
-    // `--` inside the literal starts a "comment" that swallows the real trailing `;`, and the
-    // statement gets a second, redundant terminator.
-    const markerInString: TypeormDiff = {
-      // Must be a form the slice-2 filter recognises — a bare SELECT is (correctly) refused.
-      up: [{ sql: `CREATE VIEW "v" AS SELECT '--' ;` }],
-      down: [],
-    };
-    const out = renderComposedMigrationSql(composeMigration(markerInString, timescale, owned));
-    expect(out).toContain(`CREATE VIEW "v" AS SELECT '--' ;`);
-    expect(out).not.toContain(';\n;');
-    expect(out).not.toContain(';;');
-  });
-
-  it('R2 P2 — a real terminator followed by a trailing comment still counts', () => {
-    // The scanner must ignore the whitespace between `;` and the comment; otherwise the last
-    // recorded character is a space and the statement gains a spurious second terminator.
-    const terminatedThenComment: TypeormDiff = {
-      up: [{ sql: 'CREATE VIEW "v" AS SELECT 1; -- note' }],
-      down: [],
-    };
-    const out = renderComposedMigrationSql(
-      composeMigration(terminatedThenComment, timescale, owned),
-    );
-    expect(out).toContain('CREATE VIEW "v" AS SELECT 1; -- note');
-    expect(out).not.toContain('-- note\n;');
-  });
-
-  it('R2 P2 — quote tracking covers quoted IDENTIFIERS, not just string literals', () => {
-    // `"v--x"` is a legal quoted identifier. Without double-quote tracking the `--` inside it
-    // starts a phantom comment that swallows the real trailing `;`.
-    const dashedIdentifier: TypeormDiff = {
-      up: [{ sql: 'CREATE VIEW "v--x" AS SELECT 1;' }],
-      down: [],
-    };
-    const out = renderComposedMigrationSql(composeMigration(dashedIdentifier, timescale, owned));
-    expect(out).toContain('CREATE VIEW "v--x" AS SELECT 1;');
     expect(out).not.toContain(';\n;');
   });
 
