@@ -52,7 +52,12 @@ const VALID_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * must be a valid identifier; the timestamp must be a 13-digit millisecond integer because TypeORM's
  * executor derives ordering from `parseInt(className.slice(-13))` and rejects non-numeric tails.
  */
-function resolveMigrationName(
+/**
+ * Exported for the composer (M4.5 slice 3), which must resolve the name/timestamp PAIR the same way
+ * every other generator here does — the 13-digit suffix in the class name is TypeORM's ordering key,
+ * so a timestamp that does not reach the name has no effect on ordering.
+ */
+export function resolveMigrationName(
   base: string,
   timestampOpt?: number,
 ): { readonly name: string; readonly timestamp: number } {
