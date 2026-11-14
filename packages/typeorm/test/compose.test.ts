@@ -299,56 +299,6 @@ describe('review findings (#242, round 6)', () => {
       expect(out, sql).toContain('COMMIT;');
     }
   });
-
-  it('R6 P2 — rename comparison resolves unqualified names against the CONFIGURED schema', () => {
-    // Every other rename test uses the default `public`, so hardcoding 'public' survived mutation.
-    const inApp = timescaleOwnedObjects(state, { defaultSchema: 'app' });
-    const unqualified: TypeormDiff = {
-      up: [{ sql: 'ALTER TABLE "old" RENAME TO "new"' }],
-      down: [],
-    };
-    const planApp: GeneratedMigration = {
-      ...timescale,
-      up: ['ALTER TABLE "app"."old" RENAME TO "new";'],
-      down: [],
-    };
-    // Unqualified resolves to `app`, so this IS the same table.
-    expect(() => composeMigration(unqualified, planApp, inApp)).toThrow(
-      /both halves rename the same table/,
-    );
-    // ...and against `public` it is a different one.
-    const planPublic: GeneratedMigration = {
-      ...timescale,
-      up: ['ALTER TABLE "public"."old" RENAME TO "new";'],
-      down: [],
-    };
-    expect(() => composeMigration(unqualified, planPublic, inApp)).not.toThrow();
-  });
-
-  it('R6 P2 — a quoted name CONTAINING a period is not mistaken for qualification', () => {
-    // `"analytics"."old.name"` split on '.' into three parts, so the real schema fell off the front
-    // and two distinct tables compared equal. Fixed by reusing slice 2's quote-aware parser instead
-    // of the naive duplicate — the duplication was the defect, the period just exposed it.
-    const dotted: TypeormDiff = {
-      up: [{ sql: 'ALTER TABLE "analytics"."old.name" RENAME TO "new.name"' }],
-      down: [],
-    };
-    const planPublic: GeneratedMigration = {
-      ...timescale,
-      up: ['ALTER TABLE "public"."old.name" RENAME TO "new.name";'],
-      down: [],
-    };
-    expect(() => composeMigration(dotted, planPublic, owned)).not.toThrow();
-
-    // Same schema is still caught.
-    const samePublic: TypeormDiff = {
-      up: [{ sql: 'ALTER TABLE "public"."old.name" RENAME TO "new.name"' }],
-      down: [],
-    };
-    expect(() => composeMigration(samePublic, planPublic, owned)).toThrow(
-      /both halves rename the same table/,
-    );
-  });
 });
 
 /** Round 5 of the #242 review. Both verified against the code; both real. */
@@ -376,36 +326,6 @@ describe('review findings (#242, round 5)', () => {
     const out = renderComposedMigrationSql(composeMigration(terminated, timescale, owned));
     expect(out).toContain('CREATE VIEW "v" AS SELECT 1 /* note */;');
     expect(out).not.toContain(';\n;');
-  });
-
-  it('R5 P2 — renames in DIFFERENT schemas are not a duplicate', () => {
-    // Comparing bare names made `analytics.old->new` and `public.old->new` look like one repeated
-    // rename, refusing a valid multi-schema migration. My round-4 test only varied the TABLE name,
-    // so it never exercised this.
-    const crossSchema: TypeormDiff = {
-      up: [{ sql: 'ALTER TABLE "analytics"."old" RENAME TO "new"' }],
-      down: [],
-    };
-    const planOtherSchema: GeneratedMigration = {
-      ...timescale,
-      up: ['ALTER TABLE "public"."old" RENAME TO "new";'],
-      down: [],
-    };
-    expect(() => composeMigration(crossSchema, planOtherSchema, owned)).not.toThrow();
-
-    // The SAME schema is still caught, including when one side is unqualified and resolves to it.
-    const sameSchema: TypeormDiff = {
-      up: [{ sql: 'ALTER TABLE "old" RENAME TO "new"' }],
-      down: [],
-    };
-    const planPublic: GeneratedMigration = {
-      ...timescale,
-      up: ['ALTER TABLE "public"."old" RENAME TO "new";'],
-      down: [],
-    };
-    expect(() => composeMigration(sameSchema, planPublic, owned)).toThrow(
-      /both halves rename the same table/,
-    );
   });
 });
 
@@ -442,70 +362,6 @@ describe('review findings (#242, round 4)', () => {
         );
       }
     }
-  });
-
-  it('R4 P2 — a rename BOTH halves want is refused, not executed twice', () => {
-    // planToMigration() can emit a `renameHypertable` step, whose SQL is an ordinary
-    // ALTER TABLE ... RENAME TO. TypeORM detects the same rename because base DDL is its job, so
-    // concatenating executes it twice — the second fails, the old relation being gone.
-    const renaming: TypeormDiff = {
-      up: [{ sql: 'ALTER TABLE "readings" RENAME TO "measurements"' }],
-      down: [{ sql: 'ALTER TABLE "measurements" RENAME TO "readings"' }],
-    };
-    const planWithRename: GeneratedMigration = {
-      ...timescale,
-      up: ['ALTER TABLE "public"."readings" RENAME TO "measurements";'],
-      down: ['ALTER TABLE "public"."measurements" RENAME TO "readings";'],
-    };
-
-    try {
-      composeMigration(renaming, planWithRename, owned);
-      throw new Error('expected a throw');
-    } catch (e) {
-      const err = e as TimescaleError;
-      expect(err).toBeInstanceOf(TimescaleError);
-      expect(err.code).toBe(TimescaleErrorCode.INVALID_ARGUMENT);
-      expect(err.message).toMatch(/both halves rename the same table/);
-      expect(err.context).toMatchObject({ side: 'up' });
-    }
-  });
-
-  it('R4 P2 — the down side is checked too', () => {
-    const downOnly: TypeormDiff = {
-      up: [],
-      down: [{ sql: 'ALTER TABLE "measurements" RENAME TO "readings"' }],
-    };
-    const planDownOnly: GeneratedMigration = {
-      ...timescale,
-      up: [],
-      down: ['ALTER TABLE "public"."measurements" RENAME TO "readings";'],
-    };
-    try {
-      composeMigration(downOnly, planDownOnly, owned);
-      throw new Error('expected a throw');
-    } catch (e) {
-      expect((e as TimescaleError).context).toMatchObject({ side: 'down' });
-    }
-  });
-
-  it('R4 P2 — a rename by only ONE half composes normally', () => {
-    // The check must not fire on the ordinary case, or it would block every rename.
-    const typeormOnly: TypeormDiff = {
-      up: [{ sql: 'ALTER TABLE "readings" RENAME TO "measurements"' }],
-      down: [{ sql: 'ALTER TABLE "measurements" RENAME TO "readings"' }],
-    };
-    const composed = composeMigration(typeormOnly, timescale, owned);
-    expect(composed.up.map((s) => s.sql)).toContain(
-      'ALTER TABLE "readings" RENAME TO "measurements"',
-    );
-
-    // ...and two DIFFERENT renames are not a clash either.
-    const otherRename: GeneratedMigration = {
-      ...timescale,
-      up: ['ALTER TABLE "public"."other" RENAME TO "elsewhere";'],
-      down: [],
-    };
-    expect(() => composeMigration(typeormOnly, otherRename, owned)).not.toThrow();
   });
 });
 
@@ -633,6 +489,158 @@ describe('review findings (#242, round 2)', () => {
     const ts = renderComposedMigration(composeMigration(typeorm, timescale, owned));
     expect(ts).not.toMatch(/migrationsTransactionMode/);
     expect(nonTransactionalStatements(composeMigration(typeorm, timescale, owned))).toEqual([]);
+  });
+});
+
+/**
+ * The rename-collision guard, driven by the shape the two halves ACTUALLY produce.
+ *
+ * The tests these replace hand-built a TypeORM half containing `ALTER TABLE ... RENAME TO`. The
+ * real reader cannot emit that: `readTypeormDiff` passes through `RdbmsSchemaBuilder`, whose
+ * `executeSchemaSyncOperationsInProperOrder()` has a `renameColumns()` step and no table-rename
+ * step at all (`renameTable` occurs zero times in the file). So five tests passed, mutation testing
+ * reported no survivors, and all of it certified a guard that could never fire — because the
+ * fixtures and the guard shared the same false premise. Mutants are evaluated against the same
+ * fabricated inputs, so mutation testing structurally cannot catch this class.
+ *
+ * What a renamed `@Hypertable({ renamedFrom })` entity really looks like: the TimescaleDB half
+ * emits `renameHypertable`, and TypeORM — diffing a database where the new name does not exist —
+ * emits `CREATE TABLE` for it.
+ */
+describe('coverage gaps closed from review', () => {
+  it('nonTransactionalStatements() reads the DOWN side too', () => {
+    // Previously only ever asserted with a CONCURRENTLY statement in `up`, so narrowing the
+    // implementation from [...up, ...down] to `up` alone would not have failed anything.
+    const concurrentDown: TypeormDiff = {
+      up: [],
+      down: [{ sql: 'DROP INDEX CONCURRENTLY "readings_value_idx"' }],
+    };
+    const composed = composeMigration(concurrentDown, timescale, owned);
+    expect(nonTransactionalStatements(composed).map((s) => s.sql)).toEqual([
+      'DROP INDEX CONCURRENTLY "readings_value_idx"',
+    ]);
+    // ...and the .ts warning names it, since that is what the caller sees.
+    expect(renderComposedMigration(composed)).toContain('DROP INDEX CONCURRENTLY');
+  });
+
+  it('the .sql filtered-note is scoped to the direction being emitted', () => {
+    // A single-direction artifact listing the other half's removals is the same inconsistency the
+    // one-artifact-per-direction change fixed for statements. Without this, moving the note under
+    // `section === 'up'` — or leaving it unscoped — goes unnoticed.
+    const composed = composeMigration(typeorm, timescale, owned);
+    expect(composed.filtered.map((f) => f.side).sort()).toEqual(['down', 'up']);
+
+    const up = renderComposedMigrationSql(composed);
+    expect(up).toContain('removed [up]');
+    expect(up).not.toContain('removed [down]');
+
+    const down = renderComposedMigrationSql(composed, { section: 'down' });
+    expect(down).toContain('removed [down]');
+    expect(down).not.toContain('removed [up]');
+  });
+
+  it('the .ts artifact still lists BOTH sides, because it emits both', () => {
+    const ts = renderComposedMigration(composeMigration(typeorm, timescale, owned));
+    expect(ts).toContain('[up]');
+    expect(ts).toContain('[down]');
+  });
+});
+
+describe('rename collision — the shape the halves really emit', () => {
+  /** TypeORM creating the new name, as it does for a table it has never seen. */
+  const typeormCreatesNewName: TypeormDiff = {
+    up: [{ sql: 'CREATE TABLE "public"."sensor_data" ("time" TIMESTAMPTZ NOT NULL)' }],
+    down: [{ sql: 'DROP TABLE "public"."sensor_data"' }],
+  };
+  /** The TimescaleDB half renaming the existing hypertable onto that same name. */
+  const timescaleRenames: GeneratedMigration = {
+    ...timescale,
+    up: ['ALTER TABLE "public"."readings" RENAME TO "sensor_data";'],
+    down: ['ALTER TABLE "public"."sensor_data" RENAME TO "readings";'],
+  };
+
+  it('REFUSES when the rename destination is a table TypeORM creates', () => {
+    try {
+      composeMigration(typeormCreatesNewName, timescaleRenames, owned);
+      throw new Error('expected a throw');
+    } catch (e) {
+      const err = e as TimescaleError;
+      expect(err).toBeInstanceOf(TimescaleError);
+      expect(err.code).toBe(TimescaleErrorCode.INVALID_ARGUMENT);
+      expect(err.message).toMatch(/relation already exists/);
+      expect(err.context).toMatchObject({ side: 'up', destination: 'public.sensor_data' });
+    }
+  });
+
+  it('explains why it refuses rather than dropping one side', () => {
+    // Dropping the rename strands the hypertable's data under the old name behind a new empty
+    // table — the silent-data-loss outcome. The message has to say so, or the next person
+    // "fixes" the refusal by de-duplicating.
+    try {
+      composeMigration(typeormCreatesNewName, timescaleRenames, owned);
+      throw new Error('expected a throw');
+    } catch (e) {
+      expect((e as TimescaleError).message).toMatch(/strand the original hypertable's data/);
+    }
+  });
+
+  it('allows a rename whose destination nobody creates', () => {
+    const unrelatedCreate: TypeormDiff = {
+      up: [{ sql: 'CREATE TABLE "public"."users" ("id" SERIAL)' }],
+      down: [],
+    };
+    expect(() => composeMigration(unrelatedCreate, timescaleRenames, owned)).not.toThrow();
+  });
+
+  it('allows a CREATE with no rename at all — the ordinary first migration', () => {
+    expect(() => composeMigration(typeormCreatesNewName, timescale, owned)).not.toThrow();
+  });
+
+  it('compares SCHEMA-qualified, so the same name in another schema is not a collision', () => {
+    const createsElsewhere: TypeormDiff = {
+      up: [{ sql: 'CREATE TABLE "analytics"."sensor_data" ("time" TIMESTAMPTZ NOT NULL)' }],
+      down: [],
+    };
+    // `RENAME TO` is unqualified and keeps the table in `public`; the CREATE is in `analytics`.
+    expect(() => composeMigration(createsElsewhere, timescaleRenames, owned)).not.toThrow();
+  });
+
+  it('resolves an unqualified CREATE against the CONFIGURED default schema', () => {
+    const inApp = timescaleOwnedObjects(state, { defaultSchema: 'app' });
+    const unqualifiedCreate: TypeormDiff = {
+      up: [{ sql: 'CREATE TABLE "sensor_data" ("time" TIMESTAMPTZ NOT NULL)' }],
+      down: [],
+    };
+    const renameInApp: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "app"."readings" RENAME TO "sensor_data";'],
+      down: [],
+    };
+    expect(() => composeMigration(unqualifiedCreate, renameInApp, inApp)).toThrow(
+      /relation already exists/,
+    );
+    // The same rename in `public` is a different table once the default is `app`.
+    const renameInPublic: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "public"."readings" RENAME TO "sensor_data";'],
+      down: [],
+    };
+    expect(() => composeMigration(unqualifiedCreate, renameInPublic, inApp)).not.toThrow();
+  });
+
+  it('handles a quoted name CONTAINING a period on both sides', () => {
+    const dottedCreate: TypeormDiff = {
+      up: [{ sql: 'CREATE TABLE "public"."sensor.data" ("time" TIMESTAMPTZ NOT NULL)' }],
+      down: [],
+    };
+    const dottedRename: GeneratedMigration = {
+      ...timescale,
+      up: ['ALTER TABLE "public"."readings" RENAME TO "sensor.data";'],
+      down: [],
+    };
+    expect(() => composeMigration(dottedCreate, dottedRename, owned)).toThrow(
+      /relation already exists/,
+    );
   });
 });
 

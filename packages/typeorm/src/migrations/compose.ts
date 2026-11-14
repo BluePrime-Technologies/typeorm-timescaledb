@@ -3,7 +3,7 @@ import type { GeneratedMigration } from './generate.js';
 import { resolveMigrationName } from './generate.js';
 import type { TypeormDiff } from './typeorm-diff.js';
 import type { FilteredStatement, FilterMode, TimescaleOwnedObjects } from './typeorm-filter.js';
-import { filterTypeormDiff, parseQualified } from './typeorm-filter.js';
+import { createdTableKeys, filterTypeormDiff, parseQualified } from './typeorm-filter.js';
 
 /**
  * The composer — slice 3 of M4.5 (#235).
@@ -94,9 +94,10 @@ export function composeMigration(
 
   const literal = (sql: string): ComposedStatement => ({ sql });
 
-  // Both halves can legitimately want to rename the same table; executing both fails.
-  assertNoDuplicateRename(diff.up, timescale.up, 'up', owned.defaultSchema);
-  assertNoDuplicateRename(diff.down, timescale.down, 'down', owned.defaultSchema);
+  // A hypertable rename on the TimescaleDB half collides with TypeORM creating that same name.
+  // Only `up` needs checking: the inverse pairing in `down` is DROP + RENAME, which has no
+  // collision, and refusing here blocks the whole composition anyway.
+  assertRenameTargetNotCreated(diff.up, timescale.up, owned.defaultSchema);
 
   // Resolve the PAIR, never independently. The 13-digit suffix in the class name is TypeORM's
   // ordering key and the renderer emits only the name, so a `timestamp` override that does not
@@ -119,73 +120,93 @@ export function composeMigration(
   };
 }
 
-/** `ALTER TABLE a RENAME TO b` — used to spot a rename both halves want to perform. */
+/** `ALTER TABLE a RENAME TO b` — the TimescaleDB half's `renameHypertable` SQL. */
 const RENAME_TABLE =
   /^\s*ALTER\s+TABLE\s+(?:ONLY\s+)?(?<from>"(?:[^"]|"")*"(?:\."(?:[^"]|"")*")*|[^\s(;]+)\s+RENAME\s+TO\s+(?<to>"(?:[^"]|"")*"|[^\s(;]+)/i;
 
 /**
- * `schema.a->schema.b` for a rename statement, or `undefined` if it is not one.
+ * Schema-qualified key of a rename's DESTINATION, or `undefined` if the statement is not a rename.
  *
- * Uses slice 2's quote-aware {@link parseQualified} rather than a local `split('.')`. The local one
- * was a naive duplicate of a parser that already existed and was already correct, and it broke on a
- * quoted name CONTAINING a period: `"analytics"."old.name"` split into three parts, so the real
- * schema fell off the front and two distinct tables compared equal. Duplicating parsing logic was
- * the actual defect; the period was just how it surfaced.
+ * `RENAME TO` takes an unqualified name — Postgres keeps the table in its existing schema — so the
+ * destination inherits the source's. Parsed with slice 2's quote-aware {@link parseQualified}
+ * rather than a local `split('.')`, which broke on a quoted name CONTAINING a period
+ * (`"analytics"."old.name"` split into three parts and dropped the real schema).
  *
- * `RENAME TO` takes an unqualified name — Postgres keeps the table in its schema — so the
- * destination inherits the source's.
+ * The `?? defaultSchema` fallback is DEFENSIVE and deliberately untested. The only producer of
+ * these statements is `renameHypertableSQL`, which builds its source through `parseTable` — and
+ * that always returns a qualified `ident` (`quoteIdent(schema).quoteIdent(name)`, schema defaulting
+ * to `public`), so an unqualified source never arrives. It is kept rather than removed because the
+ * two failure directions are not symmetric: with the fallback an unqualified source resolves and
+ * the guard still fires, whereas without it the key becomes `undefined.<name>`, matches nothing,
+ * and the collision ships SILENTLY. Writing a test for it would mean hand-building a statement
+ * shape the producer cannot emit — the exact habit that let the previous guard certify itself.
  */
-function renamePair(sql: string, defaultSchema: string): string | undefined {
+function renameDestinationKey(sql: string, defaultSchema: string): string | undefined {
   const m = RENAME_TABLE.exec(sql);
   const from = m?.groups?.['from'];
   const to = m?.groups?.['to'];
   if (from === undefined || to === undefined) return undefined;
-  const source = parseQualified(from);
-  const schema = source.schema ?? defaultSchema;
-  // The destination is unqualified and inherits `schema`, which is already the key's first
-  // component — repeating it would add nothing to the comparison.
-  return `${schema}.${source.name}->${parseQualified(to).name}`;
+  const schema = parseQualified(from).schema ?? defaultSchema;
+  return `${schema}.${parseQualified(to).name}`;
 }
 
 /**
- * Refuse a table rename that BOTH halves intend to perform.
+ * Refuse a hypertable rename whose destination TypeORM is CREATING in the same migration.
  *
- * `planToMigration()` can emit a `renameHypertable` step, whose SQL is an ordinary
- * `ALTER TABLE ... RENAME TO ...`. If TypeORM's diff independently detected the same rename — which
- * it will, because renaming an entity's table is base DDL and TypeORM owns base DDL — concatenating
- * the halves executes the rename twice. The second attempt fails, because the old relation no
- * longer exists, and `down` fails the same way in reverse.
+ * This replaces a guard that could never fire. The earlier version looked for the same rename on
+ * BOTH halves, on the stated premise that "TypeORM's diff independently detected the same rename —
+ * which it will, because renaming an entity's table is base DDL and TypeORM owns base DDL". That
+ * premise is false, and the plan for this milestone warned in writing against exactly how it was
+ * arrived at: derive TypeORM's behaviour from its source, never from memory.
  *
- * This is refused rather than de-duplicated. Silently dropping one side would mean guessing which
- * engine's intent to honour, and the two are not always identical: the TimescaleDB plan may carry a
- * rename the entity metadata does not, or vice versa. A failure at generate time is strictly better
- * than one part-way through applying a migration.
+ * `readTypeormDiff` is a pass-through to `RdbmsSchemaBuilder`, which has NO table-rename step —
+ * `executeSchemaSyncOperationsInProperOrder()` lists `renameColumns()` and `createNewTables()` and
+ * nothing that renames a table (`renameTable` appears zero times in the file). `PostgresQueryRunner`
+ * can emit `ALTER TABLE ... RENAME TO`, but only from a hand-written migration, never from the
+ * schema builder. So the old guard's map was always empty and it returned before looking at the
+ * TimescaleDB half.
+ *
+ * Checking that the grep for `rename` in `typeorm-diff.ts` returns zero is NOT the argument — that
+ * file only forwards TypeORM's output. The reachability of `RdbmsSchemaBuilder` is.
+ *
+ * The collision that IS reachable was therefore unguarded. Renaming a hypertable entity
+ * (`@Hypertable({ renamedFrom })`) makes `diffSchemaState` emit `renameHypertable` on the
+ * TimescaleDB half, while TypeORM — diffing the same database, where the new name does not exist
+ * yet — emits `CREATE TABLE` for it. Both survive the filter, which refuses only `DROP TABLE` on an
+ * owned hypertable, so the composed `up` reads:
+ *
+ * ```sql
+ * CREATE TABLE "public"."sensor_data" (...);              -- TypeORM
+ * ALTER TABLE "public"."readings" RENAME TO "sensor_data"; -- TimescaleDB
+ * -- ERROR: relation "sensor_data" already exists
+ * ```
+ *
+ * Refused rather than de-duplicated, and which side you would drop is not obvious — which is the
+ * point. Dropping the rename strands the original hypertable's data under the old name behind a new
+ * empty table; dropping the CREATE assumes TypeORM's column set matches what the rename preserves.
+ * Failing at generate time is strictly better than either.
  */
-function assertNoDuplicateRename(
-  typeormStatements: readonly ComposedStatement[],
-  timescaleStatements: readonly string[],
-  side: 'up' | 'down',
+function assertRenameTargetNotCreated(
+  typeormUp: readonly ComposedStatement[],
+  timescaleUp: readonly string[],
   defaultSchema: string,
 ): void {
-  const fromTypeorm = new Map<string, string>();
-  for (const { sql } of typeormStatements) {
-    const pair = renamePair(sql, defaultSchema);
-    if (pair !== undefined) fromTypeorm.set(pair, sql);
-  }
-  if (fromTypeorm.size === 0) return;
-
-  for (const sql of timescaleStatements) {
-    const pair = renamePair(sql, defaultSchema);
-    if (pair === undefined) continue;
-    const clash = fromTypeorm.get(pair);
-    if (clash === undefined) continue;
+  const created = createdTableKeys(
+    typeormUp.map((s) => s.sql),
+    defaultSchema,
+  );
+  for (const sql of timescaleUp) {
+    const destination = renameDestinationKey(sql, defaultSchema);
+    if (destination === undefined || !created.has(destination)) continue;
     throw new TimescaleError(
       TimescaleErrorCode.INVALID_ARGUMENT,
-      `Cannot compose: both halves rename the same table in ${side}, so the second statement would ` +
-        `fail — the old relation no longer exists after the first. Assign the rename to one side ` +
-        `(TypeORM owns base-table DDL) rather than letting both emit it.\n` +
-        `  TypeORM:     ${clash}\n  TimescaleDB: ${sql}`,
-      { side, typeorm: clash, timescale: sql },
+      `Cannot compose: the TimescaleDB half renames a table onto "${destination}", which TypeORM ` +
+        `creates in the same migration — the rename would fail with "relation already exists". ` +
+        `This is what a renamed @Hypertable entity looks like to the two engines: TypeORM sees a ` +
+        `table it has never seen and creates it; this engine sees the old one and renames it. ` +
+        `Resolve by hand — dropping the rename would strand the original hypertable's data under ` +
+        `its old name behind a new empty table.\n  TimescaleDB: ${sql}`,
+      { side: 'up', destination, timescale: sql },
     );
   }
 }
@@ -305,6 +326,17 @@ const LINE_TERMINATORS = /\r\n|[\n\r\u2028\u2029]/;
  * A bare `\bCONCURRENTLY\b` also matches the word inside a string literal, quoted identifier or
  * comment — `CREATE TABLE t (c text DEFAULT 'concurrently')` is perfectly transaction-safe and was
  * being refused. CONCURRENTLY is only meaningful directly after the index command.
+ *
+ * Two assumptions are recorded here rather than coded around, because coding around them would
+ * reintroduce exactly the comment-scanning the round-6 cleanup deleted:
+ *
+ * 1. `^\s*` skips whitespace, not comments, so a statement PREFIXED with `--` or a block comment
+ *    would not match and would be wrapped in BEGIN/COMMIT. Neither half prefixes comments onto
+ *    generated SQL — TypeORM builds bare DDL strings and the TimescaleDB half comes from the core
+ *    SQL choke point — so no reachable input defeats it.
+ * 2. The list covers what these two halves can emit, not every transaction-gated Postgres command.
+ *    `ALTER SYSTEM`, `CLUSTER`, `CREATE`/`DROP TABLESPACE` and `CREATE SUBSCRIPTION` are also
+ *    gated and deliberately absent, being unreachable from either producer.
  */
 const NON_TRANSACTIONAL =
   /^\s*(?:(?:CREATE\s+(?:UNIQUE\s+)?INDEX|DROP\s+INDEX|REINDEX(?:\s+\w+)?)\s+CONCURRENTLY\b|(?:VACUUM|CREATE\s+DATABASE|DROP\s+DATABASE)\b)/i;
@@ -412,10 +444,14 @@ export function renderComposedMigrationSql(
       ? '-- no-op'
       : ['BEGIN;', ...statements.map((s) => terminate(s.sql)), 'COMMIT;'].join('\n');
 
+  // Scoped to the direction being emitted. Listing the other half's removals in a single-direction
+  // artifact is the same inconsistency the one-artifact-per-direction change fixed for statements —
+  // a reader of the up file should not have to work out which notes apply to it.
+  const removedHere = migration.filtered.filter((f) => f.side === side);
   const note =
-    migration.filtered.length === 0
+    removedHere.length === 0
       ? ''
-      : `${migration.filtered
+      : `${removedHere
           .map((f) =>
             commentEveryLine(
               `removed [${f.side}] ${f.object} — ${f.reason}\n  ${f.statement.sql}`,
