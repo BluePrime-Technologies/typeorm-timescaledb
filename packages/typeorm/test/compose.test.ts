@@ -60,15 +60,33 @@ const typeorm: TypeormDiff = {
   ],
 };
 
-/** The TimescaleDB half, as generateTimescaleMigration produces it. */
+/**
+ * Verbatim output of packages/core/src/sql/hypertable.ts for `public.readings`.
+ *
+ * Backticks because the SQL contains BOTH quote kinds: the table argument is
+ * `parseTable().regclass`, the quoted-identifier string literal `'"public"."readings"'`.
+ */
+const REAL_CREATE_HYPERTABLE = `SELECT create_hypertable('"public"."readings"', by_range('time', INTERVAL '1 day'), if_not_exists => FALSE, migrate_data => FALSE);`;
+const REAL_ADD_RETENTION = `SELECT add_retention_policy('"public"."readings"', drop_after => INTERVAL '90 days', if_not_exists => FALSE);`;
+const REAL_REMOVE_RETENTION = `SELECT remove_retention_policy('"public"."readings"', if_exists => TRUE);`;
+
+/**
+ * The TimescaleDB half, in the shape the core builders REALLY emit.
+ *
+ * Verified against packages/core/src/sql/hypertable.ts rather than written from memory: the table
+ * argument is the quoted-identifier string literal, not a bare dotted name, and the policy builders
+ * always use named arguments (`drop_after =>`, `if_not_exists =>`, `if_exists =>`). An earlier
+ * version of this fixture used a shorthand no producer emits while its comment claimed it was what
+ * `generateTimescaleMigration` produces. No assertion depended on the difference — compose.ts treats
+ * these strings opaquely apart from the rename regex — but an unreal fixture with a comment
+ * vouching for it is exactly how the deleted rename tests came to certify a guard that could never
+ * fire. Caught by the review panel, not by me.
+ */
 const timescale: GeneratedMigration = {
   name: 'Timescale1700000000000',
   timestamp: 1_700_000_000_000,
-  up: [
-    "SELECT create_hypertable('public.readings', by_range('time'));",
-    "SELECT add_retention_policy('public.readings', INTERVAL '90 days');",
-  ],
-  down: ["SELECT remove_retention_policy('public.readings');"],
+  up: [REAL_CREATE_HYPERTABLE, REAL_ADD_RETENTION],
+  down: [REAL_REMOVE_RETENTION],
 };
 
 describe('composeMigration — ordering', () => {
@@ -119,12 +137,12 @@ describe('composeMigration — ordering', () => {
       'CREATE INDEX "readings_value_idx" ON "readings" ("value")',
       // (DROP INDEX readings_time_idx filtered out — TimescaleDB owns it)
       // 2. ...then the TimescaleDB layer, which needs that table to exist.
-      "SELECT create_hypertable('public.readings', by_range('time'));",
-      "SELECT add_retention_policy('public.readings', INTERVAL '90 days');",
+      REAL_CREATE_HYPERTABLE,
+      REAL_ADD_RETENTION,
     ]);
     expect(composed.down.map((s) => s.sql)).toEqual([
       // 1. TimescaleDB undone first...
-      "SELECT remove_retention_policy('public.readings');",
+      REAL_REMOVE_RETENTION,
       // 2. ...then TypeORM's down, REVERSED from how TypeORM stores it.
       'DROP INDEX "public"."readings_value_idx"',
       'DROP TABLE "readings"',
@@ -584,6 +602,48 @@ describe('rename collision — the shape the halves really emit', () => {
     }
   });
 
+  it('fires on every CREATE/RENAME spelling the regexes admit', () => {
+    // Found by probing the guard directly rather than by review: the adversarial spellings all
+    // have to resolve to the same key on both sides. IF NOT EXISTS and ONLY are accepted by the
+    // regexes, so they must not become a way to slip the collision past the guard.
+    const fires = (typeormUp: string, timescaleUp: string): boolean => {
+      try {
+        composeMigration(
+          { up: [{ sql: typeormUp }], down: [] },
+          { ...timescale, up: [timescaleUp], down: [] },
+          owned,
+        );
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const rename = 'ALTER TABLE "public"."readings" RENAME TO "sensor_data";';
+    expect(fires('CREATE TABLE IF NOT EXISTS "public"."sensor_data" ("t" int)', rename)).toBe(true);
+    expect(fires('CREATE TABLE "sensor_data" ("t" int)', rename)).toBe(true); // unqualified CREATE
+    expect(
+      fires(
+        'CREATE TABLE "public"."sensor_data" ("t" int)',
+        'ALTER TABLE ONLY "public"."readings" RENAME TO "sensor_data";',
+      ),
+    ).toBe(true);
+    // ...and still not across schemas.
+    expect(fires('CREATE TABLE "analytics"."sensor_data" ("t" int)', rename)).toBe(false);
+  });
+
+  it('the defensive unqualified-source fallback does resolve, if ever reached', () => {
+    // NOT a claim about producer behaviour — parseTable always qualifies, so this shape does not
+    // occur. It pins that the `?? defaultSchema` fallback, documented in compose.ts as deliberately
+    // untested, actually catches rather than silently missing if an unqualified source ever arrives.
+    expect(() =>
+      composeMigration(
+        { up: [{ sql: 'CREATE TABLE "public"."sensor_data" ("t" int)' }], down: [] },
+        { ...timescale, up: ['ALTER TABLE "readings" RENAME TO "sensor_data";'], down: [] },
+        owned,
+      ),
+    ).toThrow(/relation already exists/);
+  });
+
   it('allows a rename whose destination nobody creates', () => {
     const unrelatedCreate: TypeormDiff = {
       up: [{ sql: 'CREATE TABLE "public"."users" ("id" SERIAL)' }],
@@ -715,14 +775,14 @@ describe('renderComposedMigrationSql (.sql) — refuses rather than degrades', (
     expect(up).toContain('BEGIN;');
     expect(up).toContain('COMMIT;');
     expect(up).toContain('CREATE TABLE "readings"');
-    expect(up).toContain("SELECT create_hypertable('public.readings', by_range('time'));");
+    expect(up).toContain(REAL_CREATE_HYPERTABLE);
     // The destructive inverse must NOT be in the up artifact at all.
     expect(up).not.toContain('DROP TABLE');
     expect(up).not.toContain('remove_retention_policy');
 
     const down = renderComposedMigrationSql(composed, { section: 'down' });
     expect(down).toContain('DROP TABLE "readings"');
-    expect(down).toContain("SELECT remove_retention_policy('public.readings');");
+    expect(down).toContain(REAL_REMOVE_RETENTION);
     expect(down).not.toContain('CREATE TABLE');
 
     // Ordering still holds within the emitted direction.
