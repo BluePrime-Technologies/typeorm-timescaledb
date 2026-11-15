@@ -136,3 +136,37 @@ describe('--cagg-recreate: verbs that ignore it (#230 review)', () => {
     );
   });
 });
+
+describe('a value-taking flag never swallows the following option', () => {
+  // Regression: `push --cagg-recreate --allow-refused -d ds.ts` read `--allow-refused` AS the mode.
+  // It failed closed on mode validation, so nothing destructive could happen — but it blamed the
+  // wrong token and silently dropped the second safety gate from the command line, which is the
+  // exact hazard BOOLEAN_FLAGS was introduced to prevent in the other direction.
+  it('rejects --cagg-recreate followed by another flag, naming the real culprit', () => {
+    expect(() => parseArgs(['push', '--cagg-recreate', '--allow-refused', '-d', 'ds.ts'])).toThrow(
+      CliError,
+    );
+    expect(() => parseArgs(['push', '--cagg-recreate', '--allow-refused', '-d', 'ds.ts'])).toThrow(
+      /next token is another option \(--allow-refused\)/,
+    );
+  });
+
+  it('does not let --cagg-recreate eat -d, which previously orphaned the datasource', () => {
+    expect(() => parseArgs(['push', '--cagg-recreate', '-d', 'ds.ts'])).toThrow(
+      /next token is another option \(-d\)/,
+    );
+  });
+
+  it('still accepts a legitimate value, and --flag=-value for one starting with a dash', () => {
+    expect(
+      parseArgs(['push', '--cagg-recreate', 'plan', '-d', 'ds.ts']).continuousAggregateRecreate,
+    ).toBe('plan');
+    expect(parseArgs(['generate', '-d', 'ds.ts', '--name=-leading-dash']).name).toBe(
+      '-leading-dash',
+    );
+  });
+
+  it('leaves a bare "-" usable as a value, since it is not an option', () => {
+    expect(parseArgs(['generate', '-d', '-']).dataSource).toBe('-');
+  });
+});

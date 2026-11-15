@@ -181,6 +181,20 @@ export function parseArgs(argv: readonly string[], config: TimescaleConfig = {})
 
     let value: string | undefined;
     if (eq === -1) {
+      // Do NOT consume the next token when it is itself an option. `BOOLEAN_FLAGS` above exists so
+      // a value-taking flag cannot swallow `-d`; the same hazard applies in reverse, when the
+      // VALUE is missing and the next token is the following flag. Without this,
+      // `push --cagg-recreate --allow-refused -d ds.ts` silently read `--allow-refused` as the
+      // mode — it failed closed on validation, but blamed the wrong token and quietly dropped the
+      // second safety gate from the command line. A value that genuinely begins with `-` is still
+      // expressible as `--flag=-value`.
+      const next = rest[i + 1];
+      if (next !== undefined && next.length > 1 && next.startsWith('-')) {
+        throw new CliError(
+          `Option ${flag} requires a value, but the next token is another option (${next}). ` +
+            `If the value really starts with "-", write ${flag}=<value>.\n\n${USAGE}`,
+        );
+      }
       value = rest[++i];
     } else {
       value = token.slice(eq + 1);
