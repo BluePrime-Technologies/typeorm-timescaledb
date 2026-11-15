@@ -76,6 +76,19 @@ and released in lockstep.
   `--` or `/*` — and is **not** a general injection sanitiser, so it is not a licence to pass
   untrusted input. (#222)
 
+- **`node-support` CI job — the deprecated Node leg is tested, not merely advertised.** It builds
+  on Node 22, then installs the real packed tarballs under both Node 20 and Node 22, exercises the
+  published API, and asserts the deprecation notice fires on the former and stays **silent** on the
+  latter. A one-sided check would pass with the notice hard-coded either on or off. Runnable
+  locally as `pnpm test:node-support`.
+
+- **`@blueprime/cross-store` is covered by the package smoke test.** It is the third published
+  package and was never packed, installed or imported by `test:package-smoke`, while `RELEASING.md`
+  claimed that script validated every built entrypoint. A tarball-shape or exports-map regression
+  there could have reached npm with every gate green. The check also asserts the package stays
+  **ESM-only** — a negative an import test cannot catch, since a package that gained a `require`
+  condition by accident would still import fine.
+
 ### Changed
 
 - **BREAKING for CI: `check` can now exit non-zero on a continuous aggregate it previously ignored.**
@@ -110,21 +123,6 @@ and released in lockstep.
 
   Because the unit suite cannot run on Node 20 (vitest 5 again), the deprecated leg is certified by
   a dedicated `node-support` CI job rather than left as an untested claim — see **Added** below.
-
-### Added
-
-- **`node-support` CI job — the deprecated Node leg is tested, not merely advertised.** It builds
-  on Node 22, then installs the real packed tarballs under both Node 20 and Node 22, exercises the
-  published API, and asserts the deprecation notice fires on the former and stays **silent** on the
-  latter. A one-sided check would pass with the notice hard-coded either on or off. Runnable
-  locally as `pnpm test:node-support`.
-
-- **`@blueprime/cross-store` is covered by the package smoke test.** It is the third published
-  package and was never packed, installed or imported by `test:package-smoke`, while `RELEASING.md`
-  claimed that script validated every built entrypoint. A tarball-shape or exports-map regression
-  there could have reached npm with every gate green. The check also asserts the package stays
-  **ESM-only** — a negative an import test cannot catch, since a package that gained a `require`
-  condition by accident would still import fine.
 
 ### Fixed
 
