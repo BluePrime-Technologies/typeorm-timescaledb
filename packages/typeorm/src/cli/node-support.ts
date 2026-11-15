@@ -31,8 +31,28 @@ export const NODE_SUPPORT_REMOVED_IN = '0.9.0';
 /** Node 20's end-of-life date, per the official Node release schedule. */
 export const NODE_20_EOL = '2026-04-30';
 
-/** The exact range the packages declare. Single source for the message and the tests. */
+/** The range the packages declare. Single source for the message and the tests. */
 export const SUPPORTED_NODE_RANGE = '^20.19.0 || >=22.12.0';
+
+/**
+ * PRERELEASE POLICY — a deliberate divergence from `semver.satisfies`, not an oversight.
+ *
+ * Strict semver excludes every prerelease from a range that does not itself name one:
+ * `semver.satisfies('22.12.0-rc.1', '^20.19.0 || >=22.12.0')` is FALSE, and so is
+ * `satisfies('23.0.0-nightly…', …)`. npm applies exactly that when it checks `engines` at install.
+ *
+ * This notice deliberately does NOT. It answers "is your RELEASE LINE deprecated or unsupported?",
+ * which is a different question from "does this exact version string satisfy the published range?".
+ * Implementing the strict reading would tell someone running a Node 23 nightly — a runtime NEWER
+ * than anything the range names — that it is "NOT supported". That is a false alarm on a perfectly
+ * capable runtime, and this module's whole premise is that a notice aimed at the wrong runtime is
+ * worse than silence.
+ *
+ * So prereleases are classified by their line: `20.19.0-rc.1` is DEPRECATED (it is Node 20),
+ * `22.12.0-rc.1` and `23.0.0-nightly` are quiet (they are current or newer), and `20.18.9-rc.1`,
+ * `21.0.0-rc.1`, `22.11.0-rc.1` are unsupported (their lines are). `engines` still enforces the
+ * strict contract at install time; this is advisory UX layered on top, not a second gate.
+ */
 
 interface NodeVersion {
   readonly major: number;
@@ -49,6 +69,9 @@ interface NodeVersion {
  * Minor is parsed, not just major: the range is `^20.19.0 || >=22.12.0`, so 20.1.0 and 22.11.0 are
  * BOTH outside it while sharing a major with versions that are inside. Comparing majors alone
  * called Node 21 "deprecated" when it was never supported at all.
+ *
+ * Patch and prerelease are deliberately IGNORED — see the prerelease policy above. This classifies
+ * a release LINE, which is why `20.19.0-rc.1` warns as Node 20 rather than as "unsupported".
  */
 export function parseNodeVersion(version: string): NodeVersion | undefined {
   const m = /^v?(\d+)\.(\d+)(?:\.|$)/.exec(version);

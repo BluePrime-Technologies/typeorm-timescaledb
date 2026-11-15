@@ -39,6 +39,12 @@ function tarballName(pkgJsonPath) {
 
 // Mirror packages/typeorm/src/cli/node-support.ts. Duplicated on purpose: this script must be
 // runnable on a Node the workspace itself cannot install on, so it cannot import from the build.
+//
+// It mirrors that module's PRERELEASE POLICY too — classify by release LINE, not by
+// `semver.satisfies`. A strict check here would refuse to certify a Node 22 RC, and would call a
+// Node 23 nightly "outside the declared range" even though it is newer than anything the range
+// names. The published `engines` field remains the strict contract; this script certifies the
+// runtime behaviour.
 const v = /^v?(\d+)\.(\d+)/.exec(process.version);
 assert(v !== null, `could not parse process.version ${process.version}`);
 const major = Number(v[1]);

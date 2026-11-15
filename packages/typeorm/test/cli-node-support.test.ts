@@ -91,3 +91,36 @@ describe('warnIfDeprecatedNode', () => {
     expect(lines).toEqual([]);
   });
 });
+
+describe('prereleases are classified by release LINE, not by semver.satisfies', () => {
+  // A DELIBERATE divergence, pinned here so it cannot silently flip to the strict reading.
+  //
+  // `semver.satisfies` excludes every prerelease from a range that does not name one — verified:
+  // satisfies('22.12.0-rc.1', '^20.19.0 || >=22.12.0') === false, and so is '23.0.0-nightly…'.
+  // npm applies exactly that to `engines` at install time.
+  //
+  // This notice must NOT, because the strict reading would tell someone on a Node 23 nightly —
+  // NEWER than anything the range names — that their runtime is unsupported. A false alarm on a
+  // capable runtime is the failure this module exists to avoid.
+  it('warns on a Node 20 prerelease, because the Node 20 LINE is deprecated', () => {
+    expect(deprecatedNodeNotice('v20.19.0-rc.1')).toContain('DEPRECATED');
+    expect(isSupportedNode('v20.19.0-rc.1')).toBe(true);
+  });
+
+  it('stays silent on a current-or-newer prerelease', () => {
+    expect(deprecatedNodeNotice('v22.12.0-rc.1')).toBeUndefined();
+    expect(deprecatedNodeNotice('v23.0.0-nightly20260101')).toBeUndefined();
+    expect(deprecatedNodeNotice('v24.0.0-rc.2')).toBeUndefined();
+  });
+
+  it('still reports unsupported when the LINE itself is unsupported', () => {
+    expect(deprecatedNodeNotice('v20.18.9-rc.1')).toContain('NOT supported');
+    expect(deprecatedNodeNotice('v21.0.0-rc.1')).toContain('NOT supported');
+    expect(deprecatedNodeNotice('v22.11.0-rc.1')).toContain('NOT supported');
+  });
+
+  it('build metadata does not change the classification', () => {
+    expect(deprecatedNodeNotice('v20.19.0+build.5')).toContain('DEPRECATED');
+    expect(deprecatedNodeNotice('v22.12.0+build.5')).toBeUndefined();
+  });
+});
