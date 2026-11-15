@@ -18,7 +18,7 @@
     "pg": "^8.23.0",
     "reflect-metadata": "^0.2.2",
     "typeorm": "^1.1.1",
-    "typeorm-timescaledb": "^0.7.1"
+    "typeorm-timescaledb": "^0.8.0"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

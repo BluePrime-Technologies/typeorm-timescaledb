@@ -47,6 +47,41 @@ jobs:
       - run: pnpm build
       - run: pnpm test:package-smoke
 
+  node-support:
+    # Certify the DEPRECATED leg of `engines` (`^20.19.0`) against the real tarballs.
+    #
+    # The unit matrix cannot run here: vitest 5 declares `engines: ^22.12.0 || ^24.0.0 || >=26.0.0`,
+    # and raising the published floor to satisfy a devDependency is what briefly turned a tooling
+    # constraint into a runtime requirement for consumers. The range was restored and removal
+    # scheduled for 0.9.0 — but a support claim this repo does not test is exactly the kind of
+    # unverified public claim `check:version-claims` exists to prevent. So the deprecated leg is
+    # certified the honest way: build on a current Node, then install the packed tarballs on Node 20
+    # and exercise real logic plus the deprecation notice. No vitest involved.
+    name: node support (${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 asserts the notice FIRES; 22 asserts it stays silent. A one-sided check would pass with
+        # a notice hard-coded on, or hard-coded off.
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      # Build on a current Node: the BUILD toolchain requires it, the published artifact does not.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # Now switch the RUNTIME to the Node under certification and exercise the tarballs there.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --version
+      - run: pnpm test:node-support
+
   integration:
     name: integration (node ${{ matrix.node }}, typeorm ${{ matrix.typeorm }}, tsdb ${{ matrix.timescaledb }})
     runs-on: ubuntu-latest

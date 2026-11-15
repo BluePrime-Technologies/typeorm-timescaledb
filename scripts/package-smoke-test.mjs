@@ -82,12 +82,22 @@ try {
     packDir,
     packageTarballName(join(root, 'packages/typeorm/package.json')),
   );
+  // `@blueprime/cross-store` is the THIRD published package and was absent from this script, while
+  // RELEASING.md told maintainers that pre-publish quality was validated by "the test:package-smoke
+  // script that imports every built entrypoint". It was not: a tarball-shape or exports-map
+  // regression in cross-store could reach npm with every gate green.
+  const crossStoreTarball = join(
+    packDir,
+    packageTarballName(join(root, 'packages/cross-store/package.json')),
+  );
 
   run('pnpm', ['--dir', join(root, 'packages/core'), 'pack', '--pack-destination', packDir]);
   run('pnpm', ['--dir', join(root, 'packages/typeorm'), 'pack', '--pack-destination', packDir]);
+  run('pnpm', ['--dir', join(root, 'packages/cross-store'), 'pack', '--pack-destination', packDir]);
 
   assert(existsSync(coreTarball), `Expected core tarball at ${coreTarball}`);
   assert(existsSync(typeormTarball), `Expected TypeORM tarball at ${typeormTarball}`);
+  assert(existsSync(crossStoreTarball), `Expected cross-store tarball at ${crossStoreTarball}`);
 
   assertTarballShape('core', coreTarball, [
     'package/package.json',
@@ -108,6 +118,18 @@ try {
     'package/dist/cjs/nestjs/index.js',
     'package/dist/cjs/nestjs/index.d.ts',
     'package/dist/cli/main.js',
+  ]);
+
+  // ESM-only by design: there is no dist/cjs here, and asserting the three documented subpaths
+  // keeps the exports map honest.
+  assertTarballShape('cross-store', crossStoreTarball, [
+    'package/package.json',
+    'package/dist/index.js',
+    'package/dist/index.d.ts',
+    'package/dist/typeorm.js',
+    'package/dist/typeorm.d.ts',
+    'package/dist/prisma.js',
+    'package/dist/prisma.d.ts',
   ]);
 
   writeFileSync(
@@ -132,6 +154,7 @@ try {
       '--no-fund',
       coreTarball,
       typeormTarball,
+      crossStoreTarball,
       'typeorm@0.3.20',
       'pg@8',
       'reflect-metadata@0.2.2',
@@ -165,6 +188,14 @@ try {
       if (pkg.ANALYZERS.length === 0) throw new Error('ANALYZERS re-export is empty (#228)');
       if (typeof nest.TimescaleModule !== 'function') throw new Error('missing NestJS module export');
       if (typeof core.createHypertableSQL !== 'function') throw new Error('missing core SQL export');
+
+      const xs = await import('@blueprime/cross-store');
+      const xsTypeorm = await import('@blueprime/cross-store/typeorm');
+      if (typeof xs.resolveReferences !== 'function') throw new Error('missing cross-store resolveReferences export');
+      if (typeof xs.ReferenceRegistry !== 'function') throw new Error('missing cross-store ReferenceRegistry export');
+      if (typeof xs.CrossStoreError !== 'function') throw new Error('missing cross-store CrossStoreError export');
+      if (typeof xsTypeorm.DataSourceAdapter !== 'function') throw new Error('missing cross-store/typeorm DataSourceAdapter export');
+      if (typeof xsTypeorm.verifyReferences !== 'function') throw new Error('missing cross-store/typeorm verifyReferences export');
     `,
   );
 
@@ -194,8 +225,28 @@ try {
     `,
   );
 
+  writeSmokeFile(
+    join(projectDir, 'cross-store-esm-only.cjs'),
+    `
+      // cross-store is ESM-only ON PURPOSE (no dist/cjs, no "require" condition). Asserting the
+      // NEGATIVE matters: if a future build started emitting CJS, or the exports map grew a
+      // "require" condition by accident, the package's documented shape would have changed
+      // silently. A passing import would not notice; this does.
+      try {
+        require('@blueprime/cross-store');
+      } catch (err) {
+        if (err && (err.code === 'ERR_REQUIRE_ESM' || err.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED')) {
+          process.exit(0);
+        }
+        throw err;
+      }
+      throw new Error('@blueprime/cross-store became require()-able — it is documented as ESM-only');
+    `,
+  );
+
   run('node', ['esm-smoke.mjs'], { cwd: projectDir });
   run('node', ['cjs-smoke.cjs'], { cwd: projectDir });
+  run('node', ['cross-store-esm-only.cjs'], { cwd: projectDir });
 
   const binPath = join(
     projectDir,

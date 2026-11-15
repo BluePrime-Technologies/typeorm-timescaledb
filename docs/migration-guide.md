@@ -422,9 +422,12 @@ its prior threshold) and is never emitted by default.
 
 The engine deliberately never touches two areas, regardless of `allowDrops`:
 
-- **Continuous aggregates** — the diff is hypertable-scoped; CAGG structural
-  changes are not detected or converged. Use `generateTimescaleMigration(...,
-{ continuousAggregates: [...] })` or a hand-written migration.
+- **Continuous aggregates** — a CAGG that is missing, or whose refresh policy
+  drifted, is handled; a drifted DEFINITION is DETECTED structurally and is
+  converged only behind the explicit `--cagg-recreate` opt-in described above,
+  never as part of an ordinary `push`. Without that opt-in, use
+  `generateTimescaleMigration(..., { continuousAggregates: [...] })` or a
+  hand-written migration.
 - **Space (hash) dimensions** — adding, removing, or re-partitioning an
   existing space dimension is not reconcilable in place; a divergence is
   reported as an error naming the required manual migration.

@@ -26,7 +26,8 @@ It's built on one hard rule:
 npm install typeorm-timescaledb typeorm pg reflect-metadata
 ```
 
-Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 || ^1.0.0`, Node `>=22.12.0`.
+Ships **dual ESM + CJS** with full type definitions. Requires **TimescaleDB ≥ 2.18**, TypeORM `^0.3.20 || ^1.0.0`, Node `^20.19.0 || >=22.12.0`.
+Node 20 is **deprecated** (end of life 2026-04-30) and support is removed in 0.9.0; the CLI warns when it runs on it.
 
 ## Quick start
 
@@ -188,9 +189,24 @@ Return `undefined` from `useFactory` to register a no-op context (no `DataSource
 boot-time drift check) for environments where TimescaleDB isn't configured — mark any
 `@InjectTimescaleContext()` / `@InjectTimescaleRepository()` consumer `@Optional()` in that case.
 
-## What's in 0.7.x
+## What's in 0.8.x
 
-**Works today (0.7.x):**
+**New in 0.8.0:**
+
+- **A drifted continuous-aggregate definition is detected structurally** — bucket width, group
+  keys, aggregate list, output column names and source relation are compared as parsed facets, not
+  as text, so the server's own reformatting is not mistaken for drift. A definition the parser
+  cannot read falls back to `not-compared` rather than guessing.
+- **…and can be converged, behind two independent opt-ins** — `--cagg-recreate plan|apply`, where
+  `apply` additionally requires `--allow-refused`. Converging means DROP + CREATE and discards the
+  aggregate's materialized rows, so it is never the default and cannot be pre-authorised from a
+  committed config file.
+- **The whole documented engine workflow imports from this one package** — `diffSchemaState`,
+  `compilePlan`, `classifyOperation`, `isEmptyPlan`, `ANALYZERS` and their types were previously
+  reachable only through an undeclared transitive dependency.
+- **Node 20 is deprecated** (EOL 2026-04-30), still supported, removed in 0.9.0.
+
+**Works today (0.8.x):**
 
 - **Migration engine** — read the live database, diff it against your entities, converge it:
   - `introspect(dataSource)` → a canonical `SchemaStateIR` of what the database actually has.
@@ -254,8 +270,10 @@ tests for `1`.
 
 **Verified on** TimescaleDB 2.18.0, 2.19.0, 2.26.0 and 2.29.1 across PostgreSQL 16, 17 and 18.
 
-**Known limitations in 0.7.0:** continuous aggregates are diffed by presence, not structurally (a
-changed bucket width or aggregate list is reported as `not-compared`, not converged); space (hash)
+**Known limitations in 0.8.0:** a continuous aggregate whose definition has drifted IS detected
+structurally, and converging it is available only behind an explicit opt-in
+(`--cagg-recreate plan|apply`) because it means DROP + CREATE and discards the materialized rows;
+a definition the parser cannot read falls back to `not-compared` rather than guessing; space (hash)
 dimensions cannot be reconciled in place — a divergence is reported as an error naming the required
 manual migration; and a policy's `schedule_interval` is not reproduced by `pull`, because
 introspection cannot distinguish a tuned cadence from the engine default it always fills in.
