@@ -131,6 +131,26 @@ function cliStderr(args) {
 
 const helpStderr = cliStderr('--help');
 
+// The Node 22 leg asserts a NEGATIVE ("no deprecation notice"), which a CLI that printed nothing —
+// or did not run at all — would satisfy vacuously. Anchor it on a positive first: the bin must
+// actually have produced its usage text on STDOUT. This also proves the notice is on the other
+// stream rather than merely absent.
+const helpStdout = (() => {
+  try {
+    return execFileSync(binPath, ['--help'], { cwd: projectDir, encoding: 'utf8', stdio: 'pipe' });
+  } catch (err) {
+    return String(err.stdout ?? '');
+  }
+})();
+assert(
+  helpStdout.includes('Usage:'),
+  `the CLI produced no usage text on stdout, so the deprecation assertions below would be vacuous: ${JSON.stringify(helpStdout.slice(0, 200))}`,
+);
+assert(
+  !helpStdout.includes('DEPRECATED'),
+  'the deprecation notice reached STDOUT; it must go to stderr so `check` output stays parseable',
+);
+
 if (isDeprecatedLeg) {
   assert(
     helpStderr.includes('DEPRECATED'),
