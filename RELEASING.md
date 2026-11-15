@@ -15,7 +15,9 @@ workflow then publishes both packages to npm.
      `release.yml`, and leave `NPM_TOKEN` unset. Requires a pnpm version that supports
      tokenless OIDC publishing; if a release fails to authenticate, use the token method.
 
-Both package names (`typeorm-timescaledb`, `@blueprime/timescaledb-core`) are currently unclaimed.
+Both package names (`typeorm-timescaledb`, `@blueprime/timescaledb-core`) are PUBLISHED and owned
+by the `@blueprime` org — they have been since 0.1.0. The one-time setup below applies only to a
+fresh environment or a credential rotation, not to an ordinary release.
 
 ## Public claims gate
 
@@ -43,7 +45,7 @@ Do not publish release copy that presents planned features as shipped functional
 ## Releasing `@blueprime/cross-store` (independent version line)
 
 `@blueprime/cross-store` versions **independently** of `typeorm-timescaledb` /
-`@blueprime/timescaledb-core` (it starts at `0.1.0` while they are on `0.5.x`). It has its own
+`@blueprime/timescaledb-core` (it is on `0.2.x` while they are on `0.8.x`). It has its own
 workflow ([`release-cross-store.yml`](.github/workflows/release-cross-store.yml)) triggered by a
 distinct tag prefix:
 
@@ -78,7 +80,13 @@ ever hit it manually, the fix is the same one-liner, authenticated as the publis
 - The published `typeorm-timescaledb` README is the repo root `README.md` (copied in via the
   package `prepack` step); `@blueprime/timescaledb-core` ships its own README.
 - Pre-publish quality is already validated on every PR (lint, typecheck, unit, the integration
-  matrix on TimescaleDB 2.18 + latest, and the `test:package-smoke` script that imports every
-  built entrypoint). The release workflow assumes the tagged commit passed CI. (Adding `publint`
-  and `@arethetypeswrong/cli` to catch exports-map regressions the smoke test can miss is a
-  tracked follow-up — they are NOT wired yet.)
+  matrix on TimescaleDB 2.18 + latest, and the `test:package-smoke` script). That script packs and
+  imports every entrypoint of ALL THREE published packages — `@blueprime/cross-store` was absent
+  from it until 0.8.0, so this note previously overstated the coverage it described.
+- The DEPRECATED Node leg (`^20.19.0`) is certified by the `node-support` CI job rather than the
+  unit matrix, which cannot run on Node 20 (vitest 5 requires >=22.12). It installs the real
+  tarballs on Node 20 and on Node 22 and asserts the CLI deprecation notice fires on the former and
+  stays silent on the latter.
+- The release workflow assumes the tagged commit passed CI. (Adding `publint` and
+  `@arethetypeswrong/cli` to catch exports-map regressions the smoke test can miss is a tracked
+  follow-up — they are NOT wired yet.)

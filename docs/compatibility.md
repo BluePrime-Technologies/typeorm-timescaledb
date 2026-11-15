@@ -6,11 +6,24 @@ This page lists the public compatibility surface for the current package scope.
 
 | Area        | Supported range                        |
 | ----------- | -------------------------------------- |
-| Node.js     | `>=22.12.0`                            |
+| Node.js     | `^20.19.0 \|\| >=22.12.0`              |
 | TypeORM     | `^0.3.20 \|\| ^1.0.0`                  |
 | PostgreSQL  | 16, 17, 18                             |
 | TimescaleDB | `>= 2.18`, tested through 2.29.1       |
 | NestJS      | Optional peers declared by the package |
+
+### Node 20 is supported but DEPRECATED
+
+Node 20 reached end of life on **2026-04-30** and receives no security patches. It remains in the
+supported range because the published runtime genuinely works on it — the floor was briefly raised
+to `>=22.12.0` to unblock vitest 5, a devDependency, which published a tooling constraint as a
+consumer-facing requirement. **Support is removed in 0.9.0.** The CLI prints a deprecation notice on
+stderr when it runs on Node 20.
+
+What "supported" means for this leg specifically: the unit matrix cannot run on Node 20 (vitest 5
+declares `^22.12.0 || ^24.0.0 || >=26.0.0`), so it is certified by the `node-support` CI job, which
+installs the real packed tarballs on Node 20, exercises the published API, and asserts the notice
+fires. The same job asserts the notice stays silent on Node 22.
 
 ### What "tested" means here
 

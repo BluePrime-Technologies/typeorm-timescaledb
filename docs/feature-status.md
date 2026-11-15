@@ -1,7 +1,7 @@
 # Feature status
 
 This page is the public source of truth for what `typeorm-timescaledb` ships in
-the current published release line (0.7.x), what each release added, and what is
+the current published release line (0.8.x), what each release added, and what is
 explicitly not supported yet.
 
 Use this page when updating README copy, npm-facing descriptions, release notes,
@@ -152,6 +152,41 @@ your entities, and converges it, with every step safety-classified:
 **⚠️ Breaking in 0.7.0:** `check` exits `2` on drift, not `1` — exit `1` collided with "the
 command failed", so an unreachable database was indistinguishable from real drift.
 
+## Shipped in 0.8.0
+
+0.8.0 makes a drifted continuous aggregate both visible and — on request — fixable, and closes a
+gap where documented API was not reachable from the installed package:
+
+- **Structural continuous-aggregate diffing** — the stored definition is parsed into comparable
+  facets (bucket width, time column, group keys, aggregates, output aliases, source relation) and
+  compared against the declaration. The server rewrites a stored definition heavily (interval
+  reformatted, quoting stripped, `GROUP BY 1, 2` expanded), so comparing the text would report
+  drift on an aggregate nobody touched. A shape the parser cannot read falls back to the honest
+  `not-compared` advisory — never a guess.
+- **Opt-in convergence** — `--cagg-recreate advise|plan|apply`
+  (`DiffOptions.continuousAggregateRecreate`). `advise` is the default and is unchanged 0.7.x
+  behaviour. `plan` SHOWS the recreate step and never runs it, while the rest of the plan still
+  applies. `apply` runs it and requires `--allow-refused` as a second, independent gate. `apply` is
+  **not** settable from `timescaledb.config.json`, because a committed file must never
+  pre-authorise a destructive run for whoever types the command next. A `plan`-mode plan throws if
+  compiled, so a generated migration cannot run the DROP having passed neither gate. The recreate
+  re-attaches the declared refresh policy (dropping an aggregate drops its refresh job with it) and
+  refuses outright for the parent of a hierarchical aggregate.
+- **The plan/lint/engine surface is exported from `typeorm-timescaledb`** — `diffSchemaState`,
+  `compilePlan`, `classifyOperation`, `isEmptyPlan`, `ANALYZERS`, `lintPlan`, `formatLintFindings`,
+  `assertSafeFragment` and their types. Each is documented as public API, and each previously
+  resolved only from `@blueprime/timescaledb-core`, a dependency consumers do not declare.
+
+**⚠️ Breaking for CI in 0.8.0:** `check` can exit non-zero on a continuous aggregate it previously
+ignored, because a detected definition difference is a blocking advisory. No plan step is emitted
+by default; only the exit code changes.
+
+**Deprecated in 0.8.0:** Node 20 (EOL 2026-04-30). Still supported this release, removed in 0.9.0;
+the CLI warns on stderr.
+
+**Not in 0.8.0:** the TypeORM composition workflow of #235 ("one command, one migration"). Slices
+1-3 are merged but are not exported and cannot be reached from the published package.
+
 ## Supported platform claims
 
 The following platform claims are safe to use when they match package metadata
@@ -159,7 +194,7 @@ and CI:
 
 - TimescaleDB `>= 2.18`.
 - TypeORM `^0.3.20 || ^1.0.0`.
-- Node `>=22.12.0`.
+- Node `^20.19.0 || >=22.12.0`. Node 20 is **deprecated** (end of life 2026-04-30) and support is removed in 0.9.0; the CLI warns when it runs on it.
 - NestJS peers are optional and support the ranges declared in
   `packages/typeorm/package.json`.
 
@@ -240,7 +275,8 @@ Use wording like:
 - `The 0.3.0 release scope adds typed helpers for the stable Toolkit aggregate families implemented in this package, including stats/regression, UddSketch percentiles, counters, time-weight, state tracking, MCV/top-N, and heartbeat/liveness.`
 - `0.4.0 adds continuous aggregates (including hierarchical CAGGs and refresh policies), downsampling (LTTB/ASAP), informational views and the jobs API, and T-Digest percentiles.`
 - `0.6.0 adds the migration engine: live-database introspection, a safety-classified diff against your entities, a `check` CI drift gate, SQL/TypeScript migration emitters, a fluent schema builder, and guarded direct apply.`
-- `Experimental toolkit aggregates, stable Toolkit aggregates not listed in the docs, validated cross-store references, destructive auto-migrations, and CAGG structural diffing are planned but not shipped yet.`
+- `Experimental toolkit aggregates, stable Toolkit aggregates not listed in the docs, validated cross-store references, destructive auto-migrations, and `@RollupColumn` sugar are planned but not shipped yet.`
+- `A drifted continuous-aggregate definition is detected structurally and can be converged behind the explicit --cagg-recreate opt-in; it is never converged by default.`
 
 Avoid wording like:
 

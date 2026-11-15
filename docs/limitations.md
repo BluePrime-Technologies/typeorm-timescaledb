@@ -53,10 +53,12 @@ A hand-written migration is still required for:
 - Dropping a hypertable or disabling a columnstore (never auto-generated).
 - Adding, removing, or re-partitioning a space (hash) dimension — a divergence
   here is reported as an error naming the remedy, not silently ignored.
-- Structural changes to an EXISTING continuous aggregate. The definition IS
-  compared and a difference is REPORTED as drift naming the changed facet, but
-  applying it needs a hand-written migration: TimescaleDB cannot `ALTER` a
-  continuous aggregate's SELECT, so converging means DROP + CREATE.
+- Structural changes to an EXISTING continuous aggregate are not converged BY
+  DEFAULT. The definition IS compared and a difference is REPORTED as drift
+  naming the changed facet. Converging it is available behind the explicit
+  `--cagg-recreate` opt-in (see the migration guide), or by a hand-written
+  migration: TimescaleDB cannot `ALTER` a continuous aggregate's SELECT, so
+  converging means DROP + CREATE and discards the materialized rows.
 - Changing a continuous aggregate's refresh threshold (reported as drift, not
   auto-converged).
 - Any reversal of TimescaleDB configuration that could affect live data.
@@ -74,5 +76,6 @@ adds the TimescaleDB layer on top.
 
 ## Documentation status
 
-The documentation skeleton exists first so users can see the intended docs
-structure. Some pages are starter pages and will be expanded in later steps.
+[Feature status](feature-status.md) is the authoritative list of what ships;
+it carries a CI-enforced check (`pnpm check:version-claims`) so a page cannot
+quietly keep advertising a superseded release line.

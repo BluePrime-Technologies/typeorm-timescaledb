@@ -9,6 +9,8 @@ and released in lockstep.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-15
+
 ### Added
 
 - **A changed continuous-aggregate definition can now be CONVERGED, behind an explicit opt-in**
@@ -90,6 +92,58 @@ and released in lockstep.
 - Docs corrected accordingly: `docs/feature-status.md`, `docs/limitations.md` and
   `docs/migration-guide.md` each stated that an existing aggregate's definition "is not compared",
   which this release falsifies.
+
+### Deprecated
+
+- **Node 20 is deprecated; support is removed in 0.9.0.** Node 20 reached end of life on
+  **2026-04-30** and receives no security patches. The supported range stays
+  `^20.19.0 || >=22.12.0` for this release and the CLI now prints a notice on **stderr** when it
+  runs on Node 20.
+
+  This reverses an unreleased change. The floor had been narrowed to `>=22.12.0` to unblock
+  vitest 5, which declares `engines: ^22.12.0 || ^24.0.0 || >=26.0.0` — but vitest is a
+  **devDependency**, and nothing in the shipped runtime needs Node 22: the build targets ES2022 and
+  uses no 22-only API. Publishing a build-tooling constraint as a consumer-facing requirement would
+  have broken every Node 20 consumer for a reason unrelated to anything they use. Verified rather
+  than assumed: the packed tarballs install and run on Node 20.20.2, including the continuous
+  aggregate facet parser and drift detection.
+
+  Because the unit suite cannot run on Node 20 (vitest 5 again), the deprecated leg is certified by
+  a dedicated `node-support` CI job rather than left as an untested claim — see **Added** below.
+
+### Added
+
+- **`node-support` CI job — the deprecated Node leg is tested, not merely advertised.** It builds
+  on Node 22, then installs the real packed tarballs under both Node 20 and Node 22, exercises the
+  published API, and asserts the deprecation notice fires on the former and stays **silent** on the
+  latter. A one-sided check would pass with the notice hard-coded either on or off. Runnable
+  locally as `pnpm test:node-support`.
+
+- **`@blueprime/cross-store` is covered by the package smoke test.** It is the third published
+  package and was never packed, installed or imported by `test:package-smoke`, while `RELEASING.md`
+  claimed that script validated every built entrypoint. A tarball-shape or exports-map regression
+  there could have reached npm with every gate green. The check also asserts the package stays
+  **ESM-only** — a negative an import test cannot catch, since a package that gained a `require`
+  condition by accident would still import fine.
+
+### Fixed
+
+- **A value-taking CLI flag no longer swallows the following option.**
+  `push --cagg-recreate --allow-refused -d ds.ts` read `--allow-refused` as the _mode_. It failed
+  closed on validation, so nothing destructive could occur — but it blamed the wrong token and
+  silently dropped the second safety gate from the command line, which is precisely the hazard the
+  existing `BOOLEAN_FLAGS` list was introduced to prevent in the other direction. A value that
+  genuinely begins with `-` is still expressible as `--flag=-value`.
+
+### Internal
+
+- **M4.5 (#235) is 3 of 5 slices and is NOT reachable by consumers.** The TypeORM diff reader, the
+  protective filter and the composer are merged and tested, but nothing exports them: no module in
+  `src/` imports them, no CLI command references them, and `compose` does not appear in the public
+  type surface. The "one command, one migration" workflow is **not** available in 0.8.0 — slice 4
+  adds the CLI flag and the public function, slice 5 the integration proof that a composed
+  migration leaves the hypertable's time index intact. Stated here because "the composer landed"
+  reads as "the feature works".
 
 ## [0.7.1] - 2026-08-13
 
@@ -580,6 +634,12 @@ Initial public release — the schema foundation (M1).
 - `@blueprime/timescaledb-core` — ORM-agnostic SQL/DDL generation, metadata model, and
   identifier safety.
 
+[Unreleased]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/BluePrime-Technologies/typeorm-timescaledb/compare/v0.2.0...v0.3.0

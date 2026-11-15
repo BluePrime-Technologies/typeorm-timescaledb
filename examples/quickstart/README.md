@@ -20,7 +20,7 @@ normal example `package.json` without changing the root monorepo lockfile.
 
 ## Prerequisites
 
-- Node `>=22.12.0`.
+- Node `^20.19.0 || >=22.12.0`. Node 20 is **deprecated** (end of life 2026-04-30) and support is removed in 0.9.0; the CLI warns when it runs on it.
 - Docker with Compose support.
 - npm.
 
