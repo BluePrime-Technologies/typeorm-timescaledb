@@ -17,10 +17,15 @@ import {
   type Logger,
 } from './commands.js';
 import { parseArgs, USAGE } from './args.js';
+import { warnIfDeprecatedNode } from './node-support.js';
 import { initializeForCli, loadDataSourceModule } from './load.js';
 import { resolveConfig } from './config.js';
 
 async function main(argv: readonly string[]): Promise<void> {
+  // Before anything else, including help: a deprecation notice the user never sees is not a
+  // deprecation. It goes to STDERR, so `--help` and the drift gate's stdout stay machine-readable.
+  warnIfDeprecatedNode();
+
   // Only treat help as help when it LEADS the command line. Matching it anywhere let a value
   // position (`-n --help`) or a trailing flag swallow a real command — `check ... --help` printed
   // usage and exited 0, turning a CI drift gate into a silent pass.
