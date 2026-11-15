@@ -94,7 +94,7 @@ function makeObjectName(name1: string, name2: string, label: string): string {
 }
 
 /** A parsed, schema-qualified object name with Postgres's quoting rules already applied. */
-interface QualifiedName {
+export interface QualifiedName {
   readonly schema?: string;
   readonly name: string;
 }
@@ -453,6 +453,26 @@ export interface ClassifyContext {
   readonly createdTables?: ReadonlySet<string>;
 }
 
+/**
+ * Schema-qualified keys of the tables a set of statements CREATES.
+ *
+ * Exported because two callers need exactly this set and must agree on it: the `DROP TABLE`
+ * classifier here (a drop that inverts this diff's own create is ordinary, not destructive), and
+ * the composer's rename-collision guard (a `renameHypertable` onto a name TypeORM is creating in
+ * the same migration cannot work). Deriving it twice is how `splitIdent` happened.
+ */
+export function createdTableKeys(
+  statements: readonly string[],
+  defaultSchema: string,
+): ReadonlySet<string> {
+  const created = new Set<string>();
+  for (const sql of statements) {
+    const target = CREATE_TABLE_TARGET.exec(sql)?.groups?.['obj'];
+    if (target !== undefined) created.add(key(parseQualified(target), defaultSchema));
+  }
+  return created;
+}
+
 /** Classify a single statement against the owned set. */
 export function classifyTypeormStatement(
   sql: string,
@@ -630,12 +650,12 @@ export function filterTypeormDiff(
   // Tables this diff creates. A `DROP TABLE` in `down` that inverts one of these is ordinary, not
   // the destructive removal of an existing hypertable. Only this function can know that, because
   // it is the only place both sides are in scope.
-  const createdTables = new Set<string>();
-  for (const { sql } of diff.up) {
-    const created = CREATE_TABLE_TARGET.exec(sql)?.groups?.['obj'];
-    if (created !== undefined) createdTables.add(key(parseQualified(created), owned.defaultSchema));
-  }
-  const context: ClassifyContext = { createdTables };
+  const context: ClassifyContext = {
+    createdTables: createdTableKeys(
+      diff.up.map((s) => s.sql),
+      owned.defaultSchema,
+    ),
+  };
 
   const run = (statements: readonly TypeormStatement[], side: 'up' | 'down'): TypeormStatement[] =>
     statements.filter((statement) => {
@@ -765,7 +785,7 @@ function parseCatalogName(raw: string): QualifiedName {
  * and each mistake resolves to no owned object — which falls through to `keep`, the destructive
  * direction for this module.
  */
-function parseQualified(raw: string, options: { dropLast?: number } = {}): QualifiedName {
+export function parseQualified(raw: string, options: { dropLast?: number } = {}): QualifiedName {
   const parts: string[] = [];
   let i = 0;
 
