@@ -9,7 +9,7 @@ and released in lockstep.
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-11-15
+## [0.8.0] - 2026-11-18
 
 ### Added
 
